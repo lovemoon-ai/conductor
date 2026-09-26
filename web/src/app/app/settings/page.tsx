@@ -5,7 +5,7 @@ import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
+import { GlobalAiBackendsCard, SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { CatchphraseSettingsCard } from '@/features/catchphrases';
 import { DailyReportSettingsCard } from '@/features/daily-reports';
 import { AchievedTaskSettingsCard } from '@/features/achieved-tasks';
@@ -192,6 +192,7 @@ export default function SettingsPage() {
                   )}
                 </section>
 
+                <GlobalAiBackendsCard agents={agents} />
               </>
             )}
             {section === 'preferences' && (

@@ -37,6 +37,7 @@ import {
 import {
   acquireTaskWorktreeMutationLock,
   inheritTaskWorktreeLaunchConfig,
+  parseRemoteWorkspaceLaunchConfig,
   parseRemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
@@ -58,6 +59,7 @@ import {
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
+import { readTaskGlobalBackend } from "@/lib/tasks/global-backend";
 import {
   readTaskLabelIdsFromMetadata,
   TASK_LABEL_IDS_METADATA_KEY,
@@ -847,8 +849,17 @@ export async function POST(
   // "New task from this" continues the same work, so it keeps the labels a
   // person attached — otherwise every restart would silently untag the task.
   const sourceLabelIds = readTaskLabelIdsFromMetadata(sourceMetadata);
+  // RFC 0041: a global-backend task keeps showing under the project it was
+  // started from, and keeps saying which daemon/backend runs its AI.
+  const sourceGlobalBackend = readTaskGlobalBackend(sourceMetadata);
+  const sourceSecondProjectId = sourceGlobalBackend
+    ? normalizeOptionalString((sourceTask as { secondProjectId?: unknown }).secondProjectId)
+    : null;
   const successorMetadata = {
     ...successorGroupMetadata,
+    ...(sourceGlobalBackend
+      ? { globalBackend: { host: restartAgentHost, backend: targetBackend } }
+      : {}),
     ...(sourceLabelIds.length > 0 ? { [TASK_LABEL_IDS_METADATA_KEY]: sourceLabelIds } : {}),
     continuedFromTaskId: sourceTask.id,
     restartSourceBackendType: sourceBackend,
@@ -889,10 +900,14 @@ export async function POST(
   // A remote worktree (RFC 0038) describes another machine, so it survives a
   // cross-daemon move even though the local cwd does not.
   const sourceRemoteWorktree = parseRemoteWorktreeLaunchConfig(sourceLaunchConfig);
+  // RFC 0041: so does a remote project directory.
+  const sourceRemoteWorkspace = parseRemoteWorkspaceLaunchConfig(sourceLaunchConfig);
   const successorLaunchConfig = isCrossDaemonOverride
     ? sourceRemoteWorktree
       ? { remoteWorktree: sourceRemoteWorktree }
-      : {}
+      : sourceRemoteWorkspace
+        ? { remoteWorkspace: sourceRemoteWorkspace }
+        : {}
     : inheritedWorktreeLaunchConfig ?? {
         ...(successorCwd ? { cwd: successorCwd } : {}),
         ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
@@ -964,6 +979,7 @@ export async function POST(
         ),
         metadata: JSON.stringify(successorMetadata),
         ...(sourceGroupId ? { groupId: sourceGroupId } : {}),
+        ...(sourceSecondProjectId ? { secondProjectId: sourceSecondProjectId } : {}),
       },
     });
 

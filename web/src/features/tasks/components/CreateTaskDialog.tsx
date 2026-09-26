@@ -19,6 +19,10 @@ import {
 import { deriveDefaultTaskTitle } from '../utils/default-task-title';
 import { useProjectsStore } from '@/features/projects';
 import { useAgentsStore } from '@/features/agents';
+import {
+  globalAiBackendKey,
+  useGlobalAiBackendsStore,
+} from '@/features/user-preferences/global-ai-backends';
 import { ApiRequestError } from '@/shared/api/client';
 import { formatBindingLabel } from '@/features/projects';
 import { computeProjectGroups } from '@/features/projects/utils/project-groups';
@@ -100,6 +104,11 @@ interface CreateTaskDialogFormState {
   remoteWorktreeHost: string;
   agentHost: string;
   backendType: string;
+  /**
+   * RFC 0041: `globalAiBackendKey` of the chosen global backend, or empty for
+   * one of the project daemon's own backends.
+   */
+  globalBackendKey: string;
   workerAgent: string;
   reviewers: ReviewerRow[];
   submitError: string | null;
@@ -116,6 +125,7 @@ type CreateTaskDialogAction =
   | { type: 'set-remote-worktree-host'; remoteWorktreeHost: string }
   | { type: 'set-agent-host'; agentHost: string }
   | { type: 'set-backend'; backendType: string }
+  | { type: 'set-global-backend'; globalBackendKey: string }
   | AgentGroupAction
   | { type: 'set-submit-error'; submitError: string | null };
 
@@ -128,6 +138,7 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   remoteWorktreeHost: '',
   agentHost: '',
   backendType: '',
+  globalBackendKey: '',
   workerAgent: '',
   reviewers: [],
   submitError: null,
@@ -143,6 +154,7 @@ const taskDraftSchema = z.object({
   remoteWorktreeHost: z.string().default(''),
   agentHost: z.string(),
   backendType: z.string(),
+  globalBackendKey: z.string().default(''),
   workerAgent: z.string(),
   reviewers: z.array(z.object({ name: z.string(), backend: z.string() })).max(MAX_REVIEWER_ROWS),
   submitError: z.null(),
@@ -192,6 +204,9 @@ function createTaskDialogReducer(
         ...state,
         remoteWorktreeHost: action.remoteWorktreeHost,
         createWorktree: action.remoteWorktreeHost ? false : state.createWorktree,
+        // Only offered while no global backend is in effect; a remembered but
+        // unavailable one must not silently come back and drop this choice.
+        globalBackendKey: action.remoteWorktreeHost ? '' : state.globalBackendKey,
         submitError: null,
       };
     // The daemon that runs the AI changed; the remote host may now be that
@@ -199,8 +214,25 @@ function createTaskDialogReducer(
     case 'set-agent-host':
       return { ...state, agentHost: action.agentHost, backendType: '', remoteWorktreeHost: '', submitError: null };
     case 'set-backend':
-      return { ...state, backendType: action.backendType, submitError: null };
+      return { ...state, backendType: action.backendType, globalBackendKey: '', submitError: null };
+    // A global backend runs the AI elsewhere, so the 0038 remote worktree and
+    // agent groups (both unsupported with it) are dropped; worktree stays.
+    case 'set-global-backend':
+      return {
+        ...state,
+        globalBackendKey: action.globalBackendKey,
+        remoteWorktreeHost: '',
+        workerAgent: '',
+        reviewers: [],
+        submitError: null,
+      };
+    // Same for agent groups, which a global backend does not support.
     case 'set-worker-agent':
+      return {
+        ...reduceAgentGroup(state, action),
+        globalBackendKey: action.workerAgent ? '' : state.globalBackendKey,
+        submitError: null,
+      };
     case 'add-reviewer':
     case 'remove-reviewer':
     case 'set-reviewer-name':
@@ -250,6 +282,7 @@ export function CreateTaskDialog({
     remoteWorktreeHost: requestedRemoteWorktreeHost,
     agentHost: requestedAgentHost,
     backendType: requestedBackendType,
+    globalBackendKey: requestedGlobalBackendKey,
     workerAgent,
     reviewers,
     submitError,
@@ -261,6 +294,12 @@ export function CreateTaskDialog({
   const projects = useProjectsStore((state) => state.projects);
   const agents = useAgentsStore((state) => state.agents);
   const daemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
+  const globalBackends = useGlobalAiBackendsStore((state) => state.backends);
+  const globalBackendsHydrated = useGlobalAiBackendsStore((state) => state.hydrated);
+  const hydrateGlobalBackends = useGlobalAiBackendsStore((state) => state.hydrate);
+  useEffect(() => {
+    if (open && !globalBackendsHydrated) void hydrateGlobalBackends();
+  }, [open, globalBackendsHydrated, hydrateGlobalBackends]);
   // Archived (hidden) projects are excluded: hiding a project in the Project
   // List archives it, so it must not be offered as a target for new tasks.
   const selectableProjects = excludeArchivedProjects(projects)
@@ -359,7 +398,40 @@ export function CreateTaskDialog({
     });
   }, [currentGroup, isMergedGroup, mergedGroupDaemonOptions, projectId]);
   const remoteWorktreeBlockedByAgents = Boolean(workerAgent.trim());
-  const canUseRemoteWorktree = remoteWorktreeOptions.length > 0 && !remoteWorktreeBlockedByAgents;
+  // RFC 0041: global backends from settings, for a project bound to a daemon.
+  // The project's own daemon is not listed (its backends already are); the
+  // rest are shown greyed out with the reason when they cannot run now.
+  const globalBackendOptions = useMemo(() => {
+    const codeHost = (isMergedGroup || isBoundProject) ? boundDaemonHost : null;
+    if (!codeHost) return [];
+    const codeAgent = daemons.find((daemon) => daemon.host === codeHost) ?? null;
+    return globalBackends
+      .filter((entry) => entry.host !== codeHost)
+      .map((entry) => {
+        const agent = daemons.find((daemon) => daemon.host === entry.host && !daemon.shared) ?? null;
+        const disabledReason = !agent
+          ? `${entry.host} is offline`
+          : !codeAgent
+            ? `${codeHost} is offline`
+            : !(agent.supportedBackends ?? []).includes(entry.backend)
+              ? `${entry.backend} is not available on ${entry.host}`
+              : !supportsRemoteWorktree(codeAgent.capabilities)
+                ? `${codeHost} does not support conductor remote; upgrade its daemon`
+                : null;
+        return {
+          key: globalAiBackendKey(entry),
+          entry,
+          label: `${entry.backend} @ ${entry.host}`,
+          disabledReason,
+        };
+      });
+  }, [boundDaemonHost, daemons, globalBackends, isBoundProject, isMergedGroup]);
+  const selectedGlobalBackend = globalBackendOptions.find(
+    (option) => option.key === requestedGlobalBackendKey && !option.disabledReason,
+  ) ?? null;
+  const canUseRemoteWorktree = remoteWorktreeOptions.length > 0
+    && !remoteWorktreeBlockedByAgents
+    && !selectedGlobalBackend;
   const remoteWorktreeHost = canUseRemoteWorktree
     && remoteWorktreeOptions.some((option) => option.host === requestedRemoteWorktreeHost)
     ? requestedRemoteWorktreeHost
@@ -454,7 +526,7 @@ export function CreateTaskDialog({
     }
     // RFC 0033: assemble the multi-agent group.
     const trimmedInitialContent = initialContent.trim();
-    const agents = buildAgentGroupRequest({ workerAgent, reviewers });
+    const agents = selectedGlobalBackend ? null : buildAgentGroupRequest({ workerAgent, reviewers });
 
     setIsSubmitting(true);
     dispatch({ type: 'set-submit-error', submitError: null });
@@ -463,8 +535,15 @@ export function CreateTaskDialog({
         title: resolvedTitle,
         projectId: projectId || undefined,
         taskType: 'ai_task',
-        agentHost: agentHost || undefined,
-        backendType: backendType || undefined,
+        ...(selectedGlobalBackend
+          ? {
+            globalBackend: selectedGlobalBackend.entry,
+            backendType: selectedGlobalBackend.entry.backend,
+          }
+          : {
+            agentHost: agentHost || undefined,
+            backendType: backendType || undefined,
+          }),
         ...(agents ? { agents } : {}),
         ...(trimmedInitialContent ? { initialContent: trimmedInitialContent } : {}),
         ...(persistent ? { metadata: { persistent: { enabled: true } } } : {}),
@@ -670,21 +749,50 @@ export function CreateTaskDialog({
                         : 'Choose a daemon to see backend options.'}
                     </HelpTip>
                   </div>
-                  {availableBackends.length > 0 ? (
-                    <select
-                      id="create-task-backend"
-                      value={backendType}
-                      onChange={(e) => {
-                        dispatch({ type: 'set-backend', backendType: e.target.value });
-                      }}
-                      className="webapp-input w-full"
-                    >
-                      {availableBackends.map((backend) => (
-                        <option key={backend} value={backend}>
-                          {backend}
-                        </option>
-                      ))}
-                    </select>
+                  {availableBackends.length > 0 || globalBackendOptions.some((option) => !option.disabledReason) ? (
+                    <>
+                      <select
+                        id="create-task-backend"
+                        value={selectedGlobalBackend ? `global:${selectedGlobalBackend.key}` : backendType}
+                        onChange={(e) => {
+                          const { value } = e.target;
+                          if (value.startsWith('global:')) {
+                            dispatch({ type: 'set-global-backend', globalBackendKey: value.slice('global:'.length) });
+                          } else {
+                            dispatch({ type: 'set-backend', backendType: value });
+                          }
+                        }}
+                        className="webapp-input w-full"
+                      >
+                        {availableBackends.length === 0 && !selectedGlobalBackend ? (
+                          <option value="" disabled>Select a backend</option>
+                        ) : null}
+                        {availableBackends.map((backend) => (
+                          <option key={backend} value={backend}>
+                            {backend}
+                          </option>
+                        ))}
+                        {globalBackendOptions.length > 0 ? (
+                          <optgroup label="Global">
+                            {globalBackendOptions.map((option) => (
+                              <option
+                                key={option.key}
+                                value={`global:${option.key}`}
+                                disabled={Boolean(option.disabledReason)}
+                                title={option.disabledReason ?? undefined}
+                              >
+                                {option.disabledReason ? `${option.label} — ${option.disabledReason}` : option.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : null}
+                      </select>
+                      {selectedGlobalBackend ? (
+                        <p className="mt-1 text-xs text-muted">
+                          AI runs on {selectedGlobalBackend.entry.host} and works on {agentHost} through conductor remote.
+                        </p>
+                      ) : null}
+                    </>
                   ) : (
                     <InlineNotice variant="warning">
                       This daemon is online, but it does not advertise any AI backends yet. You can still switch daemons before creating the task.
@@ -766,14 +874,16 @@ export function CreateTaskDialog({
                         </HelpTip>
                       </div>
                       <p className="mt-1 text-xs text-muted">
-                        Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.
+                        {selectedGlobalBackend
+                          ? `The AI creates the branch on ${agentHost}, where the code lives; it is cleaned up when the task is deleted or archived.`
+                          : 'Each new task from the project gets its own branch. Tasks continued from an existing worktree reuse that same branch.'}
                       </p>
                     </div>
                   </label>
                 </div>
               ) : null}
 
-              {remoteWorktreeOptions.length > 0 ? (
+              {remoteWorktreeOptions.length > 0 && !selectedGlobalBackend ? (
                 <div className="rounded-xl border border-border p-4">
                   <div className="flex items-center gap-2">
                     <label htmlFor="create-task-remote-worktree" className="text-sm font-medium text-ink">
@@ -813,7 +923,7 @@ export function CreateTaskDialog({
               ) : null}
 
 
-              {hasEligibleDaemon ? (
+              {hasEligibleDaemon && !selectedGlobalBackend ? (
                 <div className="mt-4 border-t border-border pt-4">
                   <div className="mb-2 flex items-center gap-2">
                     <label htmlFor="create-task-worker-agent" className="block text-sm font-medium">

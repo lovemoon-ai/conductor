@@ -25,6 +25,14 @@ const TASK_CARD_GROUPS_PREFERENCES_KEY = "task-card-groups:v1";
 const TASK_CARD_GROUPS_WRITE_RETRIES = 4;
 const PROJECT_CARD_GROUPS_PREFERENCES_KEY = "project-card-groups:v1";
 const PROJECT_CARD_GROUPS_WRITE_RETRIES = 4;
+const GLOBAL_AI_BACKENDS_PREFERENCES_KEY = "global_ai_backends";
+export const MAX_GLOBAL_AI_BACKENDS = 32;
+
+/** RFC 0041: a daemon's AI backend that any project may run its tasks on. */
+export type GlobalAiBackend = {
+  host: string;
+  backend: string;
+};
 
 export type TaskListPreferences = {
   tasksRunningOnly: boolean;
@@ -632,4 +640,77 @@ export async function setProjectCardGroupsScope(
   }
 
   throw new ProjectCardGroupsPreferencesConflictError();
+}
+
+const readGlobalAiBackendEntry = (value: unknown): GlobalAiBackend | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const host = typeof record.host === "string" ? record.host.trim() : "";
+  const backend = typeof record.backend === "string" ? record.backend.trim().toLowerCase() : "";
+  return host && backend ? { host, backend } : null;
+};
+
+/** Accepts `{ backends: [...] }` or a bare array; drops malformed entries and duplicates. */
+export const normalizeGlobalAiBackends = (value: unknown): GlobalAiBackend[] => {
+  const list =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>).backends
+      : value;
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const result: GlobalAiBackend[] = [];
+  for (const item of list) {
+    const entry = readGlobalAiBackendEntry(item);
+    if (!entry) continue;
+    const key = `${entry.host}\u0000${entry.backend}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(entry);
+    if (result.length >= MAX_GLOBAL_AI_BACKENDS) break;
+  }
+  return result;
+};
+
+export async function getGlobalAiBackends(userId: string): Promise<GlobalAiBackend[]> {
+  let rows: RawPreferenceRow[];
+  try {
+    rows = await db.$queryRaw<RawPreferenceRow[]>`
+      SELECT "value"
+      FROM "user_preferences"
+      WHERE "user_id" = ${userId} AND "key" = ${GLOBAL_AI_BACKENDS_PREFERENCES_KEY}
+      LIMIT 1
+    `;
+  } catch (error) {
+    if (!isMissingUserPreferencesTableError(error)) throw error;
+    warnMissingUserPreferencesSchema("global-ai-backends.get", error);
+    return [];
+  }
+  const raw = rows[0]?.value;
+  if (!raw) return [];
+  try {
+    return normalizeGlobalAiBackends(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+export async function setGlobalAiBackends(
+  userId: string,
+  backends: GlobalAiBackend[],
+): Promise<GlobalAiBackend[]> {
+  const normalized = normalizeGlobalAiBackends(backends);
+  try {
+    await db.$executeRaw`
+      INSERT INTO "user_preferences" ("id", "user_id", "key", "value", "updated_at")
+      VALUES (${randomUUID()}, ${userId}, ${GLOBAL_AI_BACKENDS_PREFERENCES_KEY}, ${JSON.stringify({ backends: normalized })}, CURRENT_TIMESTAMP)
+      ON CONFLICT ("user_id", "key") DO UPDATE SET
+        "value" = excluded."value",
+        "updated_at" = CURRENT_TIMESTAMP
+    `;
+  } catch (error) {
+    if (!isMissingUserPreferencesTableError(error)) throw error;
+    warnMissingUserPreferencesSchema("global-ai-backends.set", error);
+    throw new UserPreferencesSchemaUnavailableError();
+  }
+  return normalized;
 }

@@ -14,6 +14,7 @@ import {
   buildInitialWorktreeBranchName,
   resolveTaskWorktreeCwdFromLaunchConfig,
   toRemoteWorktreeCleanupLaunchConfig,
+  type RemoteWorkspaceLaunchConfig,
   type RemoteWorktreeLaunchConfig,
 } from "./worktree";
 
@@ -61,18 +62,9 @@ export const resolveRemoteWorktreeTarget = async (args: {
       status: 409,
     };
   }
-  const agent = args.connectedAgents.find((candidate) => candidate.host === requestedHost);
-  if (!agent) {
-    return { error: `Remote worktree daemon ${requestedHost} is offline`, status: 409 };
-  }
-  const missing = REMOTE_WORKTREE_CAPABILITIES.filter(
-    (capability) => !agent.capabilities.includes(capability),
-  );
-  if (missing.length > 0) {
-    return {
-      error: `Daemon ${requestedHost} does not support ${missing.join(", ")}; upgrade it or enable the capability`,
-      status: 409,
-    };
+  const daemonError = checkRemoteDaemon(requestedHost, args.connectedAgents);
+  if (daemonError) {
+    return daemonError;
   }
 
   // The same repository on the other daemon is its own Project row; the UI
@@ -100,29 +92,82 @@ export const resolveRemoteWorktreeTarget = async (args: {
       status: 409,
     };
   }
-  const repoRoot = normalizeOptionalString(siblingFields.repoRoot);
-  const workspacePath = normalizeOptionalString(siblingFields.workspacePath);
-  if (!repoRoot || !workspacePath) {
+  const target = resolveRemoteTarget({ ...siblingFields, daemonHost: requestedHost });
+  if ("error" in target) {
+    return target;
+  }
+  return { remoteWorktree: buildRemoteWorktreeForTarget(target) };
+};
+
+/**
+ * Online + advertises everything `conductor remote` needs. Shared by RFC 0038
+ * and RFC 0041 (global AI backend), whose target is the task's own project.
+ */
+export const checkRemoteDaemon = (
+  host: string,
+  connectedAgents: Array<{ host: string; capabilities: string[] }>,
+): { error: string; status: number } | null => {
+  const agent = connectedAgents.find((candidate) => candidate.host === host);
+  if (!agent) {
+    return { error: `Remote worktree daemon ${host} is offline`, status: 409 };
+  }
+  const missing = REMOTE_WORKTREE_CAPABILITIES.filter(
+    (capability) => !agent.capabilities.includes(capability),
+  );
+  if (missing.length > 0) {
     return {
-      error: `Project "${project.name}" on daemon ${requestedHost} is not a git repository`,
+      error: `Daemon ${host} does not support ${missing.join(", ")}; upgrade it or enable the capability`,
       status: 409,
     };
   }
+  return null;
+};
 
+type RemoteTargetProject = {
+  id: string;
+  name: string;
+  daemonHost?: string | null;
+  workspacePath?: string | null;
+  repoRoot?: string | null;
+  worktreeBranch?: string | null;
+  lastCommit?: string | null;
+};
+
+export type RemoteTarget = RemoteWorkspaceLaunchConfig & { baseRef: string };
+
+/** The on-disk facts of a git-backed project row on another daemon. */
+export const resolveRemoteTarget = (
+  project: RemoteTargetProject,
+): RemoteTarget | { error: string; status: number } => {
+  const host = normalizeOptionalString(project.daemonHost);
+  const repoRoot = normalizeOptionalString(project.repoRoot);
+  const workspacePath = normalizeOptionalString(project.workspacePath);
+  if (!host || !repoRoot || !workspacePath) {
+    return {
+      error: `Project "${project.name}"${host ? ` on daemon ${host}` : ""} is not a git repository`,
+      status: 409,
+    };
+  }
   return {
-    remoteWorktree: {
-      host: requestedHost,
-      projectId: siblingFields.id,
-      repoRoot,
-      workspacePath,
-      branch: buildInitialWorktreeBranchName(),
-      baseRef:
-        normalizeOptionalString(siblingFields.worktreeBranch) ??
-        normalizeOptionalString(siblingFields.lastCommit) ??
-        "HEAD",
-    },
+    host,
+    projectId: project.id,
+    repoRoot,
+    workspacePath,
+    baseRef:
+      normalizeOptionalString(project.worktreeBranch) ??
+      normalizeOptionalString(project.lastCommit) ??
+      "HEAD",
   };
 };
+
+export const buildRemoteWorktreeForTarget = (target: RemoteTarget): RemoteWorktreeLaunchConfig => ({
+  host: target.host,
+  projectId: target.projectId,
+  repoRoot: target.repoRoot,
+  workspacePath: target.workspacePath,
+  branch: buildInitialWorktreeBranchName(),
+  baseRef: target.baseRef,
+});
 
 /** On-disk locations the AI must use, derived with the same math the daemons use. */
 export const resolveRemoteWorktreePaths = (remote: RemoteWorktreeLaunchConfig) => {
@@ -132,6 +177,28 @@ export const resolveRemoteWorktreePaths = (remote: RemoteWorktreeLaunchConfig) =
     workDir: resolveTaskWorktreeCwdFromLaunchConfig(translated)!,
   };
 };
+
+/** How to drive another daemon over `conductor remote`; identical for both modes. */
+const buildRemoteOperatingRules = (h: string): string[] => [
+  "",
+  "How to operate on the remote workspace",
+  `- Run every file read/write, git, build and test command through: conductor remote exec -t ${h} -w <dir> -- <argv>`,
+  `  Commands run without a shell. For pipes, redirects or multi-step scripts pass ONE script string: conductor remote exec -t ${h} -w <dir> -- bash -lc "$script"`,
+  "  Start multi-step write/build scripts with `set -euo pipefail`, or a failed middle step still exits 0; leave it off read-only `... | head` queries, which it turns into exit 141.",
+  "- Output keeps only the LAST 64 000 characters. Read files with `sed -n '1,200p' <file>` or `rg`, never a bare `cat` of a large file.",
+  `- Copy files with: conductor remote cp <local> ${h}:<remote>   (or the reverse).`,
+  `- Commands longer than 60 s: add --timeout 20m, or run them as \`nohup ... > log 2>&1 &\` and poll the log. If the CLI is interrupted it prints a run id; resume with: conductor remote wait -t ${h} <runId>`,
+  "- Keep at most 6 remote commands in flight at once.",
+  "- Never run `conductor` itself through remote exec (the remote strips CONDUCTOR_* variables). `conductor task`, `conductor issue` and `conductor send-file` run locally only.",
+];
+
+const buildLocalCloneNote = (localWorkspacePath: string | null): string[] =>
+  localWorkspacePath
+    ? [
+        `The directory you are running in (${localWorkspacePath}) is a READ-ONLY copy of the same repository on this machine. ` +
+          `Grep and read it to orient yourself, but never edit files here, and never read a file locally once you have changed it remotely — the copies diverge.`,
+      ]
+    : [];
 
 /**
  * The operating protocol, prepended to the user's first message (the one
@@ -155,24 +222,8 @@ export function buildRemoteWorktreeBootstrap(params: {
     `  branch to create: ${remote.branch} (from ${remote.baseRef})`,
     `  worktree root:    ${worktreeRoot}`,
     `  work dir:         ${workDir}`,
-  ];
-  if (localWorkspacePath) {
-    lines.push(
-      `The directory you are running in (${localWorkspacePath}) is a READ-ONLY copy of the same repository on this machine. ` +
-        `Grep and read it to orient yourself, but never edit files here, and never read a file locally once you have changed it remotely — the copies diverge.`,
-    );
-  }
-  lines.push(
-    "",
-    "How to operate on the remote workspace",
-    `- Run every file read/write, git, build and test command through: conductor remote exec -t ${h} -w <dir> -- <argv>`,
-    `  Commands run without a shell. For pipes, redirects or multi-step scripts pass ONE script string: conductor remote exec -t ${h} -w <dir> -- bash -lc "$script"`,
-    "  Start multi-step write/build scripts with `set -euo pipefail`, or a failed middle step still exits 0; leave it off read-only `... | head` queries, which it turns into exit 141.",
-    "- Output keeps only the LAST 64 000 characters. Read files with `sed -n '1,200p' <file>` or `rg`, never a bare `cat` of a large file.",
-    `- Copy files with: conductor remote cp <local> ${h}:<remote>   (or the reverse).`,
-    `- Commands longer than 60 s: add --timeout 20m, or run them as \`nohup ... > log 2>&1 &\` and poll the log. If the CLI is interrupted it prints a run id; resume with: conductor remote wait -t ${h} <runId>`,
-    "- Keep at most 6 remote commands in flight at once.",
-    "- Never run `conductor` itself through remote exec (the remote strips CONDUCTOR_* variables). `conductor task`, `conductor issue` and `conductor send-file` run locally only.",
+    ...buildLocalCloneNote(localWorkspacePath),
+    ...buildRemoteOperatingRules(h),
     "",
     "First steps, in this order, before any other work",
     `1. Sync the base branch, with -w ${remote.repoRoot}: git fetch --all --prune; then, if \`git branch --show-current\` prints "${remote.baseRef}" and \`git status --porcelain\` is empty: git merge --ff-only @{u}`,
@@ -182,7 +233,33 @@ export function buildRemoteWorktreeBootstrap(params: {
     `4. From now on use -w ${workDir} for every command. Read the repository's CLAUDE.md / AGENTS.md there first.`,
     "",
     `When you finish, commit your work on branch ${remote.branch} in the remote worktree. Do not remove the worktree; conductor cleans it up.`,
-  );
+  ];
+
+  return appendTaskPrompt(lines.join("\n"), taskPrompt);
+}
+
+/**
+ * RFC 0041 direct mode: the AI edits the remote project directory in place,
+ * exactly like a local task without a worktree.
+ */
+export function buildRemoteWorkspaceBootstrap(params: {
+  remoteWorkspace: RemoteWorkspaceLaunchConfig;
+  localWorkspacePath: string | null;
+  taskPrompt?: string | null;
+}): string {
+  const { remoteWorkspace: remote, localWorkspacePath, taskPrompt } = params;
+  const h = remote.host;
+  const lines: string[] = [
+    `[conductor:remote-workspace] Your workspace for this task is NOT on this machine. It lives on daemon "${h}":`,
+    `  repo root: ${remote.repoRoot}`,
+    `  work dir:  ${remote.workspacePath}`,
+    ...buildLocalCloneNote(localWorkspacePath),
+    ...buildRemoteOperatingRules(h),
+    "",
+    "First steps, before any other work",
+    `1. Use -w ${remote.workspacePath} for every command. Read the repository's CLAUDE.md / AGENTS.md there first.`,
+    "2. Run `git status` and `git branch --show-current` to see the current state. This is the user's own checkout: do not switch branches, stash, reset or discard changes you did not make unless the task asks for it.",
+  ];
 
   return appendTaskPrompt(lines.join("\n"), taskPrompt);
 }

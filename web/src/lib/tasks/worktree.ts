@@ -42,6 +42,19 @@ export type RemoteWorktreeLaunchConfig = {
   baseRef: string;
 };
 
+/**
+ * RFC 0041: the AI works directly in another daemon's project directory (no
+ * worktree). Deliberately NOT a `remoteWorktree` variant: every cleanup path
+ * keys on `remoteWorktree` and deletes by path, so a separate key guarantees
+ * deleting the task can never touch the project directory itself.
+ */
+export type RemoteWorkspaceLaunchConfig = {
+  host: string;
+  projectId: string;
+  repoRoot: string;
+  workspacePath: string;
+};
+
 const TASK_WORKTREE_CLEANUP_TIMEOUT_MS = 15_000;
 
 const isWindowsStylePath = (value: string): boolean =>
@@ -139,6 +152,27 @@ export const parseRemoteWorktreeLaunchConfig = (
     baseRef:
       normalizeOptionalString(raw.baseRef) ?? normalizeOptionalString(raw.base_ref) ?? "HEAD",
   };
+};
+
+export const parseRemoteWorkspaceLaunchConfig = (
+  launchConfig: unknown,
+): RemoteWorkspaceLaunchConfig | null => {
+  const normalized = parseJsonObject(launchConfig);
+  const raw = parseJsonObject(normalized?.remoteWorkspace ?? normalized?.remote_workspace);
+  if (!raw) {
+    return null;
+  }
+  const host = normalizeOptionalString(raw.host);
+  const projectId =
+    normalizeOptionalString(raw.projectId) ?? normalizeOptionalString(raw.project_id);
+  const repoRoot =
+    normalizeOptionalString(raw.repoRoot) ?? normalizeOptionalString(raw.repo_root);
+  const workspacePath =
+    normalizeOptionalString(raw.workspacePath) ?? normalizeOptionalString(raw.workspace_path);
+  if (!host || !projectId || !repoRoot || !workspacePath) {
+    return null;
+  }
+  return { host, projectId, repoRoot, workspacePath };
 };
 
 /**
@@ -600,11 +634,16 @@ export const inheritTaskWorktreeLaunchConfig = (
     // stays valid for the successor wherever the AI runs. `cwd` is the local
     // clone the AI reads from; keep it when present.
     const remote = parseRemoteWorktreeLaunchConfig(launchConfig);
-    if (!remote) {
+    // RFC 0041: a remote project directory is just as machine-independent.
+    const remoteWorkspace = remote ? null : parseRemoteWorkspaceLaunchConfig(launchConfig);
+    if (!remote && !remoteWorkspace) {
       return null;
     }
     const cwd = normalizeOptionalString(parseJsonObject(launchConfig)?.cwd);
-    return { remoteWorktree: remote, ...(cwd ? { cwd } : {}) };
+    return {
+      ...(remote ? { remoteWorktree: remote } : { remoteWorkspace }),
+      ...(cwd ? { cwd } : {}),
+    };
   }
 
   return {

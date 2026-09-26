@@ -6,6 +6,7 @@ import * as authService from "@/lib/auth/service";
 
 const countActiveScheduledMessagesForTasksMock = vi.hoisted(() => vi.fn());
 const mergeRelatedTaskCardGroupMock = vi.hoisted(() => vi.fn());
+const getGlobalAiBackendsMock = vi.hoisted(() => vi.fn());
 const resolveProjectAgentsRegistryMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/realtime/hub", () => ({
@@ -36,6 +37,7 @@ vi.mock("@/lib/tasks/scheduled-messages", () => ({
 
 vi.mock("@/lib/user-preferences", () => ({
   mergeRelatedTaskCardGroup: mergeRelatedTaskCardGroupMock,
+  getGlobalAiBackends: getGlobalAiBackendsMock,
 }));
 
 vi.mock("@/lib/projects/daemon-binding", () => ({
@@ -68,6 +70,9 @@ vi.mock("@/lib/db", () => ({
     },
     defaultProject: {
       findUnique: vi.fn(),
+    },
+    daemonShare: {
+      findMany: vi.fn().mockResolvedValue([]),
     },
     message: {
       create: vi.fn(),
@@ -3740,6 +3745,229 @@ describe("/api/tasks", () => {
         expect(response.status).toBe(409);
         expect((await extractJson(response)).error).toBe('Project "conductor" is not bound on daemon daemon-b');
         expect(db.task.create).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("globalBackend (RFC 0041)", () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      // The project the user creates the task in: its code lives on daemon-b.
+      const projectB = {
+        id: "proj-b",
+        name: "conductor",
+        userId: "user-1",
+        daemonHost: "daemon-b",
+        workspacePath: "/home/b/conductor",
+        repoRoot: "/home/b/conductor",
+        worktreeBranch: "develop",
+        lastCommit: "abc1234",
+        gitRemoteUrl: "github.com/acme/conductor",
+      };
+      // The same repository bound on the AI daemon (daemon-a).
+      const projectA = {
+        id: "proj-a",
+        name: "conductor",
+        userId: "user-1",
+        daemonHost: "daemon-a",
+        workspacePath: "/Users/a/conductor",
+        repoRoot: "/Users/a/conductor",
+        worktreeBranch: "main",
+        gitRemoteUrl: "github.com/acme/conductor",
+      };
+      const defaultProject = {
+        id: "proj-default",
+        name: "Default",
+        userId: "user-1",
+        daemonHost: null,
+        workspacePath: null,
+        repoRoot: null,
+      };
+      const bothOnline = [
+        { id: "a", host: "daemon-a", supportedBackends: ["claude", "codex"], capabilities: [] },
+        { id: "b", host: "daemon-b", supportedBackends: [], capabilities: ["remote_exec", "remote_file"] },
+      ];
+      let siblingProject: Record<string, unknown> | null = projectA;
+
+      const postGlobal = (extra: Record<string, unknown> = {}) =>
+        POST(
+          createMockRequest({
+            method: "POST",
+            token: createTestToken("user-1"),
+            body: {
+              project_id: "proj-b",
+              title: "Fix",
+              initial_content: "Fix the flaky test",
+              agent_host: "daemon-b",
+              global_backend: { host: "daemon-a", backend: "claude" },
+              ...extra,
+            },
+          }),
+        );
+      const createdData = () => vi.mocked(db.task.create).mock.calls[0][0].data as any;
+
+      beforeEach(() => {
+        siblingProject = projectA;
+        setDefaultProjectId("proj-default");
+        vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+        vi.spyOn(authService, "ensureDefaultProject").mockResolvedValue(defaultProject as any);
+        getGlobalAiBackendsMock.mockResolvedValue([{ host: "daemon-a", backend: "claude" }]);
+        vi.mocked(db.daemonShare.findMany).mockResolvedValue([]);
+        mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) =>
+          where?.daemonHost === "daemon-a"
+            ? (siblingProject as any)
+            : where?.id === "proj-b"
+              ? (projectB as any)
+              : null,
+        );
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(bothOnline as any);
+        mockPrismaQuery(db.task.create).mockImplementation(async ({ data }: any) => ({
+          ...data,
+          secondProjectId: data.secondProjectId ?? null,
+          issueId: null,
+          taskType: "ai_task",
+          createdAt: new Date("2026-09-26T00:00:00.000Z"),
+          updatedAt: new Date("2026-09-26T00:00:00.000Z"),
+        }) as any);
+        vi.mocked(db.message.create).mockResolvedValue({
+          id: "message-1",
+          createdAt: new Date("2026-09-26T00:00:01.000Z"),
+        } as any);
+      });
+
+      it("files the task on the AI daemon's copy of the project and shows it under the code's project", async () => {
+        const response = await postGlobal({ launch_config: { worktree: true } });
+        expect(response.status).toBe(200);
+
+        const created = createdData();
+        expect(created.projectId).toBe("proj-a");
+        expect(created.secondProjectId).toBe("proj-b");
+        expect(created.agentHost).toBe("daemon-a");
+        expect(created.backendType).toBe("claude");
+        const launchConfig = JSON.parse(created.launchConfig);
+        // The worktree belongs on daemon-b; daemon-a must not create one locally.
+        expect(launchConfig.worktree).toBeUndefined();
+        expect(launchConfig.cwd).toBe("/Users/a/conductor");
+        expect(launchConfig.remoteWorkspace).toBeUndefined();
+        expect(launchConfig.remoteWorktree).toMatchObject({
+          host: "daemon-b",
+          projectId: "proj-b",
+          repoRoot: "/home/b/conductor",
+          workspacePath: "/home/b/conductor",
+          baseRef: "develop",
+        });
+        expect(JSON.parse(created.metadata).globalBackend).toEqual({ host: "daemon-a", backend: "claude" });
+        const firstMessage = vi.mocked(db.message.create).mock.calls[0][0].data as any;
+        expect(firstMessage.content).toContain("[conductor:remote-worktree]");
+        expect(firstMessage.content).toContain("Fix the flaky test");
+      });
+
+      it("works directly in the code's project directory when no worktree is requested", async () => {
+        siblingProject = null;
+        const response = await postGlobal();
+        expect(response.status).toBe(200);
+
+        const created = createdData();
+        expect(created.projectId).toBe("proj-default");
+        expect(created.secondProjectId).toBe("proj-b");
+        expect(created.agentHost).toBe("daemon-a");
+        const launchConfig = JSON.parse(created.launchConfig);
+        expect(launchConfig.cwd).toBeUndefined();
+        expect(launchConfig.remoteWorktree).toBeUndefined();
+        expect(launchConfig.remoteWorkspace).toEqual({
+          host: "daemon-b",
+          projectId: "proj-b",
+          repoRoot: "/home/b/conductor",
+          workspacePath: "/home/b/conductor",
+        });
+        const firstMessage = vi.mocked(db.message.create).mock.calls[0][0].data as any;
+        expect(firstMessage.content).toContain("[conductor:remote-workspace]");
+        expect(firstMessage.content).not.toContain("git worktree add");
+        expect(firstMessage.content).not.toContain("READ-ONLY copy");
+      });
+
+      it("treats a global backend on the project's own daemon as an ordinary local task", async () => {
+        getGlobalAiBackendsMock.mockResolvedValue([{ host: "daemon-b", backend: "claude" }]);
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          bothOnline[0],
+          { ...bothOnline[1], supportedBackends: ["claude"] },
+        ] as any);
+        const response = await postGlobal({
+          global_backend: { host: "daemon-b", backend: "claude" },
+          launch_config: { worktree: true },
+        });
+        expect(response.status).toBe(200);
+        const created = createdData();
+        expect(created.projectId).toBe("proj-b");
+        expect(created.secondProjectId).toBeUndefined();
+        expect(created.agentHost).toBe("daemon-b");
+        const launchConfig = JSON.parse(created.launchConfig);
+        expect(launchConfig.worktree).toBe(true);
+        expect(launchConfig.remoteWorktree).toBeUndefined();
+        expect(launchConfig.remoteWorkspace).toBeUndefined();
+      });
+
+      it("rejects a backend that is not in the user's global AI backends", async () => {
+        getGlobalAiBackendsMock.mockResolvedValue([{ host: "daemon-a", backend: "codex" }]);
+        const response = await postGlobal();
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toBe("claude @ daemon-a is not one of your global AI backends");
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("rejects when the code's daemon cannot be driven over conductor remote", async () => {
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          bothOnline[0],
+          { ...bothOnline[1], capabilities: ["remote_exec"] },
+        ] as any);
+        const response = await postGlobal();
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/does not support remote_file/);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("rejects when the AI daemon is offline", async () => {
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([bothOnline[1]] as any);
+        const response = await postGlobal();
+        expect(response.status).toBe(409);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("refuses daemons shared by someone else", async () => {
+        vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "daemon-a" }] as any);
+        const response = await postGlobal();
+        expect(response.status).toBe(403);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("rejects combining with remoteWorktree, agent groups, a mismatched backend, or a PTY task", async () => {
+        let response = await postGlobal({ launch_config: { remoteWorktree: { host: "daemon-b" } } });
+        expect(response.status).toBe(409);
+        response = await postGlobal({ agents: ["feature-dev"] });
+        expect(response.status).toBe(409);
+        response = await postGlobal({ backend_type: "codex" });
+        expect(response.status).toBe(400);
+        response = await postGlobal({ task_type: "pty_task" });
+        expect(response.status).toBe(400);
+        response = await postGlobal({ global_backend: { host: "daemon-a" } });
+        expect(response.status).toBe(400);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("never trusts a caller-supplied remoteWorkspace", async () => {
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          bothOnline[0],
+          { ...bothOnline[1], supportedBackends: ["claude"] },
+        ] as any);
+        const response = await postGlobal({
+          global_backend: undefined,
+          backend_type: "claude",
+          launch_config: {
+            remoteWorkspace: { host: "daemon-a", projectId: "x", repoRoot: "/evil", workspacePath: "/evil" },
+          },
+        });
+        expect(response.status).toBe(200);
+        const created = createdData();
+        expect(created.agentHost).toBe("daemon-b");
+        expect(JSON.parse(created.launchConfig).remoteWorkspace).toBeUndefined();
       });
     });
   });

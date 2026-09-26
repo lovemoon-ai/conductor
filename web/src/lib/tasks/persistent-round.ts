@@ -13,7 +13,13 @@ import {
   withPersistentState,
 } from "@/lib/tasks/persistent-task";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
-import { buildRemoteWorktreeBootstrap } from "@/lib/tasks/remote-worktree";
+import {
+  buildRemoteWorkspaceBootstrap,
+  buildRemoteWorktreeBootstrap,
+  buildRemoteWorktreeForTarget,
+  resolveRemoteTarget,
+} from "@/lib/tasks/remote-worktree";
+import { readTaskGlobalBackend } from "@/lib/tasks/global-backend";
 import { evaluateRuntimeHealth } from "@/lib/tasks/runtime-preflight";
 import {
   normalizeOptionalString,
@@ -25,6 +31,7 @@ import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from "@/lib/tasks/t
 import {
   buildTaskWorktreeLaunchConfig,
   inheritTaskWorktreeLaunchConfig,
+  parseRemoteWorkspaceLaunchConfig,
   parseRemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
@@ -200,9 +207,35 @@ export async function startPersistentRound(input: {
         }
       : {};
   const previousLaunchConfig = parseJsonObject(task.launchConfig);
+  const previousRemoteWorktree = parseRemoteWorktreeLaunchConfig(previousLaunchConfig);
+  const previousRemoteWorkspace = parseRemoteWorkspaceLaunchConfig(previousLaunchConfig);
+  // RFC 0041: a global-backend task's code lives on another daemon, so "new"
+  // and "none" mean a fresh worktree / the project directory over there.
+  const globalRemote = readTaskGlobalBackend(task.metadata)
+    ? previousRemoteWorktree ?? previousRemoteWorkspace
+    : null;
   let launchConfig: JsonObject;
   const worktreeMode = input.worktree ?? "inherit";
-  if (worktreeMode === "new") {
+  if (globalRemote && worktreeMode !== "inherit") {
+    const remoteWorkspace = {
+      host: globalRemote.host,
+      projectId: globalRemote.projectId,
+      repoRoot: globalRemote.repoRoot,
+      workspacePath: globalRemote.workspacePath,
+    };
+    if (worktreeMode === "new") {
+      const remoteProject = await db.project.findFirst({
+        where: { id: globalRemote.projectId, userId: input.userId },
+      });
+      const target = remoteProject ? resolveRemoteTarget(remoteProject) : null;
+      if (!target || "error" in target) {
+        return fail(409, target && "error" in target ? target.error : "The task's remote project no longer exists");
+      }
+      launchConfig = { ...projectCwdLaunchConfig, remoteWorktree: buildRemoteWorktreeForTarget(target) };
+    } else {
+      launchConfig = { ...projectCwdLaunchConfig, remoteWorkspace };
+    }
+  } else if (worktreeMode === "new") {
     if (!onProjectDaemon || !projectWorkspacePath || !projectRepoRoot) {
       return fail(409, "A new worktree requires the git-backed project daemon");
     }
@@ -225,8 +258,11 @@ export async function startPersistentRound(input: {
         : projectCwdLaunchConfig);
   } else {
     // Local paths only exist on the machine that ran the previous round.
-    const remoteWorktree = parseRemoteWorktreeLaunchConfig(previousLaunchConfig);
-    launchConfig = remoteWorktree ? { remoteWorktree } : projectCwdLaunchConfig;
+    launchConfig = previousRemoteWorktree
+      ? { remoteWorktree: previousRemoteWorktree }
+      : previousRemoteWorkspace
+        ? { remoteWorkspace: previousRemoteWorkspace }
+        : projectCwdLaunchConfig;
   }
 
   if (POSSIBLY_LIVE_TASK_STATUSES.has(status)) {
@@ -370,6 +406,9 @@ export async function startPersistentRound(input: {
     content,
   });
   const remoteWorktree = parseRemoteWorktreeLaunchConfig(launchConfig);
+  const remoteWorkspace = remoteWorktree ? null : parseRemoteWorkspaceLaunchConfig(launchConfig);
+  // Only a same-repository clone on this daemon is a read-only local copy.
+  const localClonePath = onProjectDaemon && projectRepoRoot ? projectWorkspacePath : null;
   await finalizeAiTaskCreation({
     userId: input.userId,
     projectId: task.projectId,
@@ -383,10 +422,16 @@ export async function startPersistentRound(input: {
     agentInitialContent: remoteWorktree
       ? buildRemoteWorktreeBootstrap({
           remoteWorktree,
-          localWorkspacePath: projectWorkspacePath,
+          localWorkspacePath: localClonePath,
           taskPrompt: roundPrompt,
         })
-      : roundPrompt,
+      : remoteWorkspace
+        ? buildRemoteWorkspaceBootstrap({
+            remoteWorkspace,
+            localWorkspacePath: localClonePath,
+            taskPrompt: roundPrompt,
+          })
+        : roundPrompt,
   });
 
   return { ok: true, task: updated };

@@ -9,6 +9,10 @@ import { useTasksStore } from '@/features/tasks';
 import { useRuntimeStore } from '@/features/realtime/runtime-store';
 import { useTerminalStore } from '@/features/terminal';
 import { useUserPreferencesStore } from '@/features/user-preferences/store';
+import {
+  normalizeGlobalAiBackends,
+  useGlobalAiBackendsStore,
+} from '@/features/user-preferences/global-ai-backends';
 import { normalizeCatchphrases, useCatchphrasesStore } from '@/features/catchphrases/store';
 import { useDailyReportsStore } from '@/features/daily-reports/store';
 import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
@@ -376,6 +380,10 @@ export function handleWSMessage(data: { type: string; payload: Record<string, un
     }
 
     case 'user_preference_update': {
+      if (payload.scope === 'global_ai_backends') {
+        useGlobalAiBackendsStore.getState().apply(normalizeGlobalAiBackends(payload.preferences));
+        break;
+      }
       const preferences = normalizeUserPreferencePayload(payload);
       if (preferences) {
         useUserPreferencesStore.getState().applyTaskListPreferences(preferences);

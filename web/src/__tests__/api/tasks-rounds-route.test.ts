@@ -54,6 +54,9 @@ vi.mock("@/lib/db", () => ({
     agentOutbox: {
       updateMany: vi.fn(),
     },
+    project: {
+      findFirst: vi.fn(),
+    },
     taskRuntimeState: {
       deleteMany: vi.fn(),
     },
@@ -271,6 +274,60 @@ describe("persistent task rounds API", () => {
         worktreeId: "task-1",
         worktreeBaseRef: "main",
         projectRepoRoot: "/repo",
+      });
+    });
+
+    describe("global AI backend task (RFC 0041)", () => {
+      const remoteWorkspace = {
+        host: "ubuntu",
+        projectId: "proj-ubuntu",
+        repoRoot: "/home/u/repo",
+        workspacePath: "/home/u/repo",
+      };
+      const useGlobalTask = () => {
+        const metadata = JSON.parse(persistentMetadata());
+        useTask({
+          launchConfig: JSON.stringify({ remoteWorkspace }),
+          metadata: JSON.stringify({ ...metadata, globalBackend: { host: "mac-mini", backend: "claude" } }),
+          // Filed on the unbound default project: no local clone on the AI daemon.
+          project: { ...project, id: "proj-default", daemonHost: null, workspacePath: null, repoRoot: null },
+        });
+      };
+
+      it("keeps working in the remote project directory, with its protocol in the prompt", async () => {
+        useGlobalTask();
+        expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
+        expect(JSON.parse(stored.launchConfig as string)).toEqual({ remoteWorkspace });
+        const finalize = vi.mocked(finalizeAiTaskCreation).mock.calls[0][0] as any;
+        expect(finalize.agentInitialContent).toContain("[conductor:remote-workspace]");
+        expect(finalize.agentInitialContent).not.toContain("READ-ONLY copy");
+      });
+
+      it("keeps the remote project directory when the round moves to another daemon", async () => {
+        useGlobalTask();
+        agents(["persistent_round_v1"], ["persistent_round_v1"]);
+        const response = await call(startRound, "/rounds", "POST", { content: "go", agent_host: "mini-2" });
+        expect(response.status).toBe(200);
+        expect(JSON.parse(stored.launchConfig as string)).toEqual({ remoteWorkspace });
+      });
+
+      it("builds the new worktree on the code's daemon, not the AI's", async () => {
+        useGlobalTask();
+        mockPrismaQuery(db.project.findFirst).mockResolvedValue({
+          id: "proj-ubuntu",
+          name: "conductor",
+          daemonHost: "ubuntu",
+          workspacePath: "/home/u/repo",
+          repoRoot: "/home/u/repo",
+          worktreeBranch: "develop",
+        } as any);
+        const response = await call(startRound, "/rounds", "POST", { content: "go", worktree: "new" });
+        expect(response.status).toBe(200);
+        const launchConfig = JSON.parse(stored.launchConfig as string);
+        expect(launchConfig.worktree).toBeUndefined();
+        expect(launchConfig.remoteWorktree).toMatchObject({ ...remoteWorkspace, baseRef: "develop" });
+        const finalize = vi.mocked(finalizeAiTaskCreation).mock.calls[0][0] as any;
+        expect(finalize.agentInitialContent).toContain("[conductor:remote-worktree]");
       });
     });
 
