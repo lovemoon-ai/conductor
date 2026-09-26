@@ -56,6 +56,28 @@ function injectEnableGoalsArgs(args, enableGoals) {
   return normalized;
 }
 
+/**
+ * Add one `-c key=value` per config override (e.g. the per-task MCP server a
+ * remote-worktree task needs), before `--listen` like `--enable goals`.
+ *
+ * @param {string[]} args
+ * @param {unknown} overrides
+ * @returns {string[]}
+ */
+function injectConfigOverrideArgs(args, overrides) {
+  const pairs = Array.isArray(overrides)
+    ? overrides.filter((entry) => typeof entry === "string" && entry.includes("="))
+    : [];
+  if (pairs.length === 0) {
+    return args;
+  }
+  const normalized = [...args];
+  const listenIndex = normalized.indexOf("--listen");
+  const insertAt = listenIndex >= 0 ? listenIndex : normalized.length;
+  normalized.splice(insertAt, 0, ...pairs.flatMap((pair) => ["-c", pair]));
+  return normalized;
+}
+
 function createRpcError(payload) {
   const message = String(payload?.message || payload?.error?.message || "Codex app-server request failed");
   const error = new Error(message);
@@ -90,7 +112,7 @@ export class CodexAppServerTransport extends EventEmitter {
     }
     this.command = command;
     this.enableGoals = options.enableGoals === true;
-    this.args = injectEnableGoalsArgs(args, this.enableGoals);
+    this.args = injectConfigOverrideArgs(injectEnableGoalsArgs(args, this.enableGoals), options.configOverrides);
     this.env = options.env && typeof options.env === "object" ? { ...options.env } : {};
     this.ignoreCodexApiKey = options.ignoreCodexApiKey === true;
     this.child = null;

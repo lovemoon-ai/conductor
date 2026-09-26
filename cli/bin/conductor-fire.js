@@ -27,6 +27,11 @@ import {
   resumeProviderForBackend as resumeProviderForCliBackend,
 } from "../src/fire/resume.js";
 import {
+  REMOTE_WORKTREE_ENV,
+  buildRemoteWorktreeSessionOptions,
+  readRemoteWorktreeBinding,
+} from "../src/remote/mcp-launch.js";
+import {
   filterRuntimeSupportedAllowCliList,
   inferBuiltInRuntimeBackendFromCommand,
   isBuiltInRuntimeBackend,
@@ -616,6 +621,13 @@ async function main() {
     delete process.env.CONDUCTOR_BACKEND_WS_URL;
     process.env.CONDUCTOR_CONFIG = cliArgs.configFile;
   }
+  // RFC 0040: the daemon's binding for a remote-worktree task. Consumed here so
+  // it does not leak into the AI's shell (and from there into a nested fire).
+  const remoteWorktreeBinding = readRemoteWorktreeBinding(process.env);
+  delete process.env[REMOTE_WORKTREE_ENV];
+  if (remoteWorktreeBinding) {
+    log(`Remote worktree tools bound to ${remoteWorktreeBinding.host}:${remoteWorktreeBinding.cwd}`);
+  }
   let runtimeProjectPath = process.cwd();
   let backendSession = null;
 
@@ -1031,6 +1043,13 @@ async function main() {
             resumeSessionId,
             configFile: cliArgs.configFile,
             ...(cliArgs.sessionOptions || {}),
+            ...buildRemoteWorktreeSessionOptions({
+              backend: cliArgs.sessionBackend || cliArgs.backend,
+              binding: remoteWorktreeBinding,
+              sessionOptions: cliArgs.sessionOptions || {},
+              commandLine: sessionCommandLine,
+              configFile: cliArgs.configFile,
+            }),
             ...(sessionCommandLine ? { commandLine: sessionCommandLine } : {}),
             ...(enableGoalsForBackend ? { goalMode: true } : {}),
             logger: { log },

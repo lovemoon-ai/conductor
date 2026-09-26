@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CodexAppServerTransport } from "../src/transports/codex-app-server-transport.js";
+import { CodexAppServerSession } from "../src/providers/codex-app-server-session.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +48,39 @@ describe("codex app-server transport", () => {
     });
     assert.deepEqual(transport.args, ["app-server", "--enable", "goals", "--listen", "stdio://"]);
     assert.equal(transport.enableGoals, true);
+  });
+
+  it("adds one -c per config override before --listen, after --enable goals", () => {
+    const transport = new CodexAppServerTransport({
+      cwd: process.cwd(),
+      commandLine: "codex app-server --listen stdio://",
+      enableGoals: true,
+      configOverrides: ['mcp_servers.x.command="node"', "not-a-pair", 'mcp_servers.x.args=["a b"]'],
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(transport.args, [
+      "app-server",
+      "--enable",
+      "goals",
+      "-c",
+      'mcp_servers.x.command="node"',
+      "-c",
+      'mcp_servers.x.args=["a b"]',
+      "--listen",
+      "stdio://",
+    ]);
+  });
+
+  it("forwards the session's configOverrides to the transport", () => {
+    const session = new CodexAppServerSession("codex", {
+      cwd: process.cwd(),
+      commandLine: "codex app-server --listen stdio://",
+      configOverrides: ["mcp_servers.x.tool_timeout_sec=900"],
+      logger: { log: () => {} },
+    });
+    assert.deepEqual(session.transport.args, [
+      "app-server", "-c", "mcp_servers.x.tool_timeout_sec=900", "--listen", "stdio://",
+    ]);
   });
 
   it("leaves spawn args unchanged when enableGoals is not set", () => {

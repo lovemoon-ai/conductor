@@ -165,6 +165,7 @@ export function buildRemoteWorktreeBootstrap(params: {
   lines.push(
     "",
     "How to operate on the remote workspace",
+    `- If you have the remote_read / remote_edit / remote_write / remote_grep / remote_glob / remote_bash tools, they are already bound to ${h}:${workDir}; once the worktree exists, use them instead of the commands below.`,
     `- Run every file read/write, git, build and test command through: conductor remote exec -t ${h} -w <dir> -- <argv>`,
     `  Commands run without a shell. For pipes, redirects or multi-step scripts pass ONE script string: conductor remote exec -t ${h} -w <dir> -- bash -lc "$script"`,
     "  Start multi-step write/build scripts with `set -euo pipefail`, or a failed middle step still exits 0; leave it off read-only `... | head` queries, which it turns into exit 141.",

@@ -379,6 +379,7 @@ export class CodexAppServerSession extends EventEmitter {
       },
       commandLine: options.commandLine,
       enableGoals: this.goalMode || options.enableGoals === true,
+      configOverrides: options.configOverrides,
     });
     this.transport.on("notification", ({ method, params }) => {
       void this.handleNotification(method, params);

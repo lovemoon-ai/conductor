@@ -5839,6 +5839,128 @@ describe("Daemon", () => {
     daemonInstance.close();
   });
 
+  it("hands fire the remote-worktree binding only for remote-worktree tasks (RFC 0040)", async (t) => {
+    let handler;
+    let connected = false;
+    const spawnCalls = [];
+    const previousBinding = process.env.CONDUCTOR_REMOTE_WORKTREE;
+    // A stale value in the daemon's own env must never reach an ordinary task.
+    process.env.CONDUCTOR_REMOTE_WORKTREE = JSON.stringify({ host: "stale", root: "/stale" });
+    const remoteWorktree = {
+      host: "ubuntu",
+      projectId: "proj-b",
+      repoRoot: "/home/b/ws/app",
+      workspacePath: "/home/b/ws/app",
+      branch: "f8bc83",
+      baseRef: "main",
+    };
+    const expectedBinding = {
+      host: "ubuntu",
+      root: "/home/b/ws/app/.conductor/worktrees/f8bc83",
+      cwd: "/home/b/ws/app/.conductor/worktrees/f8bc83",
+    };
+
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        BACKEND_HTTP: "http://localhost:6152",
+        WORKSPACE_ROOT: "/tmp/test-ws-remote-worktree-mcp",
+        CLI_PATH: "/tmp/cli.js",
+        NAME: "remote-worktree-mcp-daemon",
+      },
+      {
+        spawn: (_cmd, args, opts) => {
+          spawnCalls.push({ args, opts });
+          return {
+            pid: 61235,
+            kill: () => {},
+            on: () => {},
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+          };
+        },
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        renameSync: () => {},
+        createWriteStream: () => ({ on: () => {}, write: () => {}, end: () => {} }),
+        fetch: async (url) => {
+          if (String(url).includes("/api/projects/")) {
+            return { ok: true, json: async () => ({ metadata: { localPaths: { default: "/tmp/remote-mcp-local" } } }) };
+          }
+          if (String(url).endsWith("/api/tasks")) {
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: () => ({
+          registerHandler: (nextHandler) => {
+            handler = nextHandler;
+          },
+          connect: async () => {
+            connected = true;
+          },
+          disconnect: async () => {},
+          sendJson: async () => {},
+        }),
+      },
+    );
+    t.after(() => {
+      if (previousBinding === undefined) {
+        delete process.env.CONDUCTOR_REMOTE_WORKTREE;
+      } else {
+        process.env.CONDUCTOR_REMOTE_WORKTREE = previousBinding;
+      }
+      daemonInstance?.close?.();
+    });
+
+    await waitUntil(() => connected, { message: "remote-worktree daemon to connect" });
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-remote-wt-1",
+        project_id: "proj-a",
+        backend_type: "codex",
+        request_id: "req-remote-wt-1",
+        launch_config: { remoteWorktree },
+      },
+    });
+    await waitUntil(() => spawnCalls.length === 1, { message: "remote-worktree task to spawn" });
+    assert.deepStrictEqual(JSON.parse(spawnCalls[0].opts.env.CONDUCTOR_REMOTE_WORKTREE), expectedBinding);
+
+    handler({
+      type: "create_task",
+      payload: {
+        task_id: "task-plain-1",
+        project_id: "proj-a",
+        backend_type: "codex",
+        request_id: "req-plain-1",
+      },
+    });
+    await waitUntil(() => spawnCalls.length === 2, { message: "plain task to spawn" });
+    assert.strictEqual(spawnCalls[1].opts.env.CONDUCTOR_REMOTE_WORKTREE, undefined);
+
+    handler({
+      type: "restart_task",
+      payload: {
+        mode: "resume_inplace",
+        source_task_id: "task-remote-wt-2",
+        target_task_id: "task-remote-wt-2",
+        project_id: "proj-a",
+        source_backend_type: "codex",
+        source_session_id: "sess-remote-wt-2",
+        target_backend_type: "codex",
+        target_launch_config: { remoteWorktree, cwd: "/tmp/remote-mcp-local" },
+        request_id: "req-remote-wt-2",
+      },
+    });
+    await waitUntil(() => spawnCalls.length === 3, { message: "remote-worktree restart to spawn" });
+    assert.deepStrictEqual(JSON.parse(spawnCalls[2].opts.env.CONDUCTOR_REMOTE_WORKTREE), expectedBinding);
+  });
+
   it("refreshes a running task session in place by stopping the old child and spawning a fresh one", async () => {
     let handler;
     let connected = false;
