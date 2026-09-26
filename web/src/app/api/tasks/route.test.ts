@@ -67,6 +67,7 @@ vi.mock("@/lib/db", () => ({
     },
     project: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
     },
     defaultProject: {
       findUnique: vi.fn(),
@@ -3782,7 +3783,7 @@ describe("/api/tasks", () => {
         repoRoot: null,
       };
       const bothOnline = [
-        { id: "a", host: "daemon-a", supportedBackends: ["claude", "codex"], capabilities: [] },
+        { id: "a", host: "daemon-a", supportedBackends: ["claude", "codex"], capabilities: ["global_backend_v1"] },
         { id: "b", host: "daemon-b", supportedBackends: [], capabilities: ["remote_exec", "remote_file"] },
       ];
       let siblingProject: Record<string, unknown> | null = projectA;
@@ -3812,11 +3813,10 @@ describe("/api/tasks", () => {
         getGlobalAiBackendsMock.mockResolvedValue([{ host: "daemon-a", backend: "claude" }]);
         vi.mocked(db.daemonShare.findMany).mockResolvedValue([]);
         mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) =>
-          where?.daemonHost === "daemon-a"
-            ? (siblingProject as any)
-            : where?.id === "proj-b"
-              ? (projectB as any)
-              : null,
+          where?.id === "proj-b" ? (projectB as any) : null,
+        );
+        mockPrismaQuery(db.project.findMany).mockImplementation(async ({ where }: any) =>
+          where?.daemonHost === "daemon-a" && siblingProject ? [siblingProject as any] : [],
         );
         vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(bothOnline as any);
         mockPrismaQuery(db.task.create).mockImplementation(async ({ data }: any) => ({
@@ -3928,6 +3928,19 @@ describe("/api/tasks", () => {
         vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([bothOnline[1]] as any);
         const response = await postGlobal();
         expect(response.status).toBe(409);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("rejects an AI daemon whose CLI cannot drive another daemon yet", async () => {
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { ...bothOnline[0], capabilities: [] },
+          bothOnline[1],
+        ] as any);
+        const response = await postGlobal();
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toBe(
+          "Upgrade the conductor CLI on daemon-a to use it as a global AI backend",
+        );
         expect(db.task.create).not.toHaveBeenCalled();
       });
 

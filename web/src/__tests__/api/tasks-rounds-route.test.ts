@@ -303,6 +303,41 @@ describe("persistent task rounds API", () => {
         expect(finalize.agentInitialContent).not.toContain("READ-ONLY copy");
       });
 
+      it("never calls an unrelated default-project dir a read-only copy of the repository", async () => {
+        const metadata = JSON.parse(persistentMetadata());
+        useTask({
+          launchConfig: JSON.stringify({ remoteWorkspace }),
+          metadata: JSON.stringify({ ...metadata, globalBackend: { host: "mac-mini", backend: "claude" } }),
+          // No copy of the repo on the AI daemon: filed on the default project,
+          // which happens to be a git repo bound to that same daemon.
+          project: { ...project, id: "proj-default", name: "Default", gitRemoteUrl: "github.com/me/notes" },
+        });
+        const remoteProject = {
+          id: "proj-ubuntu",
+          name: "conductor",
+          daemonHost: "ubuntu",
+          workspacePath: "/home/u/repo",
+          repoRoot: "/home/u/repo",
+          gitRemoteUrl: "github.com/acme/conductor",
+        };
+        mockPrismaQuery(db.project.findFirst).mockResolvedValue(remoteProject as any);
+        expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
+        let finalize = vi.mocked(finalizeAiTaskCreation).mock.calls[0][0] as any;
+        expect(finalize.agentInitialContent).toContain("[conductor:remote-workspace]");
+        expect(finalize.agentInitialContent).not.toContain("READ-ONLY copy");
+
+        // A real copy of the same repository still gets the note.
+        vi.mocked(finalizeAiTaskCreation).mockClear();
+        useTask({
+          launchConfig: JSON.stringify({ remoteWorkspace }),
+          metadata: JSON.stringify({ ...metadata, globalBackend: { host: "mac-mini", backend: "claude" } }),
+          project: { ...project, gitRemoteUrl: "github.com/acme/conductor" },
+        });
+        expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
+        finalize = vi.mocked(finalizeAiTaskCreation).mock.calls[0][0] as any;
+        expect(finalize.agentInitialContent).toContain("(/repo) is a READ-ONLY copy");
+      });
+
       it("keeps the remote project directory when the round moves to another daemon", async () => {
         useGlobalTask();
         agents(["persistent_round_v1"], ["persistent_round_v1"]);

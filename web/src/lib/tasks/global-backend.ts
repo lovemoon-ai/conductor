@@ -27,6 +27,13 @@ import type { RemoteWorkspaceLaunchConfig, RemoteWorktreeLaunchConfig } from "./
 
 type ErrorResult = { error: string; status: number };
 
+/**
+ * Advertised by a daemon whose CLI can run a global-backend task's AI: drive
+ * another daemon over `conductor remote` and bind the remote_* MCP tools to a
+ * remoteWorkspace. An older CLI would start the task and then fail every step.
+ */
+export const GLOBAL_BACKEND_CAPABILITY = "global_backend_v1";
+
 /** `global_backend` / `globalBackend` from a request body: absent, malformed, or a host + backend. */
 export const readGlobalBackendRequest = (
   body: Record<string, unknown>,
@@ -106,6 +113,16 @@ export const resolveGlobalBackendMount = async (args: {
   if (projectHost === request.host) {
     return { local: true };
   }
+  const aiAgent = args.connectedAgents.find((agent) => agent.host === request.host);
+  if (!aiAgent) {
+    return { error: `Daemon ${request.host} is offline`, status: 409 };
+  }
+  if (!aiAgent.capabilities.includes(GLOBAL_BACKEND_CAPABILITY)) {
+    return {
+      error: `Upgrade the conductor CLI on ${request.host} to use it as a global AI backend`,
+      status: 409,
+    };
+  }
   const shared = await findSharedGuestHosts(args.userId, [request.host, projectHost]);
   if (shared.size > 0) {
     return {
@@ -120,11 +137,13 @@ export const resolveGlobalBackendMount = async (args: {
 
   // Prefer the same repository bound on the AI daemon: the AI then starts in a
   // local clone, so CLAUDE.md / AGENTS.md / skills load natively.
-  const sibling = await db.project.findFirst({
+  // Several same-name projects can live on one daemon; take the real copy.
+  const candidates = await db.project.findMany({
     where: { userId: args.userId, daemonHost: request.host, name: project.name },
   });
-  const hasSibling = Boolean(sibling && canMergeProjectsByFields(project, sibling));
-  const mountProject = hasSibling ? sibling! : await ensureDefaultProject(args.userId);
+  const sibling = candidates.find((candidate) => canMergeProjectsByFields(project, candidate)) ?? null;
+  const hasSibling = Boolean(sibling);
+  const mountProject = sibling ?? (await ensureDefaultProject(args.userId));
   // The default project can be bound to a daemon; filing the task there would
   // pin its AI to that daemon instead of the global backend.
   const mountHost = normalizeOptionalString(mountProject.daemonHost);
