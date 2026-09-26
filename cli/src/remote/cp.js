@@ -385,7 +385,7 @@ async function downloadChunks({
   }, { sleep });
 }
 
-async function uploadFile(ctx) {
+export async function uploadFile(ctx) {
   const { config, target, localPath, remotePath, fetchImpl, consoleImpl, signal, quiet } = ctx;
   const resolvedLocal = path.resolve(expandHome(localPath));
 
@@ -466,7 +466,7 @@ async function uploadFile(ctx) {
   return { ...delivered, transferId, direction: "up", sizeBytes: stat.size, sha256 };
 }
 
-async function downloadFile(ctx) {
+export async function downloadFile(ctx) {
   const { config, target, remotePath, localPath, fetchImpl, consoleImpl, signal, quiet } = ctx;
   const basePath = `/api/agents/${encodeURIComponent(target)}/files`;
 

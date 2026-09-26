@@ -177,6 +177,10 @@ describe("buildRemoteWorktreeBootstrap", () => {
     expect(text).toContain("-w /home/b/ws/conductor/.conductor/worktrees/f8bc83 for every command");
     expect(text).toContain("conductor remote wait -t ubuntu <runId>");
     expect(text).toContain("Never run `conductor` itself through remote exec");
+    // RFC 0040: fire may attach remote_* tools bound to the same work dir.
+    expect(text).toContain(
+      "remote_bash tools, they are already bound to ubuntu:/home/b/ws/conductor/.conductor/worktrees/f8bc83;",
+    );
     expect(text.endsWith("--- Task ---\nFix the flaky test")).toBe(true);
   });
 
