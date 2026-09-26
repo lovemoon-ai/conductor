@@ -4,7 +4,7 @@ import { mockPrismaQuery } from "@/__tests__/mock-prisma-query";
 
 vi.mock("@/lib/db", () => ({
   db: {
-    project: { findFirst: vi.fn() },
+    project: { findMany: vi.fn() },
     daemonShare: { findMany: vi.fn() },
   },
 }));
@@ -21,7 +21,7 @@ const { ensureDefaultProject } = await import("@/lib/auth/service");
 const { readGlobalBackendRequest, readTaskGlobalBackend, resolveGlobalBackendMount } =
   await import("./global-backend");
 
-const findFirst = mockPrismaQuery(db.project.findFirst);
+const findSiblings = mockPrismaQuery(db.project.findMany);
 const findShares = mockPrismaQuery(db.daemonShare.findMany);
 
 // The project the user starts from: code lives on macmini.
@@ -60,7 +60,7 @@ const defaultProject = {
 
 const bothOnline = [
   { host: "macmini", capabilities: ["remote_exec", "remote_file"] },
-  { host: "ubuntu", capabilities: ["remote_exec", "remote_file"] },
+  { host: "ubuntu", capabilities: ["remote_exec", "remote_file", "global_backend_v1"] },
 ];
 
 const request = { host: "ubuntu", backend: "codex" };
@@ -131,8 +131,8 @@ describe("resolveGlobalBackendMount", () => {
     vi.mocked(getGlobalAiBackends).mockResolvedValue([{ host: "ubuntu", backend: "codex" }]);
     vi.mocked(ensureDefaultProject).mockReset();
     vi.mocked(ensureDefaultProject).mockResolvedValue(defaultProject);
-    findFirst.mockReset();
-    findFirst.mockResolvedValue(sibling);
+    findSiblings.mockReset();
+    findSiblings.mockResolvedValue([sibling]);
     findShares.mockReset();
     findShares.mockResolvedValue([]);
   });
@@ -178,7 +178,7 @@ describe("resolveGlobalBackendMount", () => {
     vi.mocked(getGlobalAiBackends).mockResolvedValue([{ host: "macmini", backend: "codex" }]);
     expect(await resolve({ request: { host: "macmini", backend: "codex" } })).toEqual({ local: true });
     expect(findShares).not.toHaveBeenCalled();
-    expect(findFirst).not.toHaveBeenCalled();
+    expect(findSiblings).not.toHaveBeenCalled();
     expect(ensureDefaultProject).not.toHaveBeenCalled();
   });
 
@@ -207,6 +207,30 @@ describe("resolveGlobalBackendMount", () => {
     expect((missing as { error: string }).error).toContain("remote_file");
   });
 
+  it("requires the AI daemon to be online and new enough to drive another daemon", async () => {
+    expect(await resolve({ connectedAgents: [bothOnline[0]] })).toEqual({
+      error: "Daemon ubuntu is offline",
+      status: 409,
+    });
+    // An older CLI: it would start the task and then fail every remote step.
+    const old = await resolve({
+      connectedAgents: [bothOnline[0], { host: "ubuntu", capabilities: ["remote_exec", "remote_file"] }],
+    });
+    expect(old).toEqual({
+      error: "Upgrade the conductor CLI on ubuntu to use it as a global AI backend",
+      status: 409,
+    });
+    expect(findSiblings).not.toHaveBeenCalled();
+  });
+
+  it("finds the real copy among several same-name projects on the AI daemon", async () => {
+    const unrelated = { ...sibling, id: "proj-other", gitRemoteUrl: "github.com/someone/else" } as Project;
+    findSiblings.mockResolvedValueOnce([unrelated, sibling]);
+    const result = await resolve();
+    expect(result).toMatchObject({ mountProject: sibling, localClonePath: "/home/b/ws/conductor" });
+    expect(ensureDefaultProject).not.toHaveBeenCalled();
+  });
+
   it("requires the project to be a git repository", async () => {
     expect(await resolve({ project: { ...project, repoRoot: null } as Project })).toEqual({
       error: 'Project "conductor" on daemon macmini is not a git repository',
@@ -216,7 +240,7 @@ describe("resolveGlobalBackendMount", () => {
 
   it("mounts on a mergeable sibling on the AI daemon in direct mode", async () => {
     const result = await resolve();
-    expect(findFirst).toHaveBeenCalledWith({
+    expect(findSiblings).toHaveBeenCalledWith({
       where: { userId: "user-1", daemonHost: "ubuntu", name: "conductor" },
     });
     expect(ensureDefaultProject).not.toHaveBeenCalled();
@@ -243,7 +267,7 @@ describe("resolveGlobalBackendMount", () => {
       { ...sibling, mergeOptOut: true },
       null,
     ]) {
-      findFirst.mockResolvedValueOnce(candidate as Project | null);
+      findSiblings.mockResolvedValueOnce(candidate ? [candidate as Project] : []);
       const result = await resolve();
       expect(result).toMatchObject({ mountProject: defaultProject, secondProjectId: "proj-a" });
     }
@@ -252,7 +276,7 @@ describe("resolveGlobalBackendMount", () => {
   });
 
   it("never offers an unrelated default-project dir as the AI's local clone", async () => {
-    findFirst.mockResolvedValueOnce(null);
+    findSiblings.mockResolvedValueOnce([]);
     vi.mocked(ensureDefaultProject).mockResolvedValueOnce(
       { ...defaultProject, daemonHost: "ubuntu", workspacePath: "/home/b/default" } as unknown as Project,
     );
@@ -261,7 +285,7 @@ describe("resolveGlobalBackendMount", () => {
   });
 
   it("refuses a default project bound to a daemon other than the AI's", async () => {
-    findFirst.mockResolvedValueOnce(null);
+    findSiblings.mockResolvedValueOnce([]);
     vi.mocked(ensureDefaultProject).mockResolvedValueOnce(
       { ...defaultProject, daemonHost: "studio", workspacePath: "/Users/s/default" } as unknown as Project,
     );

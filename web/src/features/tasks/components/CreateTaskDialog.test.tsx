@@ -880,9 +880,19 @@ describe('CreateTaskDialog', () => {
     beforeEach(() => {
       projectsState = { projects: [boundProject] };
       agentsState.agents = [
-        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: [] },
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: ['global_backend_v1'] },
         { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: ['remote_exec', 'remote_file'] },
       ];
+    });
+
+    it('greys out an AI daemon whose conductor is too old to be a global backend', () => {
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      agentsState.agents = [{ ...agentsState.agents[0], capabilities: [] }, agentsState.agents[1]];
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      const group = within(screen.getByLabelText('AI backend')).getByRole('group', { name: 'Global' });
+      const option = within(group).getByRole('option') as HTMLOptionElement;
+      expect(option.disabled).toBe(true);
+      expect(option.textContent).toBe('claude @ daemon-a — upgrade conductor on daemon-a to use it as a global backend');
     });
 
     it('shows no Global group when none are configured', async () => {

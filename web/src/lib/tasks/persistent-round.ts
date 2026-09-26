@@ -20,6 +20,7 @@ import {
   resolveRemoteTarget,
 } from "@/lib/tasks/remote-worktree";
 import { readTaskGlobalBackend } from "@/lib/tasks/global-backend";
+import { canMergeProjectsByFields } from "@/lib/projects/grouping";
 import { evaluateRuntimeHealth } from "@/lib/tasks/runtime-preflight";
 import {
   normalizeOptionalString,
@@ -214,6 +215,11 @@ export async function startPersistentRound(input: {
   const globalRemote = readTaskGlobalBackend(task.metadata)
     ? previousRemoteWorktree ?? previousRemoteWorkspace
     : null;
+  // The code's project row on the other daemon: needed to tell whether this
+  // task's project is a copy of the same repository (RFC 0041).
+  const globalRemoteProject = globalRemote
+    ? await db.project.findFirst({ where: { id: globalRemote.projectId, userId: input.userId } })
+    : null;
   let launchConfig: JsonObject;
   const worktreeMode = input.worktree ?? "inherit";
   if (globalRemote && worktreeMode !== "inherit") {
@@ -224,10 +230,7 @@ export async function startPersistentRound(input: {
       workspacePath: globalRemote.workspacePath,
     };
     if (worktreeMode === "new") {
-      const remoteProject = await db.project.findFirst({
-        where: { id: globalRemote.projectId, userId: input.userId },
-      });
-      const target = remoteProject ? resolveRemoteTarget(remoteProject) : null;
+      const target = globalRemoteProject ? resolveRemoteTarget(globalRemoteProject) : null;
       if (!target || "error" in target) {
         return fail(409, target && "error" in target ? target.error : "The task's remote project no longer exists");
       }
@@ -407,8 +410,13 @@ export async function startPersistentRound(input: {
   });
   const remoteWorktree = parseRemoteWorktreeLaunchConfig(launchConfig);
   const remoteWorkspace = remoteWorktree ? null : parseRemoteWorkspaceLaunchConfig(launchConfig);
-  // Only a same-repository clone on this daemon is a read-only local copy.
-  const localClonePath = onProjectDaemon && projectRepoRoot ? projectWorkspacePath : null;
+  // Only a same-repository clone on this daemon is a read-only local copy. A
+  // global-backend task may sit on an unrelated default project that happens
+  // to be a git repo on this daemon; its directory must not be called a copy.
+  const isLocalClone = onProjectDaemon && Boolean(projectRepoRoot) && (
+    !globalRemote || Boolean(globalRemoteProject && canMergeProjectsByFields(project, globalRemoteProject))
+  );
+  const localClonePath = isLocalClone ? projectWorkspacePath : null;
   await finalizeAiTaskCreation({
     userId: input.userId,
     projectId: task.projectId,

@@ -3895,6 +3895,10 @@ export function startDaemon(config = {}, deps = {}) {
     "restart_first_message",
     "persistent_round_v1",
     "task_attachments_v1",
+    // RFC 0041: this CLI can run a global-backend task's AI here — it drives
+    // another daemon over `conductor remote` and binds the remote_* MCP tools
+    // to a remoteWorkspace as well as a remoteWorktree.
+    "global_backend_v1",
     "backend_session_list",
     CUSTOM_COMMANDS_CAPABILITY,
     UPDATE_DAEMON_CAPABILITY,

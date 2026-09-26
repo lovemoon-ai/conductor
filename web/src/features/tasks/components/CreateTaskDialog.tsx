@@ -415,9 +415,11 @@ export function CreateTaskDialog({
             ? `${codeHost} is offline`
             : !(agent.supportedBackends ?? []).includes(entry.backend)
               ? `${entry.backend} is not available on ${entry.host}`
-              : !supportsRemoteWorktree(codeAgent.capabilities)
-                ? `${codeHost} does not support conductor remote; upgrade its daemon`
-                : null;
+              : !(agent.capabilities ?? []).includes('global_backend_v1')
+                ? `upgrade conductor on ${entry.host} to use it as a global backend`
+                : !supportsRemoteWorktree(codeAgent.capabilities)
+                  ? `${codeHost} does not support conductor remote; upgrade its daemon`
+                  : null;
         return {
           key: globalAiBackendKey(entry),
           entry,

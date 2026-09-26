@@ -95,11 +95,12 @@ dang217
 | B 的项目没有 `daemonHost` / `workspacePath` / `repoRoot`（未绑定或不是 git 仓库） | 409 |
 | A == B 的 daemon | 忽略 `global_backend`，按普通本地任务处理（`worktree` 照常生效） |
 | A 离线 / 不支持该后端 / runtime-health 预检不过 | 409（沿用现有检查） |
+| A 的 CLI 没有声明 `global_backend_v1`（旧版本，驱动不了 `conductor remote`、不会给 remoteWorkspace 挂 MCP 工具） | 409，对话框里该项置灰并提示升级 |
 | B 离线 / 未声明 `remote_exec` + `remote_file` | 409 |
 
 重挂载（保持 `agentHost = project.daemonHost` 不变量，0038 §2 的理由不变）：
 
-1. 找 A 上与 B 项目可合并的项目（`canMergeProjectsByFields`，与 0038 相同判定）：
+1. 在 A 上所有同名项目里找与 B 项目可合并的那个（`canMergeProjectsByFields`，与 0038 相同判定；同名但不是同一仓库的跳过）：
    - 找到 → 任务的真实 `projectId` 挂它，AI cwd = 它的 `workspacePath`（有本地 clone，CLAUDE.md 等自动加载）。
    - 没找到 → 挂用户的默认项目，`agentHost = A`，daemon 按现有回退链决定 cwd。默认项目若绑定在 A 以外的 daemon 上则 409（挂上去会把 AI 钉到那台机器）；绑定在 A 上可以，但它的目录不是本仓库的副本，不作为"只读本地副本"告诉 AI。
 2. `secondProjectId = B 的项目`：列表、计数都显示在 B 下（现有展示覆盖机制）。
