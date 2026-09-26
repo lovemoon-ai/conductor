@@ -18,6 +18,58 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.15.0] - 2026-09-26
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.15.0`
+- `@love-moon/conductor-sdk` `0.15.0`
+- `@love-moon/ai-sdk` `0.15.0`
+- `@love-moon/app-sdk` `0.15.0`
+- `@love-moon/chat-web` `0.15.0`
+
+### Changes
+
+### Minor Changes
+
+- b61c881: Global AI backend tasks (RFC 0041) that work directly in another daemon's
+  project directory (`launch_config.remoteWorkspace`) now get the same
+  `conductor remote mcp` tools as remote-worktree tasks, bound to that
+  repository and starting in the project directory.
+
+  The daemon advertises `global_backend_v1` so the web app only offers a daemon
+  as a global AI backend when its CLI can drive another daemon.
+
+- cc1e290: New Terminal and Resume Session previews in the create-task dialog.
+
+  - `@love-moon/ai-sdk`: `listSessions` (claude, codex) returns `preview` with
+    the first user message, the assistant reply to it, and the session's last
+    message.
+  - The daemon passes the preview to `list_backend_sessions` as
+    `first_user_message`, `first_reply`, `last_message` and `last_message_role`.
+  - A PTY task with no project path now starts its shell in `$HOME`. The
+    terminal log stays in the dated workspace directory.
+
+- 55b65db: `conductor remote mcp`: structured tools for a task whose worktree lives on
+  another daemon (RFC 0040).
+
+  - New `conductor remote mcp --host <daemon> --root <dir> [--cwd <dir>]`, a
+    stdio MCP server with `remote_read`, `remote_edit`, `remote_write`,
+    `remote_grep`, `remote_glob` and `remote_bash`, bound to that directory.
+  - For a `launch_config.remoteWorktree` task the daemon passes the binding to
+    fire (`CONDUCTOR_REMOTE_WORKTREE`), and fire attaches the server to Claude
+    (`mcpServers`) and Codex (`-c mcp_servers.*`). The agent token is forwarded
+    by env only, never on argv.
+  - `@love-moon/ai-sdk`: the Codex app-server session accepts `configOverrides`,
+    passed to the app-server as `-c key=value`.
+
+### Patch Changes
+
+- Updated dependencies [cc1e290]
+- Updated dependencies [55b65db]
+  - @love-moon/ai-sdk@0.15.0
+  - @love-moon/conductor-sdk@0.15.0
+
 ## [0.14.0] - 2026-09-23
 
 ### Released packages
