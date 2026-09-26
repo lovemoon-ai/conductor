@@ -43,7 +43,7 @@ const isWindowsStylePath = (value) => /^[A-Za-z]:[\\/]/.test(value) || value.inc
  */
 export function resolveRemoteWorktreeBinding(launchConfig) {
   const raw = launchConfig?.remoteWorktree ?? launchConfig?.remote_worktree;
-  if (!raw || typeof raw !== "object") return null;
+  if (!raw || typeof raw !== "object") return resolveRemoteWorkspaceBinding(launchConfig);
   const host = str(raw.host);
   const repoRoot = str(raw.repoRoot) || str(raw.repo_root);
   const workspacePath = str(raw.workspacePath) || str(raw.workspace_path);
@@ -57,6 +57,24 @@ export function resolveRemoteWorktreeBinding(launchConfig) {
   if (relative.startsWith("..") || pathApi.isAbsolute(relative)) return null;
   const cwd = relative && relative !== "." ? pathApi.join(root, relative) : root;
   return { host, root, cwd };
+}
+
+/**
+ * RFC 0041 direct mode: `launch_config.remoteWorkspace` points at the project
+ * directory itself (no worktree). The tools stay inside the repository and
+ * start in the project's directory.
+ */
+function resolveRemoteWorkspaceBinding(launchConfig) {
+  const raw = launchConfig?.remoteWorkspace ?? launchConfig?.remote_workspace;
+  if (!raw || typeof raw !== "object") return null;
+  const host = str(raw.host);
+  const repoRoot = str(raw.repoRoot) || str(raw.repo_root);
+  const workspacePath = str(raw.workspacePath) || str(raw.workspace_path);
+  if (!host || !repoRoot || !workspacePath) return null;
+  const pathApi = isWindowsStylePath(repoRoot) || isWindowsStylePath(workspacePath) ? path.win32 : path.posix;
+  const relative = pathApi.relative(repoRoot, workspacePath);
+  if (relative.startsWith("..") || pathApi.isAbsolute(relative)) return null;
+  return { host, root: repoRoot, cwd: workspacePath };
 }
 
 /** Env the daemon adds when it spawns fire. Empty for an ordinary task. */

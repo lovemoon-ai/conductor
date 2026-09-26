@@ -498,6 +498,13 @@ function TaskItemComponent({
       : DEFAULT_KILLING_TIMEOUT_MS;
   const taskType = task.taskType ?? 'ai_task';
   const worktreeBranch = parseTaskWorktreeBranch(task);
+  // RFC 0041: where the AI of a global-backend task runs. Deliberately only a
+  // hover hint on existing chips — findable, not a new visual element.
+  const globalBackendRecord = taskMetadata?.globalBackend as Record<string, unknown> | undefined;
+  const globalBackendHost = typeof globalBackendRecord?.host === 'string' ? globalBackendRecord.host : null;
+  const globalBackendHint = globalBackendHost
+    ? `AI on ${globalBackendHost}${typeof globalBackendRecord?.backend === 'string' ? ` (${globalBackendRecord.backend})` : ''}`
+    : null;
   // The PTY task is filtered out of the top-level task list, so its live
   // status arrives via the AI task's denormalised `attachedTerminal.ptyTaskStatus`
   // field instead of the standalone Task row in `useTasksStore`. WebSocket
@@ -1122,11 +1129,12 @@ function TaskItemComponent({
   const backendChipBaseClass = 'flex items-center gap-1 rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]';
   const backendChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
   const isBackendFilterActive = Boolean(stableBackend) && activeBackendFilter === stableBackend;
-  const backendChipTitle = onFilterByBackend && stableBackend
+  const backendFilterTitle = onFilterByBackend && stableBackend
     ? isBackendFilterActive
       ? `Click to clear backend filter`
       : `Click to show only ${stableBackend} tasks`
     : undefined;
+  const backendChipTitle = [globalBackendHint, backendFilterTitle].filter(Boolean).join(' · ') || undefined;
   const isDaemonHostFilterActive = Boolean(projectDaemonHost) && activeDaemonHostFilter === projectDaemonHost;
   const daemonChipBaseClass = 'flex max-w-[10rem] items-center gap-1 truncate rounded bg-[var(--paper)] px-1.5 py-0.5 text-xs font-medium text-muted';
   const daemonChipActiveClass = 'ring-1 ring-[var(--accent)] ring-offset-1 ring-offset-transparent';
@@ -1186,7 +1194,7 @@ function TaskItemComponent({
             {backend}
           </button>
         ) : (
-          <span className={backendChipBaseClass}>
+          <span className={backendChipBaseClass} title={globalBackendHint ?? undefined}>
             {backend}
           </span>
         )
@@ -1194,7 +1202,7 @@ function TaskItemComponent({
       </span>
       <span data-task-column="branch">{worktreeBranch ? (
         <span
-          title={worktreeBranch}
+          title={globalBackendHint ? `${worktreeBranch} · ${globalBackendHint}` : worktreeBranch}
           className="max-w-[11rem] truncate rounded bg-[var(--paper)] px-1.5 py-0.5 font-mono text-xs font-medium text-ink"
         >
           {worktreeBranch}

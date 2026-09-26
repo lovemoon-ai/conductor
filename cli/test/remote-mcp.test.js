@@ -770,6 +770,29 @@ test("the daemon's env round-trips to fire, and ordinary tasks get nothing", () 
   assert.deepEqual(Object.keys(env), [REMOTE_WORKTREE_ENV]);
   assert.deepEqual(readRemoteWorktreeBinding(env), { host: "b", root: "/r/.conductor/worktrees/abc", cwd: "/r/.conductor/worktrees/abc" });
   assert.deepEqual(remoteWorktreeFireEnv({ cwd: "/x" }), {});
+});
+
+test("RFC 0041: a remote project directory (no worktree) binds the tools to the repository", () => {
+  assert.deepEqual(
+    resolveRemoteWorktreeBinding({
+      remoteWorkspace: { host: "b", repoRoot: "/home/b/repo", workspacePath: "/home/b/repo/web" },
+    }),
+    { host: "b", root: "/home/b/repo", cwd: "/home/b/repo/web" },
+  );
+  // A remote worktree wins when both are present.
+  assert.equal(
+    resolveRemoteWorktreeBinding({
+      remoteWorktree: { host: "b", repoRoot: "/r", workspacePath: "/r", branch: "abc" },
+      remoteWorkspace: { host: "c", repoRoot: "/r", workspacePath: "/r" },
+    }).host,
+    "b",
+  );
+  assert.equal(resolveRemoteWorktreeBinding({ remoteWorkspace: { host: "b", repoRoot: "/r" } }), null);
+  assert.equal(
+    resolveRemoteWorktreeBinding({ remoteWorkspace: { host: "b", repoRoot: "/r", workspacePath: "/elsewhere" } }),
+    null,
+  );
+  assert.ok(remoteWorktreeFireEnv({ remoteWorkspace: { host: "b", repoRoot: "/r", workspacePath: "/r" } }).CONDUCTOR_REMOTE_WORKTREE);
   assert.equal(readRemoteWorktreeBinding({}), null);
   assert.equal(readRemoteWorktreeBinding({ [REMOTE_WORKTREE_ENV]: "" }), null);
   assert.equal(readRemoteWorktreeBinding({ [REMOTE_WORKTREE_ENV]: "{not json" }), null);

@@ -431,6 +431,8 @@ export interface CreateTaskInput {
    */
   agents?: Array<{ name: string; backend?: string | null }>;
   metadata?: Record<string, unknown> | null;
+  /** RFC 0041: run the AI on this global backend; the code stays on the project's daemon. */
+  globalBackend?: { host: string; backend: string };
 }
 
 export interface UpdateTaskInput {

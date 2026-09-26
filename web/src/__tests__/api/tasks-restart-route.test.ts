@@ -342,6 +342,85 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(successorMetadata.note).toBeUndefined();
   });
 
+  it("keeps a global-backend task (RFC 0041) under its project and on its remote workspace", async () => {
+    const remoteWorkspace = {
+      host: "ubuntu",
+      projectId: "proj-ubuntu",
+      repoRoot: "/home/u/repo",
+      workspacePath: "/home/u/repo",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        secondProjectId: "proj-ubuntu",
+        launchConfig: JSON.stringify({ remoteWorkspace }),
+        metadata: JSON.stringify({ globalBackend: { host: "daemon-1", backend: "codex" } }),
+      }) as any,
+    );
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", backend_type: "claude" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect(createArgs.data.secondProjectId).toBe("proj-ubuntu");
+    expect(createArgs.data.agentHost).toBe("daemon-1");
+    expect(JSON.parse(createArgs.data.launchConfig)).toEqual({ remoteWorkspace });
+    expect(JSON.parse(createArgs.data.metadata).globalBackend).toEqual({ host: "daemon-1", backend: "claude" });
+  });
+
+  it("keeps a direct-mode remote workspace when restarting on another daemon", async () => {
+    const remoteWorkspace = {
+      host: "ubuntu",
+      projectId: "proj-ubuntu",
+      repoRoot: "/home/u/repo",
+      workspacePath: "/home/u/repo",
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(
+      buildTask({
+        launchConfig: JSON.stringify({ remoteWorkspace, cwd: "/Users/a/repo" }),
+        metadata: JSON.stringify({ globalBackend: { host: "daemon-1", backend: "codex" } }),
+      }) as any,
+    );
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task", agent_host: "daemon-2" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect(createArgs.data.agentHost).toBe("daemon-2");
+    // The local cwd belongs to daemon-1; the remote workspace does not.
+    expect(JSON.parse(createArgs.data.launchConfig)).toEqual({ remoteWorkspace });
+  });
+
+  it("does not carry a plain display-only move to a successor", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ secondProjectId: "proj-other" }) as any);
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect(createArgs.data.secondProjectId).toBeUndefined();
+  });
+
   it("does not add an empty labelIds key to a successor of an unlabelled task", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ metadata: null }) as any);
 

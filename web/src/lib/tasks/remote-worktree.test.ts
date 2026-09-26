@@ -6,7 +6,9 @@ vi.mock("@/lib/db", () => ({
 
 const { db } = await import("@/lib/db");
 const {
+  buildRemoteWorkspaceBootstrap,
   buildRemoteWorktreeBootstrap,
+  resolveRemoteTarget,
   readRemoteWorktreeRequestHost,
   resolveRemoteWorktreePaths,
   resolveRemoteWorktreeTarget,
@@ -218,5 +220,38 @@ describe("buildRemoteWorktreeBootstrap", () => {
     });
     const text = buildRemoteWorktreeBootstrap({ remoteWorktree: nested, localWorkspacePath: null });
     expect(text).toContain("work dir:         /home/b/ws/conductor/web/.conductor/worktrees/f8bc83/web");
+  });
+
+  it("RFC 0041: resolves a git-backed project row as a remote target, and rejects a non-git one", () => {
+    expect(resolveRemoteTarget(projectB)).toEqual({
+      host: "ubuntu",
+      projectId: "proj-b",
+      repoRoot: "/home/b/ws/conductor",
+      workspacePath: "/home/b/ws/conductor",
+      baseRef: "main",
+    });
+    expect(resolveRemoteTarget({ ...projectB, repoRoot: null })).toEqual({
+      error: 'Project "conductor" on daemon ubuntu is not a git repository',
+      status: 409,
+    });
+  });
+
+  it("RFC 0041: the direct-mode bootstrap works in the project directory without creating a worktree", () => {
+    const text = buildRemoteWorkspaceBootstrap({
+      remoteWorkspace: {
+        host: "ubuntu",
+        projectId: "proj-b",
+        repoRoot: "/home/b/ws/conductor",
+        workspacePath: "/home/b/ws/conductor",
+      },
+      localWorkspacePath: null,
+      taskPrompt: "Fix the build",
+    });
+    expect(text).toContain("[conductor:remote-workspace]");
+    expect(text).toContain("conductor remote exec -t ubuntu -w <dir> -- <argv>");
+    expect(text).toContain("Use -w /home/b/ws/conductor for every command");
+    expect(text).not.toContain("git worktree add");
+    expect(text).not.toContain("READ-ONLY copy");
+    expect(text).toContain("Fix the build");
   });
 });

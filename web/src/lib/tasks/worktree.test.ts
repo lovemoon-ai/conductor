@@ -3,6 +3,7 @@ import {
   getTaskWorktreeRootKey,
   hasSameTaskWorktreeRoot,
   inheritTaskWorktreeLaunchConfig,
+  parseRemoteWorkspaceLaunchConfig,
   parseRemoteWorktreeLaunchConfig,
   resolveTaskWorktreeCleanupPlan,
   resolveTaskWorktreeCwdFromLaunchConfig,
@@ -285,5 +286,21 @@ describe("remote worktree launch config (RFC 0038)", () => {
       launchConfig: toRemoteWorktreeCleanupLaunchConfig(remote),
     });
     expect(resolveTaskWorktreeCleanupPlan({ remoteWorktree: remote }, null)?.agentHost).toBe("ubuntu");
+  });
+
+  it("RFC 0041: a remote project directory is inherited and never becomes a cleanup target", () => {
+    const remoteWorkspace = {
+      host: "ubuntu",
+      projectId: "proj-b",
+      repoRoot: "/home/b/repo",
+      workspacePath: "/home/b/repo",
+    };
+    expect(parseRemoteWorkspaceLaunchConfig({ remote_workspace: { ...remoteWorkspace, host: " ubuntu " } }))
+      .toEqual(remoteWorkspace);
+    expect(parseRemoteWorkspaceLaunchConfig({ remoteWorkspace: { host: "ubuntu" } })).toBeNull();
+    expect(inheritTaskWorktreeLaunchConfig({ remoteWorkspace, cwd: "/Users/a/repo" }))
+      .toEqual({ remoteWorkspace, cwd: "/Users/a/repo" });
+    expect(inheritTaskWorktreeLaunchConfig({ remoteWorkspace })).toEqual({ remoteWorkspace });
+    expect(resolveTaskWorktreeCleanupPlan({ remoteWorkspace }, "daemon-a")).toBeNull();
   });
 });

@@ -22,10 +22,16 @@ import {
   type RemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import {
+  buildRemoteWorkspaceBootstrap,
   buildRemoteWorktreeBootstrap,
   readRemoteWorktreeRequestHost,
   resolveRemoteWorktreeTarget,
 } from "@/lib/tasks/remote-worktree";
+import {
+  readGlobalBackendRequest,
+  resolveGlobalBackendMount,
+  type GlobalBackendMount,
+} from "@/lib/tasks/global-backend";
 import {
   applyLegacyTaskShape,
   isMissingAnyNewSchemaError,
@@ -503,7 +509,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "parent_task_id must not be empty" }, { status: 400 });
   }
 
-  const project = await db.project.findFirst({
+  let project = await db.project.findFirst({
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
@@ -537,6 +543,48 @@ export async function POST(request: NextRequest) {
         { error: "Parent task not found or is archived" },
         { status: 404 },
       );
+    }
+  }
+  // RFC 0041: the AI runs on a global backend daemon while the code stays on
+  // this project's daemon. Re-file the task on a project bound to the AI
+  // daemon (or the default project) and show it under this one; everything
+  // below then runs unchanged against the mount project.
+  const globalBackendRequest = readGlobalBackendRequest(normalizedBody);
+  if (globalBackendRequest && "error" in globalBackendRequest) {
+    return NextResponse.json(
+      { error: globalBackendRequest.error },
+      { status: globalBackendRequest.status },
+    );
+  }
+  let globalMount: GlobalBackendMount | null = null;
+  if (globalBackendRequest) {
+    const requestedLaunchConfig = parseJsonField(normalizedBody, "launch_config", "launchConfig").value;
+    if (normalizeTaskType(readBodyField(normalizedBody, "task_type", "taskType")) !== "ai_task") {
+      return NextResponse.json({ error: "global_backend is only supported for ai_task" }, { status: 400 });
+    }
+    if (readBodyField(normalizedBody, "agents", "agents") != null) {
+      return NextResponse.json({ error: "global_backend does not support agent groups" }, { status: 409 });
+    }
+    if (isRemoteWorktreeRequested(requestedLaunchConfig)) {
+      return NextResponse.json(
+        { error: "global_backend and remoteWorktree are mutually exclusive" },
+        { status: 409 },
+      );
+    }
+    const resolvedMount = await resolveGlobalBackendMount({
+      userId: user.id,
+      tokenScope: user.tokenScope ?? null,
+      project,
+      request: globalBackendRequest,
+      worktree: isTaskWorktreeRequested(requestedLaunchConfig),
+      connectedAgents: realtimeHub.getAgentsForUser(user.id) as ConnectedAgent[],
+    });
+    if ("error" in resolvedMount) {
+      return NextResponse.json({ error: resolvedMount.error }, { status: resolvedMount.status });
+    }
+    if (!("local" in resolvedMount)) {
+      globalMount = resolvedMount;
+      project = resolvedMount.mountProject;
     }
   }
   const defaultProject = await db.defaultProject.findUnique({
@@ -580,9 +628,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "invalid task_type" }, { status: 400 });
   }
   const taskType = normalizeTaskType(rawTaskType);
-  const requestedBackendType = normalizeBackendType(
+  const bodyBackendType = normalizeBackendType(
     readBodyField(normalizedBody, "backend_type", "backendType")
   );
+  if (globalMount && bodyBackendType && bodyBackendType !== globalMount.backend) {
+    return NextResponse.json(
+      { error: "backend_type must match global_backend.backend" },
+      { status: 400 },
+    );
+  }
+  const requestedBackendType = globalMount
+    ? globalMount.backend
+    : bodyBackendType ?? globalBackendRequest?.backend ?? null;
   const requestedSessionId = normalizeOptionalString(
     readBodyField(normalizedBody, "session_id", "sessionId")
   );
@@ -625,6 +682,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "launch_config must be an object" }, { status: 400 });
   }
   let launchConfig = launchConfigField.value;
+  if (globalMount && launchConfig) {
+    // Consumed above: the worktree belongs on the code's daemon, so the AI
+    // daemon must not create one locally.
+    launchConfig = { ...launchConfig };
+    delete launchConfig.worktree;
+    delete launchConfig.createWorktree;
+    delete launchConfig.create_worktree;
+  }
   const worktreeRequested = isTaskWorktreeRequested(launchConfig);
   if (taskType === "pty_task" && worktreeRequested) {
     return NextResponse.json({ error: "PTY task does not support worktree" }, { status: 400 });
@@ -685,6 +750,13 @@ export async function POST(request: NextRequest) {
     }
     remoteWorktree = resolved.remoteWorktree;
   }
+  if (globalMount) {
+    remoteWorktree = globalMount.remoteWorktree;
+  }
+  const remoteWorkspace = globalMount?.remoteWorkspace ?? null;
+  // The AI's read-only local clone: for a global backend only a real copy of
+  // this repository on its daemon, never an unrelated default-project dir.
+  const localClonePath = globalMount ? globalMount.localClonePath : projectWorkspacePath;
   const groupWorkerInitialContent: string | null = agentGroupPlan
     ? buildAgentBootstrap({
         agent: agentGroupPlan.workerAgent,
@@ -700,10 +772,16 @@ export async function POST(request: NextRequest) {
     (remoteWorktree
       ? buildRemoteWorktreeBootstrap({
           remoteWorktree,
-          localWorkspacePath: projectWorkspacePath,
+          localWorkspacePath: localClonePath,
           taskPrompt: initialContent,
         })
-      : initialContent);
+      : remoteWorkspace
+        ? buildRemoteWorkspaceBootstrap({
+            remoteWorkspace,
+            localWorkspacePath: localClonePath,
+            taskPrompt: initialContent,
+          })
+        : initialContent);
   if (worktreeRequested && (!projectDaemonHost || !projectWorkspacePath || !projectRepoRoot)) {
     return NextResponse.json(
       { error: "Worktree requires a git-backed bound project" },
@@ -726,6 +804,9 @@ export async function POST(request: NextRequest) {
         ? { sessionFilePath: requestedSessionFilePath }
         : {}),
     };
+    // RFC 0041: only the server mints a remote project directory.
+    delete aiLaunchConfig.remoteWorkspace;
+    delete aiLaunchConfig.remote_workspace;
     if (worktreeRequested) {
       try {
         launchConfig = buildTaskWorktreeLaunchConfig({
@@ -754,6 +835,9 @@ export async function POST(request: NextRequest) {
         delete aiLaunchConfig.remote_worktree;
         aiLaunchConfig.remoteWorktree = remoteWorktree;
       }
+      if (remoteWorkspace) {
+        aiLaunchConfig.remoteWorkspace = remoteWorkspace;
+      }
       launchConfig = Object.keys(aiLaunchConfig).length > 0 ? aiLaunchConfig : null;
     }
   }
@@ -767,9 +851,11 @@ export async function POST(request: NextRequest) {
     }
   }
   const hasAgentHostField = hasBodyField(normalizedBody, "agent_host", "agentHost");
-  let agentHost = normalizeOptionalString(
-    readBodyField(normalizedBody, "agent_host", "agentHost")
-  );
+  // A global backend names its own daemon; any agent_host the client sent
+  // (e.g. the code's daemon) describes the project it started from.
+  let agentHost = globalMount
+    ? globalMount.agentHost
+    : normalizeOptionalString(readBodyField(normalizedBody, "agent_host", "agentHost"));
   if (projectDaemonHost) {
     if (hasAgentHostField && agentHost && agentHost !== projectDaemonHost) {
       if (!isConductorFireHost(agentHost)) {
@@ -890,6 +976,9 @@ export async function POST(request: NextRequest) {
       ...(fireTaskDaemonName ? { daemonName: fireTaskDaemonName } : {}),
     };
   }
+  if (taskType === "ai_task" && globalMount) {
+    metadata = { ...(metadata ?? {}), ...globalMount.metadata };
+  }
   // Stamp the worker's group membership onto its metadata (RFC 0033) so the
   // group query can report its role/agent. The shared groupId is also written
   // to the task's group_id column below.
@@ -952,7 +1041,8 @@ export async function POST(request: NextRequest) {
     } else {
       task = await createAndDispatchAiTask({
         userId: user.id,
-        projectId,
+        projectId: project.id,
+        ...(globalMount ? { secondProjectId: globalMount.secondProjectId } : {}),
         issueId: null,
         title,
         agentHost,

@@ -70,6 +70,21 @@ vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
 }));
 
+const globalBackendsState: {
+  backends: Array<{ host: string; backend: string }>;
+  hydrated: boolean;
+  hydrate: () => Promise<void>;
+} = { backends: [], hydrated: true, hydrate: async () => {} };
+
+vi.mock('@/features/user-preferences/global-ai-backends', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/user-preferences/global-ai-backends')>();
+  return {
+    ...actual,
+    useGlobalAiBackendsStore: (selector: (state: typeof globalBackendsState) => unknown) =>
+      selector(globalBackendsState),
+  };
+});
+
 describe('CreateTaskDialog', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -103,6 +118,7 @@ describe('CreateTaskDialog', () => {
       { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: [] },
       { id: 'fire-1', host: 'conductor-fire-worker', supportedBackends: ['fire'], capabilities: [] },
     ];
+    globalBackendsState.backends = [];
   });
 
 
@@ -125,7 +141,7 @@ describe('CreateTaskDialog', () => {
     const draft = {
       title: 'Restore all options', initialContent: 'Implement the mobile fixes', projectId: 'project-1',
       createWorktree: true, persistent: false, remoteWorktreeHost: '', agentHost: 'daemon-a', backendType: 'codex',
-      workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
+      globalBackendKey: '', workerAgent: 'feature-dev', reviewers: [{ name: 'code-reviewer', backend: 'codex' }], submitError: null,
     };
     sessionStorage.setItem('conductor-create-task-draft:draft-user', JSON.stringify(draft));
     apiGetMock.mockRejectedValueOnce(new Error('Device offline'));
@@ -848,6 +864,126 @@ describe('CreateTaskDialog', () => {
           }));
         });
       });
+    });
+  });
+
+  describe('global AI backends (RFC 0041)', () => {
+    // The project's code lives on daemon-b; daemon-a has the AI account.
+    const boundProject = {
+      id: 'project-b',
+      name: 'Hardware',
+      daemonHost: 'daemon-b',
+      workspacePath: '/repo/hw',
+      repoRoot: '/repo/hw',
+    };
+
+    beforeEach(() => {
+      projectsState = { projects: [boundProject] };
+      agentsState.agents = [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: [] },
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: ['remote_exec', 'remote_file'] },
+      ];
+    });
+
+    it('shows no Global group when none are configured', async () => {
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      const backendSelect = await screen.findByLabelText('AI backend');
+      expect(within(backendSelect).queryByRole('group', { name: 'Global' })).toBeNull();
+      expect(within(backendSelect).getAllByRole('option').map((option) => option.textContent)).toEqual(['gpt']);
+    });
+
+    it('lists global backends of other daemons and greys out the ones that cannot run now', async () => {
+      globalBackendsState.backends = [
+        { host: 'daemon-a', backend: 'claude' },
+        { host: 'daemon-a', backend: 'kimi' },
+        { host: 'daemon-c', backend: 'claude' },
+        { host: 'daemon-b', backend: 'gpt' },
+      ];
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      const group = within(await screen.findByLabelText('AI backend')).getByRole('group', { name: 'Global' });
+      const options = within(group).getAllByRole('option') as HTMLOptionElement[];
+      // The project's own daemon is not repeated under Global.
+      expect(options.map((option) => option.textContent)).toEqual([
+        'claude @ daemon-a',
+        'kimi @ daemon-a — kimi is not available on daemon-a',
+        'claude @ daemon-c — daemon-c is offline',
+      ]);
+      expect(options.map((option) => option.disabled)).toEqual([false, true, true]);
+      expect(options[1].title).toBe('kimi is not available on daemon-a');
+      expect(options[2].title).toBe('daemon-c is offline');
+    });
+
+    it('submits globalBackend with the worktree choice kept independent', async () => {
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      createTaskMock.mockResolvedValue({ id: 'task-global' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      fireEvent.change(await screen.findByLabelText('AI backend'), {
+        target: { value: `global:daemon-a\u0000claude` },
+      });
+      expect(screen.getByText('AI runs on daemon-a and works on daemon-b through conductor remote.')).toBeInTheDocument();
+      // Agent groups are not offered with a global backend.
+      expect(screen.queryByLabelText(/Agents/)).toBeNull();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: 'Create task in a separate worktree' }));
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Remote fix' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+      const input = createTaskMock.mock.calls[0][0];
+      expect(input).toMatchObject({
+        projectId: 'project-b',
+        globalBackend: { host: 'daemon-a', backend: 'claude' },
+        backendType: 'claude',
+        launchConfig: { worktree: true },
+      });
+      expect(input.agentHost).toBeUndefined();
+      expect(input.agents).toBeUndefined();
+    });
+
+    it('greys out every global backend when the project daemon cannot be driven remotely', async () => {
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      agentsState.agents = [
+        agentsState.agents[0],
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: [] },
+      ];
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      const group = within(await screen.findByLabelText('AI backend')).getByRole('group', { name: 'Global' });
+      const option = within(group).getByRole('option') as HTMLOptionElement;
+      expect(option.disabled).toBe(true);
+      expect(option.title).toMatch(/daemon-b does not support conductor remote/);
+    });
+
+    it('drops a remembered global backend once the user picks an agent group instead', async () => {
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      createTaskMock.mockResolvedValue({ id: 'task-group' });
+      const view = render(<CreateTaskDialog open onClose={() => {}} />);
+      fireEvent.change(await screen.findByLabelText('AI backend'), {
+        target: { value: `global:daemon-a\u0000claude` },
+      });
+      // daemon-a disconnects: the choice becomes unavailable and the local form returns.
+      const online = agentsState.agents;
+      agentsState.agents = [online[1]];
+      view.rerender(<CreateTaskDialog open onClose={() => {}} />);
+      fireEvent.change(await screen.findByLabelText(/Agents/), { target: { value: 'feature-dev' } });
+      // It reconnects: the agent group must survive.
+      agentsState.agents = online;
+      view.rerender(<CreateTaskDialog open onClose={() => {}} />);
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Group' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+      const input = createTaskMock.mock.calls[0][0];
+      expect(input.globalBackend).toBeUndefined();
+      expect(input.agents).toEqual([{ name: 'feature-dev' }]);
+    });
+
+    it('keeps the no-backends warning when every global backend is unavailable', () => {
+      globalBackendsState.backends = [{ host: 'daemon-c', backend: 'claude' }];
+      agentsState.agents = [
+        agentsState.agents[0],
+        { id: 'daemon-2', host: 'daemon-b', supportedBackends: [], capabilities: ['remote_exec', 'remote_file'] },
+      ];
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      expect(screen.queryByLabelText('AI backend')).toBeNull();
+      expect(screen.getByText(/does not advertise any AI backends yet/)).toBeInTheDocument();
     });
   });
 });

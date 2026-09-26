@@ -27,6 +27,8 @@ export type AiTaskGoalDescriptor = {
 type CreateAiTaskArgs = {
   userId: string;
   projectId: string;
+  /** Display-only project override (RFC 0041 files a global-backend task under the project it was started from). */
+  secondProjectId?: string | null;
   issueId?: string | null;
   title: string;
   agentHost: string | null;
@@ -216,6 +218,7 @@ const createAiTaskRecord = async (
         launchConfig: serializeJsonObject(args.launchConfig ?? null),
         metadata: args.metadata ? JSON.stringify(args.metadata) : null,
         ...(args.groupId ? { groupId: args.groupId } : {}),
+        ...(args.secondProjectId ? { secondProjectId: args.secondProjectId } : {}),
       },
     });
   } catch (error) {
