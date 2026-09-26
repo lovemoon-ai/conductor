@@ -18,7 +18,9 @@ import { randomUUID, createHash } from "node:crypto";
 import { Readable } from "node:stream";
 
 import { ConductorConfig } from "@love-moon/conductor-sdk";
-import { runRemoteCp } from "../src/remote/cp.js";
+import { downloadFile, runRemoteCp, uploadFile } from "../src/remote/cp.js";
+import { execRemote } from "../src/remote/exec.js";
+import { createRemoteWorkspace } from "../src/remote/mcp.js";
 import { createRemoteFileHandlers } from "../src/remote-file-handlers.js";
 import { execFile } from "node:child_process";
 
@@ -1012,6 +1014,47 @@ test("an empty file transfers without a malformed Content-Range", async () => {
   assert.equal((await fsp.stat(target)).size, 0);
   // `bytes 0-0/0` would claim one byte of a zero-byte file.
   assert.deepEqual(ranges, [], "an empty body needs no range at all");
+
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
+test("remote mcp edit/write go through the real transfer and keep or set the file mode", async () => {
+  const { root, remoteDir, backend } = await setup();
+  const quiet = { log: () => {}, error: () => {} };
+  const workspace = createRemoteWorkspace({
+    host: "ubuntu",
+    root: remoteDir,
+    tmpDir: root,
+    exec: async ({ command, args, timeoutMs }) =>
+      (await execRemote(config, "ubuntu", command, { args, timeoutMs, fetchImpl: backend.fetch })).run,
+    wait: async () => {
+      throw new Error("not used");
+    },
+    download: (remotePath, localPath) =>
+      downloadFile({ config, target: "ubuntu", remotePath, localPath, fetchImpl: backend.fetch, consoleImpl: quiet, quiet: true }),
+    upload: (localPath, remotePath) =>
+      uploadFile({ config, target: "ubuntu", localPath, remotePath, fetchImpl: backend.fetch, consoleImpl: quiet, quiet: true }),
+  });
+
+  const script = path.join(remoteDir, "run.sh");
+  await fsp.writeFile(script, "#!/bin/sh\necho old\n");
+  await fsp.chmod(script, 0o755);
+  await workspace.edit({ file_path: "run.sh", old_string: "echo old", new_string: "echo new" });
+  assert.equal(await fsp.readFile(script, "utf8"), "#!/bin/sh\necho new\n");
+  assert.equal((await fsp.stat(script)).mode & 0o777, 0o755);
+
+  // Overwriting keeps the remote file's mode, not the local temp file's.
+  const tool = path.join(remoteDir, "tool");
+  await fsp.writeFile(tool, "old");
+  await fsp.chmod(tool, 0o750);
+  await workspace.write({ file_path: "tool", content: "new" });
+  assert.equal(await fsp.readFile(tool, "utf8"), "new");
+  assert.equal((await fsp.stat(tool)).mode & 0o777, 0o750);
+
+  await workspace.write({ file_path: "sub/new.txt", content: "fresh\n" });
+  const created = path.join(remoteDir, "sub/new.txt");
+  assert.equal(await fsp.readFile(created, "utf8"), "fresh\n");
+  assert.equal((await fsp.stat(created)).mode & 0o777, 0o644);
 
   await fsp.rm(root, { recursive: true, force: true });
 });

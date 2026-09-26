@@ -44,6 +44,7 @@ import {
   createRemoteExecHandlers,
   handleRemoteExecRequest,
 } from "./remote-exec-handlers.js";
+import { REMOTE_WORKTREE_ENV, remoteWorktreeFireEnv } from "./remote/mcp-launch.js";
 import {
   REMOTE_FILE_CAPABILITY,
   createRemoteFileHandlers,
@@ -896,6 +897,7 @@ const PTY_TASK_SCOPED_ENV_KEYS = [
   "CONDUCTOR_PTY_SESSION_ID",
   "CONDUCTOR_LAUNCHED_BY_DAEMON",
   "CONDUCTOR_RESUME_CWD",
+  REMOTE_WORKTREE_ENV,
 ];
 
 // Task-scoped env vars a Fire must NEVER inherit from anywhere but this
@@ -7819,6 +7821,8 @@ export function startDaemon(config = {}, deps = {}) {
         // backend (dsh/copilot) would see e.g. `claude --model opus` here and
         // mis-apply its flags. Fire treats "" as unset.
         CONDUCTOR_CLI_COMMAND: cliCommand,
+        // RFC 0040: lets fire give the AI tools bound to the remote worktree.
+        ...remoteWorktreeFireEnv(launchConfig),
       };
       if (AGENT_TOKEN) {
         env.CONDUCTOR_AGENT_TOKEN = AGENT_TOKEN;
@@ -8578,6 +8582,7 @@ export function startDaemon(config = {}, deps = {}) {
       // gets an explicit `-e CONDUCTOR_CLI_COMMAND=` that overrides any stale
       // value in the tmux SERVER's global environment (see create_task).
       CONDUCTOR_CLI_COMMAND: cliCommand,
+      ...remoteWorktreeFireEnv(targetLaunchConfig),
     };
     env.CONDUCTOR_RESUME_CWD = resolvedResumeCwd;
     if (AGENT_TOKEN) {

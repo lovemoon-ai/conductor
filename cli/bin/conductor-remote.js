@@ -20,6 +20,7 @@ import { EXIT } from "../src/remote/client.js";
 import { runRemoteExec, showHelp as showExecHelp } from "../src/remote/exec.js";
 import { runRemoteCp, showHelp as showCpHelp } from "../src/remote/cp.js";
 import { runRemoteWait, showHelp as showWaitHelp } from "../src/remote/wait.js";
+import { runRemoteMcp, showHelp as showMcpHelp } from "../src/remote/mcp.js";
 
 export { EXIT };
 
@@ -27,6 +28,7 @@ const VERBS = new Map([
   ["exec", runRemoteExec],
   ["cp", runRemoteCp],
   ["wait", runRemoteWait],
+  ["mcp", runRemoteMcp],
 ]);
 
 const isMainModule = (() => {
@@ -45,6 +47,7 @@ Verbs:
   exec   Run a command on another daemon's host
   cp     Copy a file to or from another daemon's host
   wait   Wait for a command that \`exec\` left running (by run id)
+  mcp    Serve MCP tools bound to a directory on another daemon's host
 
 Options:
   -h, --help   Show this help
@@ -59,6 +62,7 @@ For verb-specific help:
   conductor remote exec --help
   conductor remote cp --help
   conductor remote wait --help
+  conductor remote mcp --help
 `);
 }
 
@@ -89,7 +93,7 @@ export async function runRemote(argv, deps = {}) {
   return handler(argv.slice(1), deps);
 }
 
-export { showExecHelp, showCpHelp, showWaitHelp };
+export { showExecHelp, showCpHelp, showWaitHelp, showMcpHelp };
 
 if (isMainModule) {
   // `process.exitCode` rather than `process.exit()`: writes to a pipe are async,

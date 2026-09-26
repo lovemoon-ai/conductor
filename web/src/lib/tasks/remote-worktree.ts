@@ -179,9 +179,11 @@ export const resolveRemoteWorktreePaths = (remote: RemoteWorktreeLaunchConfig) =
 };
 
 /** How to drive another daemon over `conductor remote`; identical for both modes. */
-const buildRemoteOperatingRules = (h: string): string[] => [
+const buildRemoteOperatingRules = (h: string, workDir: string, whenReady = ""): string[] => [
   "",
   "How to operate on the remote workspace",
+  // RFC 0040: fire may attach remote_* MCP tools bound to the same work dir.
+  `- If you have the remote_read / remote_edit / remote_write / remote_grep / remote_glob / remote_bash tools, they are already bound to ${h}:${workDir};${whenReady} use them instead of the commands below.`,
   `- Run every file read/write, git, build and test command through: conductor remote exec -t ${h} -w <dir> -- <argv>`,
   `  Commands run without a shell. For pipes, redirects or multi-step scripts pass ONE script string: conductor remote exec -t ${h} -w <dir> -- bash -lc "$script"`,
   "  Start multi-step write/build scripts with `set -euo pipefail`, or a failed middle step still exits 0; leave it off read-only `... | head` queries, which it turns into exit 141.",
@@ -223,7 +225,7 @@ export function buildRemoteWorktreeBootstrap(params: {
     `  worktree root:    ${worktreeRoot}`,
     `  work dir:         ${workDir}`,
     ...buildLocalCloneNote(localWorkspacePath),
-    ...buildRemoteOperatingRules(h),
+    ...buildRemoteOperatingRules(h, workDir, " once the worktree exists,"),
     "",
     "First steps, in this order, before any other work",
     `1. Sync the base branch, with -w ${remote.repoRoot}: git fetch --all --prune; then, if \`git branch --show-current\` prints "${remote.baseRef}" and \`git status --porcelain\` is empty: git merge --ff-only @{u}`,
@@ -254,7 +256,7 @@ export function buildRemoteWorkspaceBootstrap(params: {
     `  repo root: ${remote.repoRoot}`,
     `  work dir:  ${remote.workspacePath}`,
     ...buildLocalCloneNote(localWorkspacePath),
-    ...buildRemoteOperatingRules(h),
+    ...buildRemoteOperatingRules(h, remote.workspacePath),
     "",
     "First steps, before any other work",
     `1. Use -w ${remote.workspacePath} for every command. Read the repository's CLAUDE.md / AGENTS.md there first.`,

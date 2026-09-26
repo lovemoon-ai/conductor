@@ -43,7 +43,7 @@ dang217
 ## Non-Goals
 
 - 不跨账号：全局后端和目标项目都必须属于当前用户；DaemonShare 分享来的 daemon 既不能设为全局后端，也不能作为目标。
-- 不做 MCP 远程文件工具（issue `5b92b28c`，视实际痛点再做）。
+- MCP 远程文件工具由 RFC 0040（`conductor remote mcp`）提供：`remoteWorktree` 与本 RFC 的 `remoteWorkspace` 都会让 fire 挂上绑定到 B 的 `remote_*` 工具（direct 模式绑定到仓库根，起始目录为项目目录）。
 - 不做经后端中转的模型出网（0038 方案 A）。
 - 一期不支持多 agent 组、PTY 任务、附属终端开到 B。
 
