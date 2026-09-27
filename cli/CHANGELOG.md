@@ -1,5 +1,15 @@
 # @love-moon/conductor-cli
 
+## 0.15.1
+
+### Patch Changes
+
+- 8b0e76b: Global AI backend tasks can now work directly in a project directory that is not
+  a git repository (the web app no longer rejects it); git-only steps and the
+  "New worktree" round option are hidden for such projects.
+  - @love-moon/conductor-sdk@0.15.1
+  - @love-moon/ai-sdk@0.15.1
+
 ## 0.15.0
 
 ### Minor Changes

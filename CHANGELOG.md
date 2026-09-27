@@ -18,6 +18,26 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.15.1] - 2026-09-27
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.15.1`
+- `@love-moon/conductor-sdk` `0.15.1`
+- `@love-moon/ai-sdk` `0.15.1`
+- `@love-moon/app-sdk` `0.15.1`
+- `@love-moon/chat-web` `0.15.1`
+
+### Changes
+
+### Patch Changes
+
+- 8b0e76b: Global AI backend tasks can now work directly in a project directory that is not
+  a git repository (the web app no longer rejects it); git-only steps and the
+  "New worktree" round option are hidden for such projects.
+  - @love-moon/conductor-sdk@0.15.1
+  - @love-moon/ai-sdk@0.15.1
+
 ## [0.15.0] - 2026-09-26
 
 ### Released packages
