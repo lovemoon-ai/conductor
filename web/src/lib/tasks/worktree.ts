@@ -211,19 +211,23 @@ const sanitizeWorktreeFolderName = (branch: string): string =>
 
 /**
  * Where a task's worktree lives, regardless of who created it: the on-disk
- * folder name, the workspace it hangs under, and (for a remote worktree) the
- * daemon that owns that disk. A local worktree has no host of its own — it is
- * implicitly on the task's daemon — so two local configs compare on path only.
+ * folder name, the workspace it hangs under, and the daemon that owns that
+ * disk. A local worktree is on the task's own daemon, which only the caller
+ * knows (`taskHost`); two local configs compare on path only, but a local and
+ * a remote one are the same directory only when that daemon is the remote host
+ * (a cross-daemon successor co-owning its source's worktree).
  */
 const resolveTaskWorktreeIdentity = (
   launchConfig: unknown,
-): { folder: string; workspacePath: string; host: string | null } | null => {
+  taskHost?: string | null,
+): { folder: string; workspacePath: string; host: string | null; remote: boolean } | null => {
   const local = parseTaskWorktreeLaunchConfig(launchConfig);
   if (local) {
     return {
       folder: sanitizeWorktreeFolderName(local.worktreeBranch),
       workspacePath: local.projectWorkspacePath,
-      host: null,
+      host: normalizeOptionalString(taskHost),
+      remote: false,
     };
   }
   const remote = parseRemoteWorktreeLaunchConfig(launchConfig);
@@ -232,6 +236,7 @@ const resolveTaskWorktreeIdentity = (
       folder: sanitizeWorktreeFolderName(remote.branch),
       workspacePath: remote.workspacePath,
       host: remote.host,
+      remote: true,
     };
   }
   return null;
@@ -240,9 +245,10 @@ const resolveTaskWorktreeIdentity = (
 export const hasSameTaskWorktreeRoot = (
   referenceLaunchConfig: unknown,
   candidateLaunchConfig: unknown,
+  hosts?: { reference?: string | null; candidate?: string | null },
 ): boolean => {
-  const reference = resolveTaskWorktreeIdentity(referenceLaunchConfig);
-  const candidate = resolveTaskWorktreeIdentity(candidateLaunchConfig);
+  const reference = resolveTaskWorktreeIdentity(referenceLaunchConfig, hosts?.reference);
+  const candidate = resolveTaskWorktreeIdentity(candidateLaunchConfig, hosts?.candidate);
   if (!reference || !candidate) {
     return false;
   }
@@ -250,12 +256,14 @@ export const hasSameTaskWorktreeRoot = (
   return (
     reference.folder === candidate.folder &&
     reference.workspacePath === candidate.workspacePath &&
-    reference.host === candidate.host
+    (reference.remote || candidate.remote
+      ? Boolean(reference.host) && reference.host === candidate.host
+      : true)
   );
 };
 
-export const getTaskWorktreeRootKey = (launchConfig: unknown): string | null => {
-  const identity = resolveTaskWorktreeIdentity(launchConfig);
+export const getTaskWorktreeRootKey = (launchConfig: unknown, taskHost?: string | null): string | null => {
+  const identity = resolveTaskWorktreeIdentity(launchConfig, taskHost);
   if (!identity) {
     return null;
   }

@@ -159,7 +159,7 @@ describe("teardownTaskRuntime", () => {
         id: { not: "ai-1" },
         achievedAt: null,
       },
-      select: { id: true, launchConfig: true },
+      select: { id: true, launchConfig: true, agentHost: true },
     });
     expect(db.agentOutbox.create).toHaveBeenCalledWith({
       data: { eventType: "cleanup_task_worktree" },
@@ -201,6 +201,50 @@ describe("teardownTaskRuntime", () => {
     await teardownTaskRuntime({
       userId: "user-1",
       task: { ...baseTask, launchConfig: JSON.stringify(workerLaunchConfig) },
+      reason: "achieved_by_user",
+      archivePatch,
+    });
+
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
+  });
+
+  // Regression: "New task from this" on another daemon binds the successor to
+  // the source's local worktree as a remote worktree. Archiving the source
+  // must not force-remove the directory the successor's AI is working in.
+  it("keeps a worktree while a cross-daemon successor still works in it", async () => {
+    const actualWorktree =
+      await vi.importActual<typeof import("./worktree")>("./worktree");
+    const sourceLaunchConfig = actualWorktree.buildTaskWorktreeLaunchConfig({
+      launchConfig: null,
+      worktreeId: "ai-1",
+      projectRepoRoot: "/repo",
+      projectWorkspacePath: "/repo",
+    });
+    const source = actualWorktree.parseTaskWorktreeLaunchConfig(sourceLaunchConfig)!;
+    const successorLaunchConfig = {
+      remoteWorktree: {
+        host: "daemon-a",
+        projectId: "proj-1",
+        repoRoot: "/repo",
+        workspacePath: "/repo",
+        branch: source.worktreeBranch,
+        baseRef: source.worktreeBaseRef,
+      },
+    };
+    vi.mocked(parseTaskWorktreeLaunchConfig).mockImplementation(
+      actualWorktree.parseTaskWorktreeLaunchConfig,
+    );
+    vi.mocked(hasSameTaskWorktreeRoot).mockImplementation(
+      actualWorktree.hasSameTaskWorktreeRoot,
+    );
+    vi.mocked(resolveTaskWorktreeCleanupHost).mockReturnValue("daemon-a");
+    vi.mocked(db.task.findMany).mockResolvedValue([
+      { id: "ai-successor", agentHost: "daemon-b", launchConfig: JSON.stringify(successorLaunchConfig) },
+    ] as any);
+
+    await teardownTaskRuntime({
+      userId: "user-1",
+      task: { ...baseTask, launchConfig: JSON.stringify(sourceLaunchConfig) },
       reason: "achieved_by_user",
       archivePatch,
     });

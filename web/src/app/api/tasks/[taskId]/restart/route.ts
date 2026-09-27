@@ -15,6 +15,7 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import {
   buildHandoffNoticeContent,
+  buildResumeHandoffPrompt,
   buildResumeHandoffUrl,
   createInternalResumeHandoffShare,
   HANDOFF_NOTICE_METADATA,
@@ -33,12 +34,15 @@ import {
   parseJsonObject,
   serializeJsonObject,
   normalizeTaskStatus,
+  type JsonObject,
 } from "@/lib/tasks/task-config";
 import {
   acquireTaskWorktreeMutationLock,
+  toRemoteWorktreeCleanupLaunchConfig,
   inheritTaskWorktreeLaunchConfig,
   parseRemoteWorkspaceLaunchConfig,
   parseRemoteWorktreeLaunchConfig,
+  type RemoteWorkspaceLaunchConfig,
 } from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
@@ -59,7 +63,14 @@ import {
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
-import { readTaskGlobalBackend } from "@/lib/tasks/global-backend";
+import {
+  readTaskGlobalBackend,
+  resolveCrossDaemonRemoteBinding,
+} from "@/lib/tasks/global-backend";
+import {
+  buildRemoteWorkspaceBootstrap,
+  resolveRemoteWorktreePaths,
+} from "@/lib/tasks/remote-worktree";
 import {
   readTaskLabelIdsFromMetadata,
   TASK_LABEL_IDS_METADATA_KEY,
@@ -902,16 +913,69 @@ export async function POST(
   const sourceRemoteWorktree = parseRemoteWorktreeLaunchConfig(sourceLaunchConfig);
   // RFC 0041: so does a remote project directory.
   const sourceRemoteWorkspace = parseRemoteWorkspaceLaunchConfig(sourceLaunchConfig);
-  const successorLaunchConfig = isCrossDaemonOverride
-    ? sourceRemoteWorktree
-      ? { remoteWorktree: sourceRemoteWorktree }
-      : sourceRemoteWorkspace
-        ? { remoteWorkspace: sourceRemoteWorkspace }
-        : {}
+  // A plain local source moved to another daemon: the AI runs there but keeps
+  // working on the source machine's files through the remote_* MCP tools
+  // (RFC 0041). Falls back to the target's own path when that is not possible
+  // (source daemon offline, old CLI, shared daemon).
+  const crossDaemonRemoteBinding =
+    isCrossDaemonOverride && !sourceRemoteWorktree && !sourceRemoteWorkspace
+      ? await resolveCrossDaemonRemoteBinding({
+          userId: user.id,
+          tokenScope: user.tokenScope ?? null,
+          sourceHost: sourceRunHost,
+          targetHost: restartAgentHost,
+          targetCapabilities: restartAgentCapabilities,
+          connectedAgents,
+          projectId: project.id,
+          sourceWorktreeLaunchConfig: inheritedWorktreeLaunchConfig,
+          sourceCwd:
+            sourceCwd ?? (projectDaemonHost === sourceRunHost ? projectWorkspacePath : null),
+          projectRepoRoot:
+            projectDaemonHost === sourceRunHost
+              ? normalizeOptionalString((project as { repoRoot?: string | null }).repoRoot)
+              : null,
+        })
+      : null;
+  // Moving the AI onto the daemon that holds the remote files makes it an
+  // ordinary local task again, instead of reaching its own disk remotely.
+  const homecomingLaunchConfig =
+    isCrossDaemonOverride && sourceRemoteWorktree?.host === restartAgentHost
+      ? toRemoteWorktreeCleanupLaunchConfig(sourceRemoteWorktree, successorTaskId)
+      : isCrossDaemonOverride && !sourceRemoteWorktree && sourceRemoteWorkspace?.host === restartAgentHost
+        ? { cwd: sourceRemoteWorkspace.workspacePath }
+        : null;
+  const successorLaunchConfig: JsonObject = isCrossDaemonOverride
+    ? homecomingLaunchConfig ??
+      (sourceRemoteWorktree
+        ? { remoteWorktree: sourceRemoteWorktree }
+        : sourceRemoteWorkspace
+          ? { remoteWorkspace: sourceRemoteWorkspace }
+          : crossDaemonRemoteBinding ?? {})
     : inheritedWorktreeLaunchConfig ?? {
         ...(successorCwd ? { cwd: successorCwd } : {}),
         ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
       };
+  if (crossDaemonRemoteBinding) {
+    successorMetadata.globalBackend = { host: restartAgentHost, backend: targetBackend };
+  } else if (homecomingLaunchConfig) {
+    delete successorMetadata.globalBackend;
+  }
+  // A successor whose code lives on another daemon gets the same operating
+  // protocol a new remote task does, wrapped around its first prompt; without
+  // it the AI would edit the target machine's files with its built-in tools.
+  // An existing remote worktree is continued in place, not re-created.
+  const successorRemoteWorktree = parseRemoteWorktreeLaunchConfig(successorLaunchConfig);
+  const successorRemoteDir: RemoteWorkspaceLaunchConfig | null = successorRemoteWorktree
+    ? (() => {
+        const { worktreeRoot, workDir } = resolveRemoteWorktreePaths(successorRemoteWorktree);
+        return {
+          host: successorRemoteWorktree.host,
+          projectId: successorRemoteWorktree.projectId,
+          repoRoot: worktreeRoot,
+          workspacePath: workDir,
+        };
+      })()
+    : parseRemoteWorkspaceLaunchConfig(successorLaunchConfig);
 
   // Generate a short-lived handoff share so the successor backend can pull the
   // prior conversation as plain text — this replaces brittle JSONL session
@@ -952,6 +1016,17 @@ export async function POST(
       { status: 500 },
     );
   }
+
+  const agentInitialContent =
+    successorRemoteDir && restartAgentCapabilities.includes(RESTART_FIRST_MESSAGE_CAPABILITY)
+      ? buildRemoteWorkspaceBootstrap({
+          remoteWorkspace: successorRemoteDir,
+          localWorkspacePath: normalizeOptionalString(successorLaunchConfig.cwd),
+          taskPrompt:
+            firstMessage ??
+            buildResumeHandoffPrompt({ sourceBackend, targetBackend, resumeContextUrl }),
+        })
+      : firstMessage;
 
   const { task: createdTask, restartOutboxRow } = await db.$transaction(async (tx) => {
     if (inheritedWorktreeLaunchConfig) {
@@ -1051,7 +1126,7 @@ export async function POST(
               // its resume context (replaces JSONL session translation).
               resume_context_url: resumeContextUrl,
               // When set, the daemon sends this instead of the handoff prompt.
-              ...(firstMessage ? { initial_content: firstMessage } : {}),
+              ...(agentInitialContent ? { initial_content: agentInitialContent } : {}),
               request_id: requestId,
             },
           }),

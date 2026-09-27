@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   HANDOFF_NOTICE_METADATA,
   TRANSCRIPT_FENCE_BEGIN,
   TRANSCRIPT_FENCE_END,
   buildHandoffNoticeContent,
+  buildResumeHandoffPrompt,
   buildResumeHandoffUrl,
   buildSharedPlainText,
   type SharedTaskPayload,
@@ -225,5 +228,24 @@ describe("buildHandoffNoticeContent", () => {
     expect(HANDOFF_NOTICE_METADATA.synthetic).toBe(true);
     expect(HANDOFF_NOTICE_METADATA.kind).toBe("handoff_notice");
     expect(typeof out).toBe("string");
+  });
+});
+
+describe("buildResumeHandoffPrompt", () => {
+  it("matches the daemon's handoff prompt line for line", () => {
+    const daemonSource = readFileSync(path.resolve(__dirname, "../../../../cli/src/daemon.js"), "utf8");
+    const prompt = buildResumeHandoffPrompt({
+      sourceBackend: "codex",
+      targetBackend: "claude",
+      resumeContextUrl: "https://example.com/share/t/plain",
+    });
+    expect(prompt).toContain("(codex)");
+    expect(prompt).toContain("  https://example.com/share/t/plain");
+    // Every fixed sentence must appear verbatim in the daemon's copy (as a JS
+    // string literal, so quotes are escaped there).
+    for (const line of prompt.split("\n")) {
+      if (!line.trim() || /codex|claude|example\.com|CONDUCTOR_TRANSCRIPT/.test(line)) continue;
+      expect(daemonSource).toContain(line.replace(/"/g, '\\"'));
+    }
   });
 });

@@ -266,6 +266,27 @@ describe("remote worktree launch config (RFC 0038)", () => {
     expect(getTaskWorktreeRootKey(reference)).not.toBe(getTaskWorktreeRootKey(local));
   });
 
+  it("hasSameTaskWorktreeRoot matches a local worktree with a remote one only on the same daemon", () => {
+    const sourceLocal = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: remote.branch,
+      worktreeBaseRef: remote.baseRef,
+      projectRepoRoot: remote.repoRoot,
+      projectWorkspacePath: remote.workspacePath,
+    };
+    const successor = { remoteWorktree: remote };
+    // A cross-daemon successor co-owns its source's worktree on ubuntu.
+    expect(hasSameTaskWorktreeRoot(sourceLocal, successor, { reference: "ubuntu" })).toBe(true);
+    expect(hasSameTaskWorktreeRoot(successor, sourceLocal, { candidate: "ubuntu" })).toBe(true);
+    expect(getTaskWorktreeRootKey(sourceLocal, "ubuntu")).toBe(getTaskWorktreeRootKey(successor));
+    // Same path on another daemon, or an unknown daemon, is not the same disk.
+    expect(hasSameTaskWorktreeRoot(sourceLocal, successor, { reference: "macmini" })).toBe(false);
+    expect(hasSameTaskWorktreeRoot(sourceLocal, successor)).toBe(false);
+    // Two local configs still compare on path only.
+    expect(hasSameTaskWorktreeRoot(sourceLocal, { ...sourceLocal }, { reference: "a", candidate: "b" })).toBe(true);
+  });
+
   it("inheritTaskWorktreeLaunchConfig carries a remote worktree (and the local cwd) to the successor", () => {
     expect(
       inheritTaskWorktreeLaunchConfig({ remoteWorktree: remote, cwd: "/Users/a/repo", initialContent: "x" }),

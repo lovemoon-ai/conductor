@@ -57,6 +57,9 @@ vi.mock("@/lib/db", () => ({
     user: {
       findUnique: vi.fn(),
     },
+    daemonShare: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
@@ -404,6 +407,220 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(createArgs.data.agentHost).toBe("daemon-2");
     // The local cwd belongs to daemon-1; the remote workspace does not.
     expect(JSON.parse(createArgs.data.launchConfig)).toEqual({ remoteWorkspace });
+  });
+
+  describe("new task on another daemon binds the source workspace remotely", () => {
+    const REMOTE_CAPS = ["remote_exec", "remote_file"];
+    const TARGET_CAPS = ["global_backend_v1", "restart_first_message"];
+    const agents = (sourceCaps: string[] = REMOTE_CAPS) => [
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: sourceCaps },
+      { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: TARGET_CAPS },
+    ];
+    const restartOn = (body: Record<string, unknown> = {}) =>
+      POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: { strategy: "new_task", agent_host: "daemon-2", ...body },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+    const lastPayload = () =>
+      JSON.parse(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string).payload;
+    const lastCreate = () => vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+
+    it("points the successor at the source directory and prepends the remote protocol", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/project/app",
+        repoRoot: "/repo/project",
+      } as any);
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-2");
+      expect(JSON.parse(lastCreate().data.launchConfig)).toEqual({
+        remoteWorkspace: {
+          host: "daemon-1",
+          projectId: "proj-1",
+          repoRoot: "/repo/project",
+          workspacePath: "/repo/project/app",
+        },
+      });
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toEqual({ host: "daemon-2", backend: "codex" });
+      const initial = lastPayload().initial_content as string;
+      expect(initial).toMatch(/^\[conductor:remote-workspace\]/);
+      expect(initial).toContain("remote_read");
+      // The transcript handoff still reaches the AI, after the protocol.
+      expect(initial).toContain(lastPayload().resume_context_url);
+    });
+
+    it("wraps a user-set first message and co-owns a source worktree as a remote worktree", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          launchConfig: JSON.stringify({
+            worktree: true,
+            worktreeId: "task-1",
+            worktreeBranch: "conductor/task/task-1",
+            worktreeBaseRef: "main",
+            projectRepoRoot: "/repo/project",
+            projectWorkspacePath: "/repo/project",
+            projectRelativePath: ".",
+          }),
+        }) as any,
+      );
+
+      const response = await restartOn({ first_message: "Run the tests" });
+
+      expect(response.status).toBe(200);
+      // Same folder as the source's local worktree, so teardown sees both tasks.
+      expect(JSON.parse(lastCreate().data.launchConfig)).toEqual({
+        remoteWorktree: {
+          host: "daemon-1",
+          projectId: "proj-1",
+          repoRoot: "/repo/project",
+          workspacePath: "/repo/project",
+          branch: "conductor/task/task-1",
+          baseRef: "main",
+        },
+      });
+      const initial = lastPayload().initial_content as string;
+      // Continued in place: the protocol points at the existing worktree and
+      // never tells the AI to create it.
+      expect(initial).toMatch(/^\[conductor:remote-workspace\]/);
+      expect(initial).toContain("work dir:  /repo/project/.conductor/worktrees/conductor_task_task-1");
+      expect(initial).not.toContain("git worktree add");
+      expect(initial).toContain("Run the tests");
+      expect(initial).not.toContain("resume_context");
+      // The chat shows only what the user typed.
+      expect(db.message.create).toHaveBeenCalledWith({
+        data: { taskId: lastCreate().data.id, role: "user", content: "Run the tests" },
+      });
+    });
+
+    it("falls back to the target's own path when the source daemon cannot serve remote tools", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents([]) as any);
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.launchConfig).toBeNull();
+      expect(lastPayload()).not.toHaveProperty("initial_content");
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
+    });
+
+    it("falls back when a daemon is shared from another account", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.daemonShare.findMany).mockResolvedValueOnce([{ guestHost: "daemon-2" }] as any);
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.launchConfig).toBeNull();
+    });
+
+    it("turns a remote workspace back into a local task on the daemon that holds it", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          agentHost: "daemon-2",
+          executionHost: "daemon-2",
+          launchConfig: JSON.stringify({
+            remoteWorkspace: {
+              host: "daemon-1",
+              projectId: "proj-1",
+              repoRoot: "/repo/project",
+              workspacePath: "/repo/project/app",
+            },
+          }),
+          metadata: JSON.stringify({ globalBackend: { host: "daemon-2", backend: "codex" } }),
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: { strategy: "new_task", agent_host: "daemon-1" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-1");
+      expect(JSON.parse(lastCreate().data.launchConfig)).toEqual({ cwd: "/repo/project/app" });
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
+      expect(lastPayload()).not.toHaveProperty("initial_content");
+    });
+
+    it("turns a remote worktree back into the same local worktree on its daemon", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          agentHost: "daemon-2",
+          executionHost: "daemon-2",
+          launchConfig: JSON.stringify({
+            remoteWorktree: {
+              host: "daemon-1",
+              projectId: "proj-1",
+              repoRoot: "/repo/project",
+              workspacePath: "/repo/project",
+              branch: "conductor/task/task-1",
+              baseRef: "main",
+            },
+          }),
+          metadata: JSON.stringify({ globalBackend: { host: "daemon-2", backend: "codex" } }),
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: { strategy: "new_task", agent_host: "daemon-1" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+      expect(response.status).toBe(200);
+      const launchConfig = JSON.parse(lastCreate().data.launchConfig);
+      expect(launchConfig).toMatchObject({
+        worktree: true,
+        worktreeBranch: "conductor/task/task-1",
+        worktreeBaseRef: "main",
+        projectRepoRoot: "/repo/project",
+        projectWorkspacePath: "/repo/project",
+      });
+      expect(launchConfig.remoteWorktree).toBeUndefined();
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
+    });
+
+    it("gives a restarted global-backend task the remote protocol too", async () => {
+      const remoteWorkspace = {
+        host: "ubuntu",
+        projectId: "proj-ubuntu",
+        repoRoot: "/home/u/repo",
+        workspacePath: "/home/u/repo",
+      };
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          launchConfig: JSON.stringify({ remoteWorkspace }),
+          metadata: JSON.stringify({ globalBackend: { host: "daemon-1", backend: "codex" } }),
+        }) as any,
+      );
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(lastCreate().data.launchConfig)).toEqual({ remoteWorkspace });
+      expect(lastPayload().initial_content).toContain('It lives on daemon "ubuntu"');
+    });
   });
 
   it("does not carry a plain display-only move to a successor", async () => {

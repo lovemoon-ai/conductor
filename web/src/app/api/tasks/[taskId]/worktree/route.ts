@@ -129,16 +129,14 @@ export async function POST(
   if (normalizedStatus !== "completed" && normalizedStatus !== "killed") {
     return NextResponse.json({ error: "Stop this task before removing its worktree" }, { status: 409 });
   }
-  const cleanupPlan = resolveTaskWorktreeCleanupPlan(
-    task.launchConfig,
-    resolveTaskWorktreeCleanupHost({
-      boundHost: realtimeHub.getTaskAgentHost(task.id),
-      agentHost: task.agentHost,
-      executionHost: task.executionHost,
-      metadata: task.metadata,
-      projectDaemonHost: task.project.daemonHost,
-    }),
-  );
+  const localCleanupHost = resolveTaskWorktreeCleanupHost({
+    boundHost: realtimeHub.getTaskAgentHost(task.id),
+    agentHost: task.agentHost,
+    executionHost: task.executionHost,
+    metadata: task.metadata,
+    projectDaemonHost: task.project.daemonHost,
+  });
+  const cleanupPlan = resolveTaskWorktreeCleanupPlan(task.launchConfig, localCleanupHost);
   const daemonHost = cleanupPlan?.agentHost ?? null;
   if (!cleanupPlan || !daemonHost) {
     return NextResponse.json({ error: "Task missing daemon binding" }, { status: 409 });
@@ -159,9 +157,15 @@ export async function POST(
           select: {
             id: true,
             launchConfig: true,
+            agentHost: true,
           },
         })
-      ).find((candidate) => hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig)) ??
+      ).find((candidate) =>
+        hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig, {
+          reference: localCleanupHost,
+          candidate: candidate.agentHost,
+        }),
+      ) ??
       null;
     if (sharedWorktreeTask?.id && sharedWorktreeTask.id !== task.id) {
       return {

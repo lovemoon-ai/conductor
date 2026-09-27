@@ -23,7 +23,11 @@ import {
   checkRemoteDaemon,
   resolveRemoteTarget,
 } from "./remote-worktree";
-import type { RemoteWorkspaceLaunchConfig, RemoteWorktreeLaunchConfig } from "./worktree";
+import {
+  parseTaskWorktreeLaunchConfig,
+  type RemoteWorkspaceLaunchConfig,
+  type RemoteWorktreeLaunchConfig,
+} from "./worktree";
 
 type ErrorResult = { error: string; status: number };
 
@@ -181,4 +185,82 @@ export const readTaskGlobalBackend = (metadata: unknown): GlobalAiBackend | null
   const host = normalizeOptionalString(raw?.host);
   const backend = normalizeOptionalString(raw?.backend);
   return host && backend ? { host, backend } : null;
+};
+
+const isWithinDir = (root: string, target: string): boolean => {
+  const trimmed = root.replace(/[\\/]+$/, "");
+  return target === trimmed || target.startsWith(`${trimmed}/`) || target.startsWith(`${trimmed}\\`);
+};
+
+/**
+ * "New task from this" on another daemon: bind the successor to the source
+ * task's directory on the source daemon, so its AI reaches the same files
+ * through the remote_* tools. A source worktree becomes a `remoteWorktree` on
+ * the same folder, so the successor co-owns it (teardown's sibling guard sees
+ * both, and whichever task goes last cleans it up); anything else is direct
+ * mode. `null` when that is not possible and the successor should start from
+ * the target's own path as before.
+ */
+export const resolveCrossDaemonRemoteBinding = async (args: {
+  userId: string;
+  tokenScope?: string | null;
+  sourceHost: string | null;
+  /** The daemon the successor's AI runs on, and what it advertises. */
+  targetHost: string;
+  targetCapabilities: string[];
+  connectedAgents: Array<{ host: string; capabilities: string[] }>;
+  projectId: string;
+  /** The source's local worktree launch_config, when it ran in one. */
+  sourceWorktreeLaunchConfig: JsonObject | null;
+  /** The source's working directory on `sourceHost`. */
+  sourceCwd: string | null;
+  /** The project's repository root, when the project is bound on `sourceHost`. */
+  projectRepoRoot: string | null;
+}): Promise<
+  { remoteWorktree: RemoteWorktreeLaunchConfig } | { remoteWorkspace: RemoteWorkspaceLaunchConfig } | null
+> => {
+  const { sourceHost } = args;
+  if (
+    !sourceHost ||
+    isConductorFireHost(sourceHost) ||
+    args.tokenScope === "daemon_share" ||
+    !args.targetCapabilities.includes(GLOBAL_BACKEND_CAPABILITY) ||
+    checkRemoteDaemon(sourceHost, args.connectedAgents)
+  ) {
+    return null;
+  }
+  const worktree = args.sourceWorktreeLaunchConfig
+    ? parseTaskWorktreeLaunchConfig(args.sourceWorktreeLaunchConfig)
+    : null;
+  let binding:
+    | { remoteWorktree: RemoteWorktreeLaunchConfig }
+    | { remoteWorkspace: RemoteWorkspaceLaunchConfig }
+    | null = null;
+  if (worktree) {
+    // Same folder math as the daemon's local worktree:
+    // <projectWorkspacePath>/.conductor/worktrees/<branch>.
+    binding = {
+      remoteWorktree: {
+        host: sourceHost,
+        projectId: args.projectId,
+        repoRoot: worktree.projectRepoRoot,
+        workspacePath: worktree.projectWorkspacePath,
+        branch: worktree.worktreeBranch,
+        baseRef: worktree.worktreeBaseRef,
+      },
+    };
+  } else if (args.sourceCwd) {
+    const workspacePath = args.sourceCwd;
+    // The remote_* tools are jailed to repoRoot: the repository containing the
+    // directory, or else the directory itself.
+    const repoRoot =
+      args.projectRepoRoot && isWithinDir(args.projectRepoRoot, workspacePath)
+        ? args.projectRepoRoot
+        : workspacePath;
+    binding = { remoteWorkspace: { host: sourceHost, projectId: args.projectId, repoRoot, workspacePath } };
+  }
+  if (!binding) return null;
+  // Only between the user's own daemons, like any global backend.
+  const shared = await findSharedGuestHosts(args.userId, [sourceHost, args.targetHost]);
+  return shared.size > 0 ? null : binding;
 };
