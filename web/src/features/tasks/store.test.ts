@@ -17,7 +17,7 @@ vi.mock('@/shared/api/client', () => ({
   }),
 }));
 
-import { useTasksStore } from './store';
+import { orderTasksWithPinnedFirst, useTasksStore } from './store';
 import { useTaskCardGroupsSyncStore } from './task-card-groups-sync-store';
 
 describe('tasks store', () => {
@@ -565,6 +565,20 @@ describe('tasks store', () => {
     // The project filter must remain intact — `fetchTask` should not touch
     // the scope state.
     expect(useTasksStore.getState().currentProjectFilter).toBe('proj-1');
+  });
+
+  it('orders by creation time (pinned still first) regardless of activity when byCreatedAt is set', () => {
+    const tasks = [
+      { id: 'old-active', createdAt: '2024-01-01T00:00:00.000Z', metadata: null },
+      { id: 'newest', createdAt: '2024-01-03T00:00:00.000Z', metadata: null },
+      { id: 'pinned', createdAt: '2024-01-01T00:00:00.000Z', metadata: { pinnedAt: '2024-01-04T00:00:00.000Z' } },
+      { id: 'middle', createdAt: '2024-01-02T00:00:00.000Z', metadata: null },
+    ];
+
+    expect(orderTasksWithPinnedFirst(tasks, { byCreatedAt: true }).map((task) => task.id))
+      .toEqual(['pinned', 'newest', 'middle', 'old-active']);
+    expect(orderTasksWithPinnedFirst(tasks).map((task) => task.id))
+      .toEqual(['pinned', 'old-active', 'newest', 'middle']);
   });
 
   it('orders fetched pinned tasks before unpinned tasks by pin time', async () => {

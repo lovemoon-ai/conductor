@@ -212,18 +212,24 @@ export const getTaskPinnedAtTime = (task: { metadata?: Record<string, unknown> |
   return Number.isFinite(timestamp) ? timestamp : null;
 };
 
-/** Pinned tasks first, everything else keeps its order. */
-export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, unknown> | null }>(tasks: T[]): T[] =>
+/**
+ * Pinned tasks first, everything else keeps its order — or, with
+ * `byCreatedAt`, newest-created first so activity never reshuffles the list.
+ */
+export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, unknown> | null; createdAt?: string }>(
+  tasks: T[],
+  options?: { byCreatedAt?: boolean },
+): T[] =>
   tasks
     .map((task, index) => ({
       task,
-      index,
+      rank: options?.byCreatedAt ? -(Date.parse(task.createdAt ?? '') || 0) : index,
       pinnedAt: getTaskPinnedAtTime(task),
     }))
     .sort((left, right) => {
       if (left.pinnedAt !== null && right.pinnedAt !== null) {
         const pinnedDelta = right.pinnedAt - left.pinnedAt;
-        return pinnedDelta !== 0 ? pinnedDelta : left.index - right.index;
+        return pinnedDelta !== 0 ? pinnedDelta : left.rank - right.rank;
       }
       if (left.pinnedAt !== null) {
         return -1;
@@ -231,7 +237,7 @@ export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, 
       if (right.pinnedAt !== null) {
         return 1;
       }
-      return left.index - right.index;
+      return left.rank - right.rank;
     })
     .map(({ task }) => task);
 

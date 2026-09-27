@@ -111,5 +111,17 @@ describe('buildTaskListNavigation', () => {
     );
     expect(result.tasks).toEqual([]);
   });
-});
 
+  it('follows creation order, not the activity order of the store', () => {
+    const result = buildTaskListNavigation(
+      [
+        makeTask('old-but-active', { createdAt: '2026-07-21T00:00:00.000Z' }),
+        makeTask('newest', { createdAt: '2026-07-23T00:00:00.000Z' }),
+        makeTask('middle', { createdAt: '2026-07-22T00:00:00.000Z' }),
+      ],
+      [],
+    );
+
+    expect(result.tasks.map((task) => task.id)).toEqual(['newest', 'middle', 'old-but-active']);
+  });
+});
