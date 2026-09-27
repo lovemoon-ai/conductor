@@ -1406,10 +1406,14 @@ export async function DELETE(
             select: {
               id: true,
               launchConfig: true,
+              agentHost: true,
             },
           })
         ).find((candidate) =>
-          hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig),
+          hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig, {
+            reference: stopTargetHost,
+            candidate: candidate.agentHost,
+          }),
         ) ?? null;
       let outboxRow: unknown = null;
       if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {

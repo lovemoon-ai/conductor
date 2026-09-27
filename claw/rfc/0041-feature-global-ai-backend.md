@@ -117,6 +117,7 @@ dang217
 
 - 停止、日志、消息：`agentHost = A`，走现有路由，零改动。
 - 重启：restart 会建后继任务。现有代码后继**不继承 `secondProjectId`**，`remoteWorkspace` 也是新 key，需要补上：源任务带 `metadata.globalBackend` 时，后继沿用 `secondProjectId`、`remoteWorktree` 或 `remoteWorkspace`、`metadata.globalBackend`（`worktree.ts` 里继承 `remoteWorktree` 的分支同样处理 `remoteWorkspace`）。已有任务重启不受"是否仍在全局后端设置中"约束（不追溯），只约束新建。
+- "New task from this" 选了**另一台 daemon**、源任务是普通本地任务时，后继绑定源 daemon 上的源任务目录，并写入 `metadata.globalBackend`：源任务在本地 worktree 里 → `remoteWorktree` 指向同一个 worktree（后继与源任务共同持有它；`hasSameTaskWorktreeRoot` 在调用方传入任务 host 后，能把本地 worktree 和同 host 上的远程 worktree 认作同一个，所以谁最后归档谁清理）；否则 → `remoteWorkspace` 直接模式。条件是目标 daemon 声明了 `global_backend_v1`、源 daemon 在线且支持 remote exec/file，并且两台都不是分享来的 daemon；不满足时回退到旧行为。反过来，把后继再移回持有文件的那台 daemon 时，恢复为本地任务（`cwd` 或同一个本地 worktree），并去掉 `globalBackend`。凡是后继仍带远程绑定，首条 prompt 都会在 handoff（或用户填的首条消息）外包一层操作规程（`[conductor:remote-workspace]`，指向已存在的目录，不重建 worktree）。
 - 持续任务（persistent）新一轮：`inherit` 与跨 daemon 都保留 `remoteWorktree` / `remoteWorkspace` 并重发对应操作规程；对全局后端任务，`worktree: "new"` 在 B 上新建 worktree，`"none"` 回到 B 的项目目录，而不是在 A 本地。
 - 删除 / 归档：worktree 模式按 `remoteWorktree.host` 清理 B 上的 worktree，复用 0038 的 `worktree.ts` / `teardown.ts`，零改动；direct 模式无需清理（E2E 覆盖两种）。
 - Move：改 `secondProjectId` 只影响展示，不改变远程目标，沿用现有行为。

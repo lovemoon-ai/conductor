@@ -1070,7 +1070,7 @@ export const DELETE = requireActiveSubscription(async (request: NextRequest, use
       metadata: task.metadata,
       projectDaemonHost: existing.daemonHost,
     });
-    const worktreeRootKey = getTaskWorktreeRootKey(task.launchConfig);
+    const worktreeRootKey = getTaskWorktreeRootKey(task.launchConfig, taskHost);
     // A local worktree is cleaned by taskHost with the task's own launch_config;
     // a remote one by the daemon that holds it, with a config it understands.
     const cleanupPlan = worktreeRootKey

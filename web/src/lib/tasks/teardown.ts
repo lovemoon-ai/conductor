@@ -219,10 +219,13 @@ export async function teardownTaskRuntime(args: {
               id: { not: taskId },
               achievedAt: null,
             },
-            select: { id: true, launchConfig: true },
+            select: { id: true, launchConfig: true, agentHost: true },
           })
         ).find((candidate) =>
-          hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig),
+          hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig, {
+            reference: stopTargetHost,
+            candidate: candidate.agentHost,
+          }),
         ) ?? null;
       if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {
         cleanupOutboxRow = await tx.agentOutbox.create({
@@ -256,10 +259,13 @@ export async function teardownTaskRuntime(args: {
                 id: { not: taskId },
                 achievedAt: null,
               },
-              select: { id: true, launchConfig: true },
+              select: { id: true, launchConfig: true, agentHost: true },
             })
           ).find((candidate) =>
-            hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig),
+            hasSameTaskWorktreeRoot(task.launchConfig, candidate.launchConfig, {
+              reference: stopTargetHost,
+              candidate: candidate.agentHost,
+            }),
           ) ?? null;
         if (!activeSharedWorktreeTask) {
           cleanupOutboxRow = await tx.agentOutbox.create({

@@ -286,8 +286,9 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
           </select>
           {isCrossDaemonSelection ? (
             <p className="text-xs text-muted">
-              Runs on a different machine than the source task — starts from that daemon&apos;s own project path, or a
-              fresh workspace when the project is not set up there.
+              The AI runs on a different machine than the source task and keeps working on the source task&apos;s files
+              through remote tools when both daemons support it; otherwise it starts from that daemon&apos;s own project
+              path, or a fresh workspace.
             </p>
           ) : null}
         </div>

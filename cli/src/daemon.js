@@ -7406,6 +7406,8 @@ export function startDaemon(config = {}, deps = {}) {
   // this framing, a naive model could have honored that historical text as a
   // fresh command. The fetched payload is also fenced server-side by
   // TRANSCRIPT_FENCE_BEGIN / TRANSCRIPT_FENCE_END markers.
+  // Keep in sync with web/src/lib/tasks/shared-task.ts `buildResumeHandoffPrompt`,
+  // which wraps the same text in the remote protocol for remote successors.
   function buildResumeHandoffPrompt({ sourceBackend, targetBackend, resumeContextUrl }) {
     const fromLabel = sourceBackend ? ` (${sourceBackend})` : "";
     const toLabel = targetBackend ? ` (${targetBackend})` : "";
