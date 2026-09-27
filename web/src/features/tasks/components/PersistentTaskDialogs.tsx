@@ -190,6 +190,11 @@ export function NewRoundDialog({ task, open, onClose, onStartRound }: NewRoundDi
     const host = project?.daemonHost?.trim() ?? '';
     return isConductorFireHost(host) ? '' : host;
   }, [projects, task.projectId]);
+  // A new worktree needs git in the project holding the code: for a global-backend
+  // task that is the project it was started from (RFC 0041).
+  const codeProjectId = task.metadata?.globalBackend ? task.secondProjectId : task.projectId;
+  const codeProject = projects.find((entry) => entry.id === codeProjectId);
+  const canCreateWorktree = !codeProject || Boolean(codeProject.repoRoot?.trim());
   const previousHost = [task.agentHost, task.metadata?.daemonName]
     .map((value) => (typeof value === 'string' ? value.trim() : ''))
     .find((host) => host && !isConductorFireHost(host)) ?? '';
@@ -303,7 +308,7 @@ export function NewRoundDialog({ task, open, onClose, onStartRound }: NewRoundDi
             className={fieldClassName}
           >
             <option value="inherit">Same as the previous round</option>
-            <option value="new">New worktree</option>
+            {canCreateWorktree ? <option value="new">New worktree</option> : null}
             <option value="none">Project directory (no worktree)</option>
           </select>
         </div>

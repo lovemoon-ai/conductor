@@ -260,7 +260,7 @@ export function buildRemoteWorkspaceBootstrap(params: {
     "",
     "First steps, before any other work",
     `1. Use -w ${remote.workspacePath} for every command. Read the repository's CLAUDE.md / AGENTS.md there first.`,
-    "2. Run `git status` and `git branch --show-current` to see the current state. This is the user's own checkout: do not switch branches, stash, reset or discard changes you did not make unless the task asks for it.",
+    "2. If it is a git repository, run `git status` and `git branch --show-current` to see the current state. This is the user's own checkout: do not switch branches, stash, reset or discard changes you did not make unless the task asks for it.",
   ];
 
   return appendTaskPrompt(lines.join("\n"), taskPrompt);

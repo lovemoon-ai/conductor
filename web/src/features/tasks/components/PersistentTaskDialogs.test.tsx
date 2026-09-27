@@ -12,7 +12,12 @@ const agentsState = {
     { host: 'ubuntu', supportedBackends: ['codex'] },
   ],
 };
-const projectsState = { projects: [{ id: 'project-1', daemonHost: 'mac-mini' }] };
+const projectsState = {
+  projects: [
+    { id: 'project-1', daemonHost: 'mac-mini', repoRoot: '/repo' },
+    { id: 'project-plain', daemonHost: 'ubuntu', repoRoot: null },
+  ],
+};
 
 vi.mock('@/features/agents', () => ({
   useAgentsStore: (selector: (state: typeof agentsState) => unknown) => selector(agentsState),
@@ -105,5 +110,28 @@ describe('NewRoundDialog', () => {
         worktree: 'new',
       }),
     );
+  });
+
+  it('offers no new worktree when the code project is not a git repository', () => {
+    const optionValues = () =>
+      Array.from((screen.getByLabelText('Workspace') as HTMLSelectElement).options).map((option) => option.value);
+    const { unmount } = render(
+      <NewRoundDialog task={task({ projectId: 'project-plain' })} open onClose={vi.fn()} onStartRound={vi.fn()} />,
+    );
+    expect(optionValues()).toEqual(['inherit', 'none']);
+    unmount();
+    // A global-backend task's code lives in its secondProjectId.
+    render(
+      <NewRoundDialog
+        task={task({
+          secondProjectId: 'project-plain',
+          metadata: { persistent: { enabled: true, round: 2 }, globalBackend: { host: 'ubuntu', backend: 'codex' } },
+        })}
+        open
+        onClose={vi.fn()}
+        onStartRound={vi.fn()}
+      />,
+    );
+    expect(optionValues()).toEqual(['inherit', 'none']);
   });
 });
