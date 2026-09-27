@@ -981,6 +981,19 @@ describe('TasksPage', () => {
     expect(taskListWrapper).not.toHaveStyle('transform: translateX(-7px)');
   });
 
+  it('restores the mobile task list scroll position when coming back from a task', () => {
+    searchParamsState = new URLSearchParams('projectId=project-1&scrollCase=1');
+    const first = render(<TasksPage />);
+    const list = screen.getByText('task-list:list:none:route').parentElement as HTMLElement;
+    list.scrollTop = 480;
+    fireEvent.scroll(list);
+    first.unmount();
+
+    render(<TasksPage />);
+
+    expect((screen.getByText('task-list:list:none:route').parentElement as HTMLElement).scrollTop).toBe(480);
+  });
+
   it('excludes hidden project tasks when no project is selected', () => {
     hiddenProjectIdsState = ['project-hidden'];
     tasksState = {

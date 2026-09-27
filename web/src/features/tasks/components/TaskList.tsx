@@ -362,8 +362,9 @@ function TaskListComponent({
     [backendFilteredTasks, labelFilter],
   );
   const visibleTasks = useMemo(
-    () => orderTasksWithPinnedFirst(labelFilteredTasks),
-    [labelFilteredTasks],
+    // Mobile keeps creation order so new replies don't move cards under the thumb.
+    () => orderTasksWithPinnedFirst(labelFilteredTasks, { byCreatedAt: !desktopListPaneMode }),
+    [desktopListPaneMode, labelFilteredTasks],
   );
 
   // Two independent visibility rules — historically they were a single

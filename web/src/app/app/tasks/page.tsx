@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useSyncExternalStore, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/components/common/FeedbackProvider';
 import { TaskColumnSettings } from '@/features/workspace/WorkspaceControls';
@@ -65,6 +65,10 @@ const subscribeToDesktopViewport = (onStoreChange: () => void) => {
 
 const getDesktopViewportSnapshot = () =>
   typeof window !== 'undefined' && window.matchMedia(DESKTOP_MEDIA_QUERY).matches;
+
+// Single-pane (mobile) list scroll offsets by list query, so going back from a
+// task lands where the user left off instead of at the top.
+const listScrollTops = new Map<string, number>();
 
 function TasksPageContent() {
   const { push, replace } = useRouter();
@@ -405,6 +409,24 @@ function TasksPageContent() {
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
+  const listScrollKey = searchParams.toString();
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const restoredScrollKeyRef = useRef<string | null>(null);
+  // Re-run as tasks arrive: the saved offset may be unreachable until the list is long enough.
+  useLayoutEffect(() => {
+    const node = listScrollRef.current;
+    if (!node || restoredScrollKeyRef.current === listScrollKey) return;
+    const target = listScrollTops.get(listScrollKey) ?? 0;
+    node.scrollTop = target;
+    if (node.scrollTop >= target - 1) restoredScrollKeyRef.current = listScrollKey;
+  }, [listScrollKey, taskCount]);
+  const markListScrollRestored = () => { restoredScrollKeyRef.current = listScrollKey; };
+  const handleListScroll = () => {
+    if (restoredScrollKeyRef.current === listScrollKey && listScrollRef.current) {
+      listScrollTops.set(listScrollKey, listScrollRef.current.scrollTop);
+    }
+  };
+
   const effectiveSelectedTaskId = useMemo(() => {
     if (!inlineDetailEnabled) {
       return null;
@@ -669,6 +691,10 @@ function TasksPageContent() {
               ? 'h-full'
               : `task-list-surface h-full overflow-y-auto px-2 pb-3 webapp-scrollbar ${canSwipeProjectTitle ? 'touch-pan-y' : ''} ${projectSwitchAnimationClassName} ${projectSwipeClassName}`}
             style={viewMode === 'graph' ? undefined : projectSwipeStyle}
+            ref={listScrollRef}
+            onScroll={handleListScroll}
+            onTouchStart={markListScrollRestored}
+            onWheel={markListScrollRestored}
             {...projectListSwipeHandlers}
           >
             <TaskList

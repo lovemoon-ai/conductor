@@ -72,7 +72,7 @@ export const buildTaskListNavigation = (
   const backendFilteredTasks = options.backendFilter
     ? daemonFilteredTasks.filter((task) => getStableTaskBackend(task) === options.backendFilter)
     : daemonFilteredTasks;
-  const orderedTasks = orderTasksWithPinnedFirst(backendFilteredTasks);
+  const orderedTasks = orderTasksWithPinnedFirst(backendFilteredTasks, { byCreatedAt: true });
   const taskById = new Map(orderedTasks.map((task) => [task.id, task] as const));
   const visibleTaskIdSet = new Set(taskById.keys());
   const renderGroups = projectTaskCardGroups(groups, (taskId) => visibleTaskIdSet.has(taskId));
