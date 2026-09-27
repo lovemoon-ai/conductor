@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
 import { useTasksStore } from '@/features/tasks';
 import { useProjectsStore } from '@/features/projects';
 import { useDailyReportsStore } from '@/features/daily-reports';
@@ -31,7 +31,7 @@ type NavItem = {
 
 const TasksIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -42,7 +42,7 @@ const TasksIcon = ({ active }: NavIconProps) => (
 
 const GraphIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -83,7 +83,7 @@ const FlippingTasksIcon = ({ active, graph }: NavIconProps & { graph: boolean })
 
 const ProjectsIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -94,7 +94,7 @@ const ProjectsIcon = ({ active }: NavIconProps) => (
 
 const IssuesIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -105,7 +105,7 @@ const IssuesIcon = ({ active }: NavIconProps) => (
 
 const DailyIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -116,7 +116,7 @@ const DailyIcon = ({ active }: NavIconProps) => (
 
 const SettingsIcon = ({ active }: NavIconProps) => (
   <svg
-    className={`w-6 h-6 transition-all duration-200 ${active ? 'scale-110 rotate-12' : ''}`}
+    className={`w-6 h-6 transition-transform duration-200 ${active ? 'scale-110 rotate-12' : ''}`}
     fill="none"
     stroke="currentColor"
     viewBox="0 0 24 24"
@@ -132,6 +132,11 @@ export function MobileNav() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { push } = useRouter();
+  // The route commit is a transition that waits for the next page to render
+  // (hundreds of task cards), so highlight the tapped tab right away.
+  const [pendingNav, setPendingNav] = useState<{ from: string; to: string } | null>(null);
+  if (pendingNav && pendingNav.from !== pathname) setPendingNav(null);
+  const activePathname = pendingNav?.from === pathname ? pendingNav.to : pathname;
   const unreadCount = useTasksStore((state) => state.unreadTaskIds.size);
   const selectedProjectId = useProjectsStore((state) => state.selectedProjectId);
   const dailyReportSetting = useDailyReportsStore((state) => state.setting);
@@ -236,17 +241,21 @@ export function MobileNav() {
   ];
 
   return (
-    <nav aria-label="Primary navigation" className="fixed bottom-0 inset-x-0 z-40 h-[calc(4rem+env(safe-area-inset-bottom))] bg-panel/95 backdrop-blur border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
+    <nav aria-label="Primary navigation" className="fixed bottom-0 inset-x-0 z-40 h-[calc(4rem+env(safe-area-inset-bottom))] bg-panel border-t border-border flex items-center justify-around md:hidden safe-area-bottom">
       {navItems.map((item) => {
-        const isActive = item.activePaths.some((path) => pathname.startsWith(path));
+        const isActive = item.activePaths.some((path) => activePathname.startsWith(path));
         const showTasksBadge = item.activePaths.includes('/app/tasks');
         return (
           <Link
             key={item.label}
             href={item.href}
             aria-current={isActive ? 'page' : undefined}
+            onClick={(event) => {
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              setPendingNav({ from: pathname, to: item.href.split('?')[0] });
+            }}
             onDoubleClick={item.onDoubleClick}
-            className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 px-1 py-2 transition-colors ${
+            className={`relative flex min-w-0 flex-1 flex-col items-center gap-0.5 px-1 py-2 ${
               isActive ? 'text-[var(--accent)]' : 'text-muted'
             }`}
           >

@@ -339,13 +339,15 @@ body {
   transition:
     opacity 160ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
 }
 
+/* Promote only while dragging: a permanent layer on the full-height list/chat
+   costs GPU memory and scroll smoothness on phones. */
 .webapp-title-swipe-layer-dragging,
 .webapp-task-list-swipe-follow-dragging,
 .webapp-task-detail-swipe-follow-dragging {
   transition: none;
+  will-change: opacity, transform;
 }
 
 @media (prefers-reduced-motion: reduce) {

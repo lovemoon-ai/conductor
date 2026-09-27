@@ -296,7 +296,11 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const uploadAttachments = useChatStore((state) => state.uploadAttachments);
   const clearUploadedAttachmentCache = useChatStore((state) => state.clearUploadedAttachmentCache);
   const insertMessage = useChatStore((state) => state.insertMessage);
-  const runtime = useRuntimeStore((state) => state.byTask[taskId]);
+  // Primitive selectors: runtime frames rebuild the status object even when
+  // the fields shown here are unchanged.
+  const aiRuntimeStatusText = useRuntimeStore((state) => getAiRuntimeStatusText(state.byTask[taskId]));
+  const runtimeReplyInProgress = useRuntimeStore((state) => Boolean(state.byTask[taskId]?.replyInProgress));
+  const runtimeReplyToRaw = useRuntimeStore((state) => state.byTask[taskId]?.replyTo);
   const clearRuntime = useRuntimeStore((state) => state.clearTask);
   const task = useTasksStore((state) => state.tasks.find((item) => item.id === taskId));
   const fetchTask = useTasksStore((state) => state.fetchTask);
@@ -364,10 +368,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const roundEndMessageId = persistentState?.roundEndMessageId ?? null;
   const hasMoreBefore = historyState?.hasMoreBefore ?? false;
   const oldestMessageId = historyState?.oldestMessageId ?? null;
-  const aiRuntimeStatusText = getAiRuntimeStatusText(runtime);
-  const runtimeReplyInProgress = Boolean(runtime?.replyInProgress);
   const runtimeReplyTo =
-    runtimeReplyInProgress && typeof runtime?.replyTo === 'string' ? runtime.replyTo.trim() : '';
+    runtimeReplyInProgress && typeof runtimeReplyToRaw === 'string' ? runtimeReplyToRaw.trim() : '';
   // The AI is still answering the end-of-round summary request (no reply yet, or
   // still streaming it); a new round now would cut the summary off.
   const isRoundSummaryPending = Boolean(
@@ -438,7 +440,20 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     interruptTimeoutRef.current = null;
   }, []);
 
-  const persistScrollPosition = useCallback((scrollTop?: number) => {
+  const scrollWriteTimerRef = useRef<number | null>(null);
+  const pendingScrollWriteRef = useRef<(() => void) | null>(null);
+  const flushScrollWrite = useCallback(() => {
+    if (scrollWriteTimerRef.current !== null) {
+      window.clearTimeout(scrollWriteTimerRef.current);
+      scrollWriteTimerRef.current = null;
+    }
+    const write = pendingScrollWriteRef.current;
+    pendingScrollWriteRef.current = null;
+    write?.();
+  }, []);
+  // `deferWrite` debounces the sessionStorage write for scroll events: a sync
+  // write per event drops frames during mobile momentum scrolling.
+  const persistScrollPosition = useCallback((scrollTop?: number, deferWrite = false) => {
     const container = scrollContainerRef.current;
     if (!container) {
       return;
@@ -452,11 +467,17 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
 
     shouldStickToBottomRef.current = stickToBottom;
     setShowScrollToBottom(canScroll && !stickToBottom);
-    writeStoredScrollState(taskId, {
-      scrollTop: nextScrollTop,
-      stickToBottom,
-    });
-  }, [taskId]);
+    const state = { scrollTop: nextScrollTop, stickToBottom };
+    pendingScrollWriteRef.current = () => writeStoredScrollState(taskId, state);
+    if (deferWrite) {
+      if (scrollWriteTimerRef.current !== null) {
+        window.clearTimeout(scrollWriteTimerRef.current);
+      }
+      scrollWriteTimerRef.current = window.setTimeout(flushScrollWrite, 150);
+      return;
+    }
+    flushScrollWrite();
+  }, [flushScrollWrite, taskId]);
 
   const scrollToBottom = useCallback(() => {
     const container = scrollContainerRef.current;
@@ -473,6 +494,11 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
     setShowQuestionNav(false);
+    if (scrollWriteTimerRef.current !== null) {
+      window.clearTimeout(scrollWriteTimerRef.current);
+      scrollWriteTimerRef.current = null;
+    }
+    pendingScrollWriteRef.current = null;
     writeStoredScrollState(taskId, {
       scrollTop: nextScrollTop,
       stickToBottom: true,
@@ -615,8 +641,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   useEffect(() => (
     () => {
       persistScrollPosition();
+      flushScrollWrite();
     }
-  ), [persistScrollPosition]);
+  ), [flushScrollWrite, persistScrollPosition]);
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -1055,7 +1082,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   }, [activeInterruptReplyTo, insertMessage, insertPending, interruptPending, isTaskRunning, restartPending, taskId]);
 
   const handleScroll = () => {
-    persistScrollPosition();
+    persistScrollPosition(undefined, true);
 
     const container = scrollContainerRef.current;
     if (!container) {

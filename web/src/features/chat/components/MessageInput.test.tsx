@@ -117,6 +117,19 @@ describe('MessageInput', () => {
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
     }
   });
+  it('registers resize listeners once instead of on every keystroke', () => {
+    const addListener = vi.spyOn(window, 'addEventListener');
+    const view = render(<MessageInput taskId="task-listeners" onSend={vi.fn()} />);
+    const countResize = () => addListener.mock.calls.filter(([type]) => type === 'resize').length;
+    const afterMount = countResize();
+    const textarea = screen.getByRole('textbox', { name: 'Message input' });
+    fireEvent.change(textarea, { target: { value: 'a' } });
+    fireEvent.change(textarea, { target: { value: 'ab' } });
+    fireEvent.change(textarea, { target: { value: 'abc' } });
+    expect(countResize()).toBe(afterMount);
+    view.unmount();
+    addListener.mockRestore();
+  });
   it('has no actions toggle: attach sits beside the textarea and scheduling lives in the chat menu', () => {
     render(<MessageInput taskId="task-no-toggle" onSend={vi.fn()} />);
 

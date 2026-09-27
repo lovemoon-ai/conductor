@@ -230,12 +230,16 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
     textarea.setSelectionRange(nextPosition, nextPosition);
   }, [autoFocus, disabled]);
 
+  // Latest measure/fit closures, so the window/viewport listeners and the
+  // ResizeObserver below are set up once instead of on every keystroke.
+  const measureRef = useRef<(() => void) | null>(null);
+  const fitTextareaRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const composer = composerRef.current;
     const chatViewport = composer?.closest<HTMLElement>('[data-chat-viewport]');
-    let frame = 0;
     const fitTextarea = () => {
       const computedStyle = window.getComputedStyle(textarea);
       const lineHeight = Number.parseFloat(computedStyle.lineHeight) || 20;
@@ -299,16 +303,25 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           : nextLayoutState
       ));
     };
+    measureRef.current = measure;
+    fitTextareaRef.current = fitTextarea;
+    measure();
+    const frame = requestAnimationFrame(fitTextarea);
+    return () => cancelAnimationFrame(frame);
+  }, [content, selectedFiles.length]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    const chatViewport = composer?.closest<HTMLElement>('[data-chat-viewport]');
+    let frame = 0;
     const resize = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        measure();
+        measureRef.current?.();
         // React may move the controls onto a new row after measuring text.
-        frame = requestAnimationFrame(fitTextarea);
+        frame = requestAnimationFrame(() => fitTextareaRef.current?.());
       });
     };
-    measure();
-    frame = requestAnimationFrame(fitTextarea);
     window.addEventListener('resize', resize);
     window.visualViewport?.addEventListener('resize', resize);
     let lastWidth = composer?.clientWidth;
@@ -327,7 +340,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       window.visualViewport?.removeEventListener('resize', resize);
       observer?.disconnect();
     };
-  }, [content, selectedFiles.length]);
+  }, []);
 
   const canSend = Boolean(content.trim() || selectedFiles.length) && !disabled && !sendDisabled && !isSubmitting;
 

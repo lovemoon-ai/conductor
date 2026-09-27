@@ -235,6 +235,23 @@ export const orderTasksWithPinnedFirst = <T extends { metadata?: Record<string, 
     })
     .map(({ task }) => task);
 
+/**
+ * Keep the previous object for every task whose refetched payload is
+ * unchanged (and the previous array when nothing changed), so memoized cards
+ * skip re-rendering after a list refresh.
+ */
+const reuseUnchangedTasks = (previous: Task[], next: Task[]): Task[] => {
+  const previousById = new Map(previous.map((task) => [task.id, task]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((task, index) => {
+    const existing = previousById.get(task.id);
+    const reused = existing && JSON.stringify(existing) === JSON.stringify(task) ? existing : task;
+    if (reused !== previous[index]) changed = true;
+    return reused;
+  });
+  return changed ? merged : previous;
+};
+
 const mergeMutationTask = (existing: Task | undefined, incoming: Task): Task => {
   if (!existing || incoming.status !== 'init' || existing.status === 'init') {
     return incoming;
@@ -346,7 +363,10 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         ) {
           return;
         }
-        set({ tasks: orderTasksWithPinnedFirst(tasks.map(normalizeTask)), isLoading: false });
+        set((state) => ({
+          tasks: reuseUnchangedTasks(state.tasks, orderTasksWithPinnedFirst(tasks.map(normalizeTask))),
+          isLoading: false,
+        }));
       } catch (error) {
         if (
           get().currentProjectFilter !== requestedProjectId
@@ -404,7 +424,10 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         ) {
           return;
         }
-        set({ tasks: orderTasksWithPinnedFirst(tasks.map(normalizeTask)), isLoading: false });
+        set((state) => ({
+          tasks: reuseUnchangedTasks(state.tasks, orderTasksWithPinnedFirst(tasks.map(normalizeTask))),
+          isLoading: false,
+        }));
       } catch (error) {
         if (
           projectScopeKey(get().currentProjectIds) !== requestedKey
@@ -757,6 +780,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     },
 
     markTaskRead: (taskId) => {
+      if (!get().unreadTaskIds.has(taskId)) return;
       set((state) => {
         const newUnread = new Set(state.unreadTaskIds);
         newUnread.delete(taskId);
@@ -765,6 +789,7 @@ export const useTasksStore = create<TasksState>()((set, get) => {
     },
 
     markTaskUnread: (taskId) => {
+      if (get().unreadTaskIds.has(taskId)) return;
       set((state) => ({
         unreadTaskIds: new Set([...state.unreadTaskIds, taskId]),
       }));
