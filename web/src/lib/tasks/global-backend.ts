@@ -132,8 +132,9 @@ export const resolveGlobalBackendMount = async (args: {
   }
   const daemonError = checkRemoteDaemon(projectHost, args.connectedAgents);
   if (daemonError) return daemonError;
-  const target = resolveRemoteTarget(project);
-  if ("error" in target) return target;
+  // Only a worktree needs git; direct mode works in any project directory.
+  const target = args.worktree ? resolveRemoteTarget(project) : null;
+  if (target && "error" in target) return target;
 
   // Prefer the same repository bound on the AI daemon: the AI then starts in a
   // local clone, so CLAUDE.md / AGENTS.md / skills load natively.
@@ -154,11 +155,13 @@ export const resolveGlobalBackendMount = async (args: {
     };
   }
 
+  const workspacePath = normalizeOptionalString(project.workspacePath)!;
+  // A non-git directory is its own root: the remote_* tools are jailed to it.
   const remoteWorkspace: RemoteWorkspaceLaunchConfig = {
-    host: target.host,
-    projectId: target.projectId,
-    repoRoot: target.repoRoot,
-    workspacePath: target.workspacePath,
+    host: projectHost,
+    projectId: project.id,
+    repoRoot: normalizeOptionalString(project.repoRoot) ?? workspacePath,
+    workspacePath,
   };
   return {
     mountProject,
@@ -166,8 +169,8 @@ export const resolveGlobalBackendMount = async (args: {
     agentHost: request.host,
     backend: request.backend,
     localClonePath: hasSibling ? normalizeOptionalString(mountProject.workspacePath) : null,
-    remoteWorktree: args.worktree ? buildRemoteWorktreeForTarget(target) : null,
-    remoteWorkspace: args.worktree ? null : remoteWorkspace,
+    remoteWorktree: target ? buildRemoteWorktreeForTarget(target) : null,
+    remoteWorkspace: target ? null : remoteWorkspace,
     metadata: { globalBackend: { host: request.host, backend: request.backend } },
   };
 };
