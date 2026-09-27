@@ -231,10 +231,21 @@ describe("resolveGlobalBackendMount", () => {
     expect(ensureDefaultProject).not.toHaveBeenCalled();
   });
 
-  it("requires the project to be a git repository", async () => {
-    expect(await resolve({ project: { ...project, repoRoot: null } as Project })).toEqual({
+  it("requires a git repository only for a remote worktree", async () => {
+    const plain = { ...project, repoRoot: null } as Project;
+    expect(await resolve({ project: plain, worktree: true })).toEqual({
       error: 'Project "conductor" on daemon macmini is not a git repository',
       status: 409,
+    });
+    // Direct mode: the plain directory is its own root.
+    expect(await resolve({ project: plain })).toMatchObject({
+      remoteWorktree: null,
+      remoteWorkspace: {
+        host: "macmini",
+        projectId: "proj-a",
+        repoRoot: "/Users/a/ws/conductor/web",
+        workspacePath: "/Users/a/ws/conductor/web",
+      },
     });
   });
 
