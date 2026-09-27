@@ -18,6 +18,29 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.15.2] - 2026-09-27
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.15.2`
+- `@love-moon/conductor-sdk` `0.15.2`
+- `@love-moon/ai-sdk` `0.15.2`
+- `@love-moon/app-sdk` `0.15.2`
+- `@love-moon/chat-web` `0.15.2`
+
+### Changes
+
+### Patch Changes
+
+- 887d919: "New task from this" on a different daemon now keeps working on the source
+  task's files: the new task's AI runs on the chosen daemon and reaches the
+  source directory (or the same worktree) through the remote MCP tools, with the
+  remote operating protocol in its first prompt. Moving it back to the daemon
+  that holds the files makes it an ordinary local task again. Falls back to the
+  previous behaviour when the source daemon is offline or either CLI is too old.
+  - @love-moon/conductor-sdk@0.15.2
+  - @love-moon/ai-sdk@0.15.2
+
 ## [0.15.1] - 2026-09-27
 
 ### Released packages
