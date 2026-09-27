@@ -1619,21 +1619,22 @@ function TaskItemComponent({
           </div>
         </div>
       </div>
-      {showRestartAction ? (
+      {/* Dialogs mount only while open: N cards × idle dialogs is costly on mobile. */}
+      {showRestartAction && isRestartDialogOpen ? (
         <RestartTaskControls
           task={task}
-          open={isRestartDialogOpen}
+          open
           onClose={() => setIsRestartDialogOpen(false)}
           onCreatedTask={onOpenTask}
         />
       ) : null}
-      <Dialog
-        open={shareDialog !== null}
-        onClose={() => setShareDialog(null)}
-        title="Share"
-        maxWidthClassName="max-w-xl"
-      >
-        {shareDialog ? (
+      {shareDialog ? (
+        <Dialog
+          open
+          onClose={() => setShareDialog(null)}
+          title="Share"
+          maxWidthClassName="max-w-xl"
+        >
           <div className="space-y-4">
             <p className="text-sm text-muted">
               Anyone with the link can view all messages in this task without logging in. The link expires in 7 days.
@@ -1679,8 +1680,8 @@ function TaskItemComponent({
               </a>
             </div>
           </div>
-        ) : null}
-      </Dialog>
+        </Dialog>
+      ) : null}
     </div>
   );
 }

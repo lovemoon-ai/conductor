@@ -1,6 +1,6 @@
 'use client';
 
-import { useContext, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Header, type TitleSwipeProgress } from '@/components/layout/Header';
 import { useHorizontalSwipe } from '@/shared/hooks/useHorizontalSwipe';
 import { ChatMenuSlotContext, ChatView } from '@/features/chat';
@@ -57,13 +57,14 @@ export function TaskDetailPane({
   titleTransitionDirection,
   titleSwipeState,
 }: TaskDetailPaneProps) {
-  const { tasks, fetchTask, markTaskRead } = useTasksStore();
+  const task = useTasksStore((state) => state.tasks.find((item) => item.id === taskId));
+  const fetchTask = useTasksStore((state) => state.fetchTask);
+  const markTaskRead = useTasksStore((state) => state.markTaskRead);
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   // The chat portals its ⋯ menu into this pane's header, or into the
   // surrounding one when the pane renders headerless.
   const outerChatMenuSlot = useContext(ChatMenuSlotContext);
   const [headerChatMenuSlot, setHeaderChatMenuSlot] = useState<HTMLElement | null>(null);
-  const task = tasks.find((item) => item.id === taskId);
   const taskExistsRef = useRef(false);
   taskExistsRef.current = Boolean(task);
 
@@ -181,6 +182,12 @@ export function TaskDetailPane({
     onProgress: onTitleSwipeProgress,
     canStart: isChatSwipeTarget,
   });
+  // A stable element lets React skip the whole message list when this pane
+  // re-renders (every swipe frame, every update to this task).
+  const chatView = useMemo(
+    () => <ChatView taskId={taskId} autoFocusComposer={hideHeader} />,
+    [hideHeader, taskId],
+  );
 
   if (!task && pendingTaskId === taskId) {
     return (
@@ -285,7 +292,7 @@ export function TaskDetailPane({
           </div>
         ) : (
           <ChatMenuSlotContext.Provider value={hideHeader ? outerChatMenuSlot : headerChatMenuSlot}>
-            <ChatView taskId={taskId} autoFocusComposer={hideHeader} />
+            {chatView}
           </ChatMenuSlotContext.Provider>
         )}
       </div>

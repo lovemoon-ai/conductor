@@ -10,6 +10,7 @@ const apiClientMock = vi.hoisted(() => ({
 const pushToastMock = vi.hoisted(() => vi.fn());
 
 const setProjectFilterMock = vi.fn();
+const taskListProjectFilterProps: unknown[] = [];
 const setProjectGroupFilterMock = vi.fn();
 const setSelectedProjectIdMock = vi.fn();
 const fetchTasksMock = vi.fn();
@@ -125,6 +126,7 @@ vi.mock('@/features/tasks', async () => {
       // shape (single string vs expanded merged-group array). Earlier the
       // mock ignored this prop, which silently masked a "single-pane render
       // path still used the raw projectId" bug.
+      taskListProjectFilterProps.push(projectFilter);
       const projectFilterTag = projectFilter == null
         ? 'none'
         : Array.isArray(projectFilter)
@@ -1029,6 +1031,27 @@ describe('TasksPage', () => {
       { recoverStale: true },
     );
     expect(fetchTasksMock).not.toHaveBeenCalled();
+  });
+
+  it('does not refetch tasks when a projects refresh keeps the same scope', () => {
+    projectsState = [
+      { id: 'proj-host-a', name: 'Shared', daemonHost: 'host-a' },
+      { id: 'proj-host-b', name: 'Shared', daemonHost: 'host-b' },
+    ];
+    searchParamsState = new URLSearchParams('projectId=proj-host-a');
+
+    const { rerender } = render(<TasksPage />);
+    expect(setProjectGroupFilterMock).toHaveBeenCalledTimes(1);
+
+    // fetchProjects() replaces every project object with an equal copy.
+    const filterBeforeRefresh = taskListProjectFilterProps.at(-1);
+    projectsState = projectsState.map((project) => ({ ...project }));
+    rerender(<TasksPage />);
+
+    expect(setProjectGroupFilterMock).toHaveBeenCalledTimes(1);
+    // Same reference, so the memoized TaskList can skip the re-render.
+    expect(taskListProjectFilterProps.at(-1)).toBe(filterBeforeRefresh);
+    expect(setProjectFilterMock).not.toHaveBeenCalled();
   });
 
   it('does not expand a merged project into an archived (hidden) member', () => {

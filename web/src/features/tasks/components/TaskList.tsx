@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -188,7 +189,7 @@ interface TaskListProps {
   onFilterByLabel?: (labelId: string) => void;
 }
 
-export function TaskList({
+function TaskListComponent({
   viewMode,
   activeTaskId = null,
   onOpenTask,
@@ -206,14 +207,12 @@ export function TaskList({
   onFilterByBackend,
   onFilterByLabel,
 }: TaskListProps) {
-  const {
-    tasks,
-    isLoading,
-    unreadTaskIds,
-    currentProjectFilter,
-    deleteTask,
-    achieveTask,
-  } = useTasksStore();
+  const tasks = useTasksStore((state) => state.tasks);
+  const isLoading = useTasksStore((state) => state.isLoading);
+  const unreadTaskIds = useTasksStore((state) => state.unreadTaskIds);
+  const currentProjectFilter = useTasksStore((state) => state.currentProjectFilter);
+  const deleteTask = useTasksStore((state) => state.deleteTask);
+  const achieveTask = useTasksStore((state) => state.achieveTask);
   const userId = useAuthStore((state) => state.session?.user.id ?? null);
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
@@ -1566,3 +1565,7 @@ export function TaskList({
 const DropHighlight = () => (
   <div className="pointer-events-none absolute inset-0 z-20 rounded-[16px] bg-[var(--accent)]/10 shadow-[inset_0_0_0_2px_var(--accent)]" />
 );
+
+// Memoized: its props are stable, so page-level re-renders (e.g. every frame of
+// a project swipe) skip the whole list.
+export const TaskList = memo(TaskListComponent);

@@ -8,7 +8,10 @@ const useTasksStoreMock = vi.fn();
 const apiGetMock = vi.fn();
 
 vi.mock('../store', () => ({
-  useTasksStore: () => useTasksStoreMock(),
+  useTasksStore: (selector?: (state: ReturnType<typeof useTasksStoreMock>) => unknown) => {
+    const state = useTasksStoreMock();
+    return selector ? selector(state) : state;
+  },
   normalizeTask: (task: any) => ({
     id: task.id,
     title: task.title,

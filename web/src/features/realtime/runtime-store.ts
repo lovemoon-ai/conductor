@@ -137,6 +137,9 @@ export const useRuntimeStore = create<RuntimeState>()((set, get) => {
         return;
       }
       cancelWatchdog(taskId);
+      if (!(taskId in get().byTask)) {
+        return;
+      }
       set((state) => {
         const { [taskId]: _ignored, ...rest } = state.byTask;
         return { byTask: rest };

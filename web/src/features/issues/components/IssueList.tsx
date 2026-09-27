@@ -58,7 +58,7 @@ export function IssueList({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto webapp-scrollbar">
-      <div className="sticky top-0 z-40 mb-3 bg-paper/90 pb-2 pt-0.5 backdrop-blur-xl">
+      <div className="sticky top-0 z-40 mb-3 bg-paper pb-2 pt-0.5">
         <div className="flex gap-2 overflow-x-auto webapp-scrollbar">
           {ISSUE_STATUSES.map((status) => {
             const selected = visibleStatus === status;

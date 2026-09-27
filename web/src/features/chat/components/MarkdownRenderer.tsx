@@ -1,13 +1,37 @@
 'use client';
 
 import { memo } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MermaidDiagram } from './MermaidDiagram';
 
 interface MarkdownRendererProps {
   content: string;
 }
+
+// Module-level so element types stay stable across renders (inline component
+// functions would remount every code/pre/link node on each render).
+const REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_COMPONENTS: Components = {
+  code({ className, children, ...props }) {
+    return <code className={className} {...props}>{children}</code>;
+  },
+  pre({ children }) {
+    return <pre className="overflow-x-auto rounded-lg border border-border bg-panel p-3">{children}</pre>;
+  },
+  a({ href, children }) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-accent hover:underline"
+      >
+        {children}
+      </a>
+    );
+  },
+};
 
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: MarkdownRendererProps) {
   // Split content by mermaid code blocks
@@ -23,27 +47,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Mark
         return (
           <ReactMarkdown
             key={partKey}
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({ className, children, ...props }) {
-                return <code className={className} {...props}>{children}</code>;
-              },
-              pre({ children }) {
-                return <pre className="overflow-x-auto rounded-lg border border-border bg-panel p-3">{children}</pre>;
-              },
-              a({ href, children }) {
-                return (
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-accent hover:underline"
-                  >
-                    {children}
-                  </a>
-                );
-              },
-            }}
+            remarkPlugins={REMARK_PLUGINS}
+            components={MARKDOWN_COMPONENTS}
           >
             {part.content}
           </ReactMarkdown>

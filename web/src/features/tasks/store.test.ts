@@ -34,6 +34,40 @@ describe('tasks store', () => {
     });
   });
 
+  it('keeps unchanged task objects when the list is refetched', async () => {
+    const payload = [
+      { id: 'task-1', title: 'One', status: 'running', created_at: '2026-09-01T00:00:00.000Z' },
+      { id: 'task-2', title: 'Two', status: 'running', created_at: '2026-09-01T00:00:00.000Z' },
+    ];
+    mockGet.mockResolvedValueOnce(payload);
+    await useTasksStore.getState().fetchTasks();
+    const first = useTasksStore.getState().tasks;
+
+    mockGet.mockResolvedValueOnce(payload.map((task) => ({ ...task })));
+    await useTasksStore.getState().fetchTasks();
+    expect(useTasksStore.getState().tasks).toBe(first);
+
+    mockGet.mockResolvedValueOnce([payload[0], { ...payload[1], title: 'Two (renamed)' }]);
+    await useTasksStore.getState().fetchTasks();
+    const [one, two] = useTasksStore.getState().tasks;
+    expect(one).toBe(first[0]);
+    expect(two).not.toBe(first[1]);
+    expect(two.title).toBe('Two (renamed)');
+  });
+
+  it('keeps the unread set identity when the unread state does not change', () => {
+    useTasksStore.getState().markTaskUnread('task-1');
+    const unread = useTasksStore.getState().unreadTaskIds;
+    expect(unread.has('task-1')).toBe(true);
+
+    useTasksStore.getState().markTaskUnread('task-1');
+    useTasksStore.getState().markTaskRead('task-2');
+    expect(useTasksStore.getState().unreadTaskIds).toBe(unread);
+
+    useTasksStore.getState().markTaskRead('task-1');
+    expect(useTasksStore.getState().unreadTaskIds.has('task-1')).toBe(false);
+  });
+
   it('starts a persistent round with snake_case fields and moves the task to the front', async () => {
     useTasksStore.setState({
       tasks: [

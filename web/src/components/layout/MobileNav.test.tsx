@@ -67,6 +67,23 @@ describe('MobileNav', () => {
     pushMock.mockReset();
   });
 
+  it('highlights the tapped tab before the route commits', () => {
+    pathname = '/app/tasks';
+    const view = render(<MobileNav />);
+    const issues = screen.getByRole('link', { name: /Issues/ });
+    fireEvent.click(issues);
+    expect(issues).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: /Tasks/ })).not.toHaveAttribute('aria-current');
+
+    // Route commits, then the user goes back: the old tap must not stick.
+    pathname = '/app/issues';
+    view.rerender(<MobileNav />);
+    pathname = '/app/tasks';
+    view.rerender(<MobileNav />);
+    expect(screen.getByRole('link', { name: /Tasks/ })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: /Issues/ })).not.toHaveAttribute('aria-current');
+  });
+
   it('renders Daily as a top-level entry when enabled', () => {
     render(<MobileNav />);
 

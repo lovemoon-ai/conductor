@@ -163,6 +163,12 @@ function TasksPageContent() {
     return projectId ? [projectId] : [];
   }, [isMergedGroup, currentGroupMemberIds, projectId]);
   const projectScopeKey = useMemo(() => projectScope.slice().sort().join(','), [projectScope]);
+  // Rebuilt only when the member set changes, so the memoized TaskList is not
+  // re-rendered by every projects refresh.
+  const taskListProjectFilter = useMemo(
+    () => (projectScopeKey ? projectScopeKey.split(',') : null),
+    [projectScopeKey],
+  );
   const taskGraphEnabled = useMemo(() => {
     if (projectScope.length === 0) return false;
     const scopedProjectIds = new Set(projectScope);
@@ -293,19 +299,18 @@ function TasksPageContent() {
   }, [hiddenProjectIdSet, projectIdFromUrl, replace, searchParams]);
 
   useEffect(() => {
-    if (isMergedGroup && currentGroupMemberIds.length > 1) {
-      setProjectGroupFilter(currentGroupMemberIds);
+    const scopeIds = projectScopeKey ? projectScopeKey.split(',') : [];
+    if (scopeIds.length > 1) {
+      setProjectGroupFilter(scopeIds);
     } else {
       setProjectFilter(projectId || null);
     }
     setSelectedProjectId(projectId || null);
-    // `projectScopeKey` collapses the array dependency to a stable string so
-    // the effect only re-runs when the actual member set changes.
+    // Depend on the `projectScopeKey` string, not the member array: the array
+    // is rebuilt on every projects refresh, which would refetch all tasks.
   }, [
     projectId,
-    isMergedGroup,
     projectScopeKey,
-    currentGroupMemberIds,
     setProjectFilter,
     setProjectGroupFilter,
     setSelectedProjectId,
@@ -619,7 +624,7 @@ function TasksPageContent() {
                   onOpenTask={handleSelectTask}
                   onMaximizeTask={handleMaximizeTask}
                   desktopListPaneMode
-                  projectFilter={projectScope.length > 0 ? projectScope : null}
+                  projectFilter={taskListProjectFilter}
                   runningOnly={showRunningOnly}
                   taskTypeFilter={taskTypeFilter}
                   daemonHostFilter={daemonHostFilter}
@@ -676,7 +681,7 @@ function TasksPageContent() {
               // `projectScope`) was correct but TaskList was silently
               // filtering to one member only, causing "title says N tasks
               // but the list is empty" in the single-pane / mobile view.
-              projectFilter={projectScope.length > 0 ? projectScope : null}
+              projectFilter={taskListProjectFilter}
               runningOnly={showRunningOnly}
               taskTypeFilter={taskTypeFilter}
               daemonHostFilter={daemonHostFilter}
