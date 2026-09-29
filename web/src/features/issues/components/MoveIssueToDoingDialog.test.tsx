@@ -195,6 +195,48 @@ describe('MoveIssueToDoingDialog', () => {
     remoteWorktreeHosts: MERGED_DAEMONS.filter((other) => other.host !== option.host).map((other) => other.host),
   }));
 
+  describe('global AI backend (RFC 0041)', () => {
+    const WITH_GLOBAL: MoveIssueToDoingDaemonOption[] = [{
+      ...SINGLE_DAEMON[0],
+      remoteWorktreeHosts: [],
+      globalBackends: [
+        { host: 'gpu-box', backend: 'codex', disabledReason: null },
+        { host: 'laptop', backend: 'claude', disabledReason: 'laptop is offline' },
+      ],
+    }];
+
+    it('offers global backends in the backend picker and confirms with the picked one', async () => {
+      const onConfirm = vi.fn();
+      render(
+        <MoveIssueToDoingDialog
+          open
+          daemonOptions={WITH_GLOBAL}
+          onClose={() => {}}
+          onConfirm={onConfirm}
+        />,
+      );
+
+      const select = screen.getByLabelText('Backend') as HTMLSelectElement;
+      const offline = screen.getByRole('option', { name: 'claude @ laptop — laptop is offline' });
+      expect(offline).toBeDisabled();
+      fireEvent.change(select, { target: { value: (screen.getByRole('option', { name: 'codex @ gpu-box' }) as HTMLOptionElement).value } });
+      expect(screen.getByText(/AI runs on gpu-box and works on daemon-a/)).toBeInTheDocument();
+      // A global backend runs no agent group.
+      expect(screen.queryByText(/Agents/)).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
+      });
+
+      expect(onConfirm).toHaveBeenCalledWith({
+        backendType: 'codex',
+        daemonHost: 'daemon-a',
+        projectId: 'project-a',
+        globalBackend: { host: 'gpu-box', backend: 'codex' },
+      });
+    });
+  });
+
   describe('workspace on another daemon (RFC 0038)', () => {
     it('is hidden when no other daemon can host the worktree', () => {
       render(

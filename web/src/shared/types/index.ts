@@ -558,6 +558,8 @@ export interface UpdateIssueInput {
   remoteWorktreeHost?: string;
   /** RFC 0033: on todo→doing, run the spawned task as a worker + reviewer agent group. */
   agents?: CreateTaskInput['agents'];
+  /** RFC 0041: on todo→doing, run the spawned task's AI on this global backend. */
+  globalBackend?: { host: string; backend: string };
 }
 
 // Backend AI Session Types (GET /api/agents/[host]/sessions)

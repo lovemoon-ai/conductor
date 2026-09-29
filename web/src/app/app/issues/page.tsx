@@ -16,7 +16,12 @@ import {
 import type {
   MoveIssueToDoingConfirm,
   MoveIssueToDoingDaemonOption,
+  MoveIssueToDoingGlobalBackendOption,
 } from '@/features/issues/components/MoveIssueToDoingDialog';
+import {
+  useGlobalAiBackendsStore,
+  type GlobalAiBackend,
+} from '@/features/user-preferences/global-ai-backends';
 import { useProjectsStore } from '@/features/projects';
 import { canMergeProjects, computeProjectGroups } from '@/features/projects/utils/project-groups';
 import { excludeArchivedProjects } from '@/features/projects/utils/project-list-order';
@@ -61,6 +66,37 @@ const normalizeHost = (value: string | null | undefined): string =>
 const supportsRemoteWorktree = (agent: Agent, project: Project): boolean =>
   Boolean(normalizeHost(project.repoRoot))
   && ['remote_exec', 'remote_file'].every((required) => agent.capabilities?.includes(required));
+
+const hasRemoteCapabilities = (agent: Agent): boolean =>
+  ['remote_exec', 'remote_file'].every((required) => agent.capabilities?.includes(required));
+
+/**
+ * RFC 0041: global backends offered for a task whose code stays on `codeAgent`,
+ * greyed out with the reason when they cannot run now (same checks as the API).
+ */
+const getGlobalBackendOptions = (
+  codeAgent: Agent,
+  globalBackends: GlobalAiBackend[],
+  agentByHost: Map<string, Agent>,
+): MoveIssueToDoingGlobalBackendOption[] =>
+  globalBackends
+    .filter((entry) => entry.host !== normalizeHost(codeAgent.host))
+    .map((entry) => {
+      const agent = agentByHost.get(entry.host);
+      const sharedHost = codeAgent.shared ? codeAgent.host : agent?.shared ? entry.host : null;
+      const disabledReason = sharedHost
+        ? `${sharedHost} is shared with you; global backends only work between your own daemons`
+        : !agent
+          ? `${entry.host} is offline`
+          : !(agent.supportedBackends ?? []).includes(entry.backend)
+            ? `${entry.backend} is not available on ${entry.host}`
+            : !(agent.capabilities ?? []).includes('global_backend_v1')
+              ? `upgrade conductor on ${entry.host} to use it as a global backend`
+              : !hasRemoteCapabilities(codeAgent)
+                ? `${codeAgent.host} does not support conductor remote; upgrade its daemon`
+                : null;
+      return { ...entry, disabledReason };
+    });
 
 const pickIssueBackend = (issue: Issue | null): string | null => {
   if (!issue?.metadata || typeof issue.metadata.backendType !== 'string') {
@@ -119,6 +155,7 @@ const getIssueDaemonOptions = (
   project: Project | null,
   projects: Project[],
   agents: Agent[],
+  globalBackends: GlobalAiBackend[] = [],
 ): MoveIssueToDoingDaemonOption[] => {
   if (!project) {
     return [];
@@ -176,6 +213,7 @@ const getIssueDaemonOptions = (
       host,
       projectId: candidate.id,
       supportedBackends: [...(agent.supportedBackends ?? [])],
+      globalBackends: getGlobalBackendOptions(agent, globalBackends, agentByHost),
     });
     optionProjects.push({ project: candidate, canHostWorktree: supportsRemoteWorktree(agent, candidate) });
   }
@@ -210,6 +248,9 @@ function IssuesPageContent() {
   const { pushToast } = useToast();
 
   const agents = useAgentsStore((state) => state.agents);
+  const globalBackends = useGlobalAiBackendsStore((state) => state.backends);
+  const globalBackendsHydrated = useGlobalAiBackendsStore((state) => state.hydrated);
+  const hydrateGlobalBackends = useGlobalAiBackendsStore((state) => state.hydrate);
   const projects = useProjectsStore((state) => state.projects);
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const isProjectsLoading = useProjectsStore((state) => state.isLoading);
@@ -341,12 +382,16 @@ function IssuesPageContent() {
   // snapshot captured at click time.
   const pendingIssueDaemonOptions = useMemo<MoveIssueToDoingDaemonOption[]>(
     () => (pendingIssueProject
-      ? getIssueDaemonOptions(pendingIssueProject, projects, agents)
+      ? getIssueDaemonOptions(pendingIssueProject, projects, agents, globalBackends)
       : []),
-    [agents, pendingIssueProject, projects],
+    [agents, globalBackends, pendingIssueProject, projects],
   );
   const pendingIssueInitialBackend = pickIssueBackend(pendingIssue);
   const pendingIssueInitialDaemon = pickIssueDaemon(pendingIssue, pendingIssueProject, projects);
+
+  useEffect(() => {
+    if (!globalBackendsHydrated) void hydrateGlobalBackends();
+  }, [globalBackendsHydrated, hydrateGlobalBackends]);
 
   useEffect(() => {
     if (shouldWaitForProjectResolution || !projectIdFromUrl || resolvedProjectId) {
@@ -486,6 +531,7 @@ function IssuesPageContent() {
         ...(projectChanged ? { projectId: args.projectId } : {}),
         ...(args.remoteWorktreeHost ? { remoteWorktreeHost: args.remoteWorktreeHost } : {}),
         ...(args.agents ? { agents: args.agents } : {}),
+        ...(args.globalBackend ? { globalBackend: args.globalBackend } : {}),
         metadata: {
           ...(issue.metadata ?? {}),
           backendType: args.backendType,

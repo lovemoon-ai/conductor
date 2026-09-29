@@ -32,7 +32,21 @@ export type MoveIssueToDoingDaemonOption = {
    * git-backed project the API treats as the same project as this option's).
    */
   remoteWorktreeHosts?: string[];
+  /**
+   * RFC 0041: global AI backends that can run this option's task while the
+   * code stays on its daemon; `disabledReason` greys out one that cannot now.
+   */
+  globalBackends?: MoveIssueToDoingGlobalBackendOption[];
 };
+
+export type MoveIssueToDoingGlobalBackendOption = {
+  host: string;
+  backend: string;
+  disabledReason: string | null;
+};
+
+const globalBackendValue = (entry: { host: string; backend: string }): string =>
+  `global:${entry.host}\u0000${entry.backend}`;
 
 export type MoveIssueToDoingConfirm = {
   backendType: string;
@@ -42,6 +56,8 @@ export type MoveIssueToDoingConfirm = {
   remoteWorktreeHost?: string;
   /** RFC 0033: worker + reviewer agents; omitted for a plain task. */
   agents?: CreateTaskInput['agents'];
+  /** RFC 0041: run the AI on this global backend; `backendType` is its backend. */
+  globalBackend?: { host: string; backend: string };
 };
 
 const normalizeString = (value: string | null | undefined): string =>
@@ -51,11 +67,14 @@ type MoveIssueToDoingFormState = AgentGroupSelection & {
   preferredDaemonHost: string;
   backendType: string;
   remoteWorktreeHost: string;
+  /** `globalBackendValue` of the picked global backend, or empty. */
+  globalBackend: string;
 };
 
 type MoveIssueToDoingFormAction =
   | { type: 'select-daemon'; daemonHost: string; supportedBackends: string[] }
   | { type: 'select-backend'; backendType: string }
+  | { type: 'select-global-backend'; globalBackend: string }
   | { type: 'select-remote-worktree'; remoteWorktreeHost: string }
   | AgentGroupAction;
 
@@ -73,11 +92,22 @@ function moveIssueToDoingFormReducer(
           : action.supportedBackends[0] ?? '',
         // The AI daemon changed; the worktree host may now be that daemon.
         remoteWorktreeHost: '',
+        globalBackend: '',
       };
     case 'select-backend':
       return {
         ...state,
         backendType: action.backendType,
+        globalBackend: '',
+      };
+    // A global backend runs the AI elsewhere: no remote worktree or agent group.
+    case 'select-global-backend':
+      return {
+        ...state,
+        globalBackend: action.globalBackend,
+        remoteWorktreeHost: '',
+        workerAgent: '',
+        reviewers: [],
       };
     case 'select-remote-worktree':
       return {
@@ -190,6 +220,7 @@ function MoveIssueToDoingDialogContent({
     preferredDaemonHost: initialDaemonHost,
     backendType: initialBackendType,
     remoteWorktreeHost: '',
+    globalBackend: '',
     workerAgent: '',
     reviewers: [],
   });
@@ -209,6 +240,10 @@ function MoveIssueToDoingDialogContent({
   // on `daemonHost`.
   const remoteWorktreeHosts = (currentOption?.remoteWorktreeHosts ?? [])
     .filter((host) => host !== daemonHost && optionByHost.has(host));
+  const globalBackendOptions = currentOption?.globalBackends ?? [];
+  const selectedGlobalBackend = globalBackendOptions.find(
+    (option) => globalBackendValue(option) === state.globalBackend && !option.disabledReason,
+  ) ?? null;
   const { availableAgents, isLoadingAgents, agentsLoadFailed } = useProjectAgentRegistry(
     agentsSectionOpened ? currentOption?.projectId ?? null : null,
     dispatch,
@@ -225,16 +260,21 @@ function MoveIssueToDoingDialogContent({
   const remoteWorktreeHostUnavailable = Boolean(remoteWorktreeHost)
     && !remoteWorktreeHosts.includes(remoteWorktreeHost);
 
+  const effectiveBackendType = selectedGlobalBackend?.backend ?? backendType;
+
   const handleConfirm = async () => {
-    if (!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending) {
+    if (!effectiveBackendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending) {
       return;
     }
     setIsSubmitting(true);
     try {
       await onConfirm({
-        backendType,
+        backendType: effectiveBackendType,
         daemonHost: currentOption.host,
         projectId: currentOption.projectId,
+        ...(selectedGlobalBackend
+          ? { globalBackend: { host: selectedGlobalBackend.host, backend: selectedGlobalBackend.backend } }
+          : {}),
         ...(remoteWorktreeHost ? { remoteWorktreeHost } : {}),
         ...(agents ? { agents } : {}),
       });
@@ -289,17 +329,47 @@ function MoveIssueToDoingDialogContent({
         </label>
         <select
           id="issue-doing-backend"
-          value={backendType}
-          onChange={(event) => dispatch({ type: 'select-backend', backendType: event.target.value })}
+          value={selectedGlobalBackend ? globalBackendValue(selectedGlobalBackend) : backendType}
+          onChange={(event) => {
+            const { value } = event.target;
+            dispatch(value.startsWith('global:')
+              ? { type: 'select-global-backend', globalBackend: value }
+              : { type: 'select-backend', backendType: value });
+          }}
           className="w-full webapp-input"
-          disabled={isSubmitting || availableBackends.length === 0}
+          disabled={isSubmitting || (availableBackends.length === 0 && globalBackendOptions.length === 0)}
         >
+          {availableBackends.length === 0 && !selectedGlobalBackend ? (
+            <option value="" disabled>Select a backend</option>
+          ) : null}
           {availableBackends.map((backend) => (
             <option key={backend} value={backend}>
               {backend}
             </option>
           ))}
+          {globalBackendOptions.length > 0 ? (
+            <optgroup label="Global">
+              {globalBackendOptions.map((option) => {
+                const label = `${option.backend} @ ${option.host}`;
+                return (
+                  <option
+                    key={globalBackendValue(option)}
+                    value={globalBackendValue(option)}
+                    disabled={Boolean(option.disabledReason)}
+                    title={option.disabledReason ?? undefined}
+                  >
+                    {option.disabledReason ? `${label} — ${option.disabledReason}` : label}
+                  </option>
+                );
+              })}
+            </optgroup>
+          ) : null}
         </select>
+        {selectedGlobalBackend ? (
+          <p className="mt-1 text-xs text-muted">
+            AI runs on {selectedGlobalBackend.host} and works on {daemonHost} through conductor remote.
+          </p>
+        ) : null}
       </div>
 
       {remoteWorktreeHostUnavailable ? (
@@ -321,7 +391,7 @@ function MoveIssueToDoingDialogContent({
         </p>
       ) : null}
 
-      {remoteWorktreeHosts.length > 0 || remoteWorktreeHostUnavailable ? (
+      {!selectedGlobalBackend && (remoteWorktreeHosts.length > 0 || remoteWorktreeHostUnavailable) ? (
         <details className="rounded-lg border border-border px-3 py-2">
           <summary className="cursor-pointer text-sm font-medium text-ink">
             Workspace on another daemon{remoteWorktreeHost ? `: ${remoteWorktreeHost}` : ''}
@@ -360,7 +430,7 @@ function MoveIssueToDoingDialogContent({
         </details>
       ) : null}
 
-      {currentOption ? (
+      {currentOption && !selectedGlobalBackend ? (
         <details
           className="rounded-lg border border-border px-3 py-2"
           onToggle={(event) => {
@@ -401,7 +471,7 @@ function MoveIssueToDoingDialogContent({
         <button
           type="button"
           onClick={() => void handleConfirm()}
-          disabled={!backendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending}
+          disabled={!effectiveBackendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending}
           className="webapp-btn-primary px-5 py-2.5 text-sm"
         >
           {isSubmitting ? 'Starting...' : 'Move To Doing'}

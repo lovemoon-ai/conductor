@@ -299,6 +299,8 @@ export const issuePatchSchema = z.object({
   remoteWorktreeHost: z.string().min(1).optional(),
   /** RFC 0033: todo→doing only; run the spawned task as a worker + reviewer group. Validated by `parseAgentsInput`. */
   agents: z.unknown().optional(),
+  /** RFC 0041: todo→doing only; run the spawned task's AI on this global backend. */
+  globalBackend: z.object({ host: z.string().min(1), backend: z.string().min(1) }).optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: 'No fields to update',
 });
@@ -371,6 +373,9 @@ export const normalizeIssuePatchBody = (body: unknown) => {
   }
   if (hasOwn(record, 'agents')) {
     normalized.agents = record.agents;
+  }
+  if (hasOwn(record, 'globalBackend') || hasOwn(record, 'global_backend')) {
+    normalized.globalBackend = readField(record, 'global_backend', 'globalBackend');
   }
   return normalized;
 };

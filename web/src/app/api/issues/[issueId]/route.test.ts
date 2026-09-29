@@ -64,6 +64,11 @@ vi.mock('@/lib/tasks/task-stop', async (importOriginal) => {
   };
 });
 
+vi.mock('@/lib/tasks/global-backend', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/tasks/global-backend')>()),
+  resolveGlobalBackendMount: vi.fn(),
+}));
+
 vi.mock('@/lib/realtime/agent-outbox', () => ({
   deliverAgentOutboxForHost: vi.fn().mockResolvedValue({ attempted: 1, delivered: 1 }),
 }));
@@ -86,6 +91,7 @@ const { mergeRelatedTaskCardGroup } = await import('@/lib/user-preferences');
 const { stopTaskBeforeRelaunch } = await import('@/lib/tasks/task-stop');
 const { realtimeHub } = await import('@/lib/realtime/hub');
 const { deliverAgentOutboxForHost } = await import('@/lib/realtime/agent-outbox');
+const { resolveGlobalBackendMount } = await import('@/lib/tasks/global-backend');
 
 const missingPriorityColumnError = () =>
   new Prisma.PrismaClientKnownRequestError(
@@ -2680,6 +2686,198 @@ describe('/api/issues/[issueId]', () => {
       expect((await patch({ title: 'Renamed', agents: ['feature-dev'] })).status).toBe(409);
       expect(createAiTaskArtifacts).not.toHaveBeenCalled();
       expect(db.issue.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('global AI backend on todo→doing (RFC 0041)', () => {
+    const codeProject = {
+      id: 'project-1',
+      name: 'repo',
+      daemonHost: 'daemon-a',
+      workspacePath: '/repo',
+      repoRoot: '/repo',
+      worktreeBranch: 'main',
+      lastCommit: 'abc123',
+    };
+    const remoteWorktree = {
+      host: 'daemon-a',
+      projectId: 'project-1',
+      repoRoot: '/repo',
+      workspacePath: '/repo',
+      branch: 'a1b2c3',
+      baseRef: 'main',
+    };
+    const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({ method: 'PATCH', body }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+
+    beforeEach(() => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-a', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-b', host: 'daemon-b', supportedBackends: ['codex'] },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ project: codeProject }) as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue({
+        task: buildTask({ id: 'task-global', projectId: 'project-b', status: 'init', agentHost: 'daemon-b' }),
+        initialMessage: null,
+        initialMessageContent: null,
+      } as any);
+    });
+
+    it('files the task on the AI daemon and reaches the code over conductor remote', async () => {
+      vi.mocked(resolveGlobalBackendMount).mockResolvedValue({
+        mountProject: { id: 'project-b', daemonHost: 'daemon-b', workspacePath: '/clone', worktreeBranch: 'main' },
+        secondProjectId: 'project-1',
+        agentHost: 'daemon-b',
+        backend: 'codex',
+        localClonePath: '/clone',
+        remoteWorktree,
+        remoteWorkspace: null,
+        metadata: { globalBackend: { host: 'daemon-b', backend: 'codex' } },
+      } as any);
+
+      const response = await patch({
+        status: 'doing',
+        globalBackend: { host: 'daemon-b', backend: 'codex' },
+        metadata: { backendType: 'codex', daemonHost: 'daemon-a' },
+      });
+
+      expect(response.status).toBe(200);
+      expect(vi.mocked(resolveGlobalBackendMount).mock.calls[0][0]).toEqual(expect.objectContaining({
+        request: { host: 'daemon-b', backend: 'codex' },
+        worktree: true,
+      }));
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(createArgs).toEqual(expect.objectContaining({
+        projectId: 'project-b',
+        secondProjectId: 'project-1',
+        agentHost: 'daemon-b',
+        requestedBackendType: 'codex',
+        requestedId: expect.any(String),
+      }));
+      expect(createArgs.launchConfig).toEqual({ cwd: '/clone', worktreeBranch: 'main', remoteWorktree });
+      expect(createArgs.metadata.globalBackend).toEqual({ host: 'daemon-b', backend: 'codex' });
+      expect(createArgs.initialMessageContent).toContain('daemon-a');
+      // The doing dialog keeps defaulting to the code's daemon.
+      const issueUpdate = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(JSON.parse(issueUpdate.data.metadata).daemonHost).toBe('daemon-a');
+    });
+
+    it('runs a global backend on the project daemon itself as an ordinary task', async () => {
+      vi.mocked(resolveGlobalBackendMount).mockResolvedValue({ local: true });
+
+      const response = await patch({ status: 'doing', globalBackend: { host: 'daemon-a', backend: 'claude' } });
+
+      expect(response.status).toBe(200);
+      const createArgs = vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any;
+      expect(createArgs).toEqual(expect.objectContaining({
+        projectId: 'project-1',
+        agentHost: 'daemon-a',
+        requestedBackendType: 'claude',
+      }));
+      expect(createArgs.secondProjectId).toBeUndefined();
+      expect(createArgs.launchConfig.worktree).toBe(true);
+    });
+
+    it('surfaces a global backend the server cannot use', async () => {
+      vi.mocked(resolveGlobalBackendMount).mockResolvedValue({
+        error: 'codex @ daemon-b is not one of your global AI backends',
+        status: 409,
+      });
+
+      const response = await patch({ status: 'doing', globalBackend: { host: 'daemon-b', backend: 'codex' } });
+
+      expect(response.status).toBe(409);
+      expect((await extractJson(response)).error).toBe('codex @ daemon-b is not one of your global AI backends');
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a global backend the AI daemon no longer advertises', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-a', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-b', host: 'daemon-b', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(resolveGlobalBackendMount).mockResolvedValue({
+        mountProject: { id: 'project-b', daemonHost: 'daemon-b' },
+        agentHost: 'daemon-b',
+        backend: 'codex',
+      } as any);
+
+      const response = await patch({ status: 'doing', globalBackend: { host: 'daemon-b', backend: 'codex' } });
+
+      expect(response.status).toBe(409);
+      expect((await extractJson(response)).error).toBe('Daemon daemon-b does not support backend codex');
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('rejects a global backend whose runtime is unhealthy on the AI daemon', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-a', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-b', host: 'daemon-b', supportedBackends: ['codex'], runtimeHealth: { codex: 'unauthenticated' } },
+      ] as any);
+      vi.mocked(resolveGlobalBackendMount).mockResolvedValue({
+        mountProject: { id: 'project-b', daemonHost: 'daemon-b' },
+        agentHost: 'daemon-b',
+        backend: 'codex',
+      } as any);
+
+      const response = await patch({ status: 'doing', globalBackend: { host: 'daemon-b', backend: 'codex' } });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(503);
+      expect(data).toEqual(expect.objectContaining({
+        error: 'runtime_unavailable',
+        backend: 'codex',
+        daemon_host: 'daemon-b',
+        reason: 'unauthenticated',
+      }));
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('restarts a linked global-backend task on its AI daemon and remembers the code daemon', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'done', project: codeProject }) as any);
+      mockPrismaQuery(db.project.findFirst).mockImplementation(async ({ where }: any) => ({
+        id: where.id,
+        userId: 'user-1',
+        collaborationId: null,
+        daemonHost: where.id === 'project-b' ? 'daemon-b' : 'daemon-a',
+        workspacePath: where.id === 'project-b' ? '/clone' : '/repo',
+        repoRoot: null,
+        worktreeBranch: null,
+        lastCommit: null,
+      }) as any);
+      mockIssueTasks({
+        activeTasks: [],
+        linkedTasks: [buildTask({
+          status: 'killed',
+          projectId: 'project-b',
+          agentHost: 'daemon-b',
+          executionHost: 'daemon-b',
+          metadata: { globalBackend: { host: 'daemon-b', backend: 'codex' } },
+          launchConfig: { cwd: '/clone', remoteWorktree },
+        })],
+      });
+
+      const response = await patch({ status: 'doing', metadata: { backendType: 'codex', daemonHost: 'daemon-a' } });
+
+      expect(response.status).toBe(200);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+      expect(db.task.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'task-active' },
+        data: expect.objectContaining({ agentHost: 'daemon-b' }),
+      }));
+      const issueUpdate = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(JSON.parse(issueUpdate.data.metadata).daemonHost).toBe('daemon-a');
+    });
+
+    it('rejects a global backend with agents, a remote worktree, or without a spawn', async () => {
+      const globalBackend = { host: 'daemon-b', backend: 'codex' };
+      expect((await patch({ status: 'doing', globalBackend: { host: 'daemon-b' } })).status).toBe(400);
+      expect((await patch({ status: 'doing', globalBackend, agents: ['feature-dev'] })).status).toBe(409);
+      expect((await patch({ status: 'doing', globalBackend, remoteWorktreeHost: 'daemon-c' })).status).toBe(409);
+      expect((await patch({ title: 'Renamed', globalBackend })).status).toBe(409);
+      expect(resolveGlobalBackendMount).not.toHaveBeenCalled();
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
     });
   });
 });

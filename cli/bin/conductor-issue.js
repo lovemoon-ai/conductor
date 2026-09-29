@@ -10,7 +10,8 @@
  *          [--priority P1|P2|P3] [--status backlog|doing|done]
  *          [--client-request-id <key>] [--project ...]
  *   update <id> [--title ...] [--description ...] [--priority ...] [--status ...]
- *   start <id>          (alias for update --status doing)
+ *   start <id> [--backend <b>] [--global-backend <backend>@<host>]
+ *                       (alias for update --status doing)
  *   done <id> [--evidence <text>|@FILE]
  *
  * Global flags supported on every write subcommand:
@@ -65,6 +66,21 @@ function issueAsObject(issue) {
     createdAt: issue.createdAt,
     updatedAt: issue.updatedAt,
   };
+}
+
+// `codex@ubuntu` → { backend: "codex", host: "ubuntu" } (RFC 0041 global AI backend).
+function parseGlobalBackend(value) {
+  if (value === undefined) return undefined;
+  const raw = String(value).trim();
+  const at = raw.indexOf("@");
+  const backend = at > 0 ? raw.slice(0, at).trim().toLowerCase() : "";
+  const host = at > 0 ? raw.slice(at + 1).trim() : "";
+  if (!backend || !host) {
+    const err = new Error(`--global-backend must look like <backend>@<host>, got "${raw}"`);
+    err.code = "ARGS";
+    throw err;
+  }
+  return { host, backend };
 }
 
 function parseStatusList(value) {
@@ -177,12 +193,16 @@ async function handleUpdate(argv, deps, overrides = {}) {
   // scope here (review M5 — current behavior accepted as documented).
   const status = overrides.status || argv.status;
   const evidence = overrides.evidence;
-  const metadata = buildAuditMetadata(deps.env);
+  const globalBackend = parseGlobalBackend(argv.globalBackend);
+  // The server reads the spawned task's backend from `metadata.backendType`.
+  const backendType = globalBackend?.backend ?? (argv.backend ? String(argv.backend) : undefined);
+  const metadata = buildAuditMetadata(deps.env, backendType ? { backendType } : {});
   const body = {
     ...(argv.title ? { title: String(argv.title) } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(argv.priority ? { priority: String(argv.priority) } : {}),
     ...(status ? { status: String(status) } : {}),
+    ...(globalBackend ? { globalBackend } : {}),
     metadata,
   };
   if (Object.keys(body).filter((key) => key !== "metadata").length === 0) {
@@ -234,6 +254,19 @@ async function handleUpdate(argv, deps, overrides = {}) {
     });
   } else {
     updated = await apis.issues.updateIssue(argv.id, body);
+  }
+  if (globalBackend) {
+    // A server that predates issue global backends drops the field and still
+    // starts a plain task on the project's own daemon.
+    const task = updated?.raw?.activeTask;
+    const ranOn = task?.agentHost ?? task?.agent_host ?? null;
+    if (ranOn !== globalBackend.host) {
+      deps.stderr.write(
+        `warning: the task did not start on ${globalBackend.backend}@${globalBackend.host}`
+          + ` (${ranOn ? `it runs on ${ranOn}` : "no task was started"});`
+          + " the Conductor server may be too old for --global-backend\n",
+      );
+    }
   }
   const obj = issueAsObject(updated);
   if (argv.json) {
@@ -313,7 +346,14 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       .command(
         "start <id>",
         "Mark issue as doing (alias for update --status doing)",
-        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("backend", { type: "string", describe: "AI backend for the spawned task, e.g. codex or claude" })
+          .option("global-backend", {
+            type: "string",
+            describe: "Run the AI on a global AI backend from settings, as <backend>@<host>",
+          })
+          .conflicts("backend", "global-backend"),
         async (argv) => {
           exitCode = await handleUpdate(argv, { ...handlerDeps, configFile: argv.configFile }, { status: "doing" });
         },
