@@ -43,3 +43,16 @@ turn's usage adds each sub-thread's delta. Context size stays the main
 thread's. Verified live on ruofo (codex 0.156.1): the turn reported 72,084 =
 main 42,744 + sub-agent 29,340, where the old code reported 42,744.
 Lesson: a "not my thread" filter must still let accounting events through.
+
+## Review follow-ups
+- Resume: on codex 0.156.1 a fresh app-server that resumes the parent and then
+  messages the old sub-agent does *not* replay the sub-thread total. Its first
+  update is the new response on top of the old total, so `total - last` is
+  right (recorded in a test). The sub-agent's `turn/started` id matches its
+  usage `turnId`, so an update under a turn id we never saw start is treated
+  as a replay (baseline = its total), the same way the main thread's is.
+- Sub-agent spend between turns goes to the next turn: at turn start each
+  sub-thread's baseline moves to what the last snapshot reported.
+- Sub-agent spend counts even when the main thread sent no in-turn update.
+- Claude error path: a `result` clears the streamed-usage map, and a failure
+  reports that result's `modelUsage` plus what streamed after it.

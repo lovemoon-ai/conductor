@@ -54,12 +54,15 @@ function createTurnError(message, extras = {}) {
   return error;
 }
 
-/** Per-turn usage summed from streamed assistant messages (one entry per API response). */
-function sumStreamedUsage(usageByMessageId) {
+/**
+ * Per-turn usage summed from streamed assistant messages (one entry per API
+ * response), on top of `base` (what an earlier result of the turn covered).
+ */
+function sumStreamedUsage(usageByMessageId, base = null) {
   if (!usageByMessageId.size) {
-    return null;
+    return base;
   }
-  const total = {};
+  const total = { ...base };
   for (const usage of usageByMessageId.values()) {
     for (const key of ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]) {
       const value = Number(usage?.[key]);
@@ -1004,6 +1007,8 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         this.updateSessionInfo(message.session_id || message.sessionId);
         this.lastResult = message;
         currentTurn.resultMessage = message;
+        // Its modelUsage covers everything streamed so far.
+        currentTurn.usageByMessageId.clear();
         return;
       default:
         return;
@@ -1209,8 +1214,13 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       };
     } catch (error) {
       // A failed turn still spent tokens; an interrupted query ends without a
-      // result, so fall back to the usage streamed so far.
-      const usage = error?.usage ?? sumStreamedUsage(currentTurn.usageByMessageId);
+      // (final) result, so fall back to the last result plus what streamed since.
+      const usage =
+        error?.usage ??
+        sumStreamedUsage(
+          currentTurn.usageByMessageId,
+          currentTurn.resultMessage ? resultUsage(currentTurn.resultMessage) : null,
+        );
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
       }

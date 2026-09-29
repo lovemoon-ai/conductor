@@ -48,23 +48,29 @@ function makeTurnSession(turns) {
 }
 
 describe("codex app-server session - per-turn token usage", () => {
-  it("adds what spawned sub-agent threads spent during the turn", async () => {
-    const counts = (threadId, turnId, total, last) => [
-      "thread/tokenUsage/updated",
-      {
-        threadId,
-        turnId,
-        tokenUsage: {
-          total: { totalTokens: total, inputTokens: total - 10, cachedInputTokens: total / 2 },
-          last: { totalTokens: last, inputTokens: last - 10, cachedInputTokens: last / 2 },
-        },
+  // Sub-agent fixtures follow codex 0.156.1's real order: the sub thread's
+  // turn/started, then its thread/tokenUsage/updated under that turn id.
+  const counts = (threadId, turnId, total, last) => [
+    "thread/tokenUsage/updated",
+    {
+      threadId,
+      turnId,
+      tokenUsage: {
+        total: { totalTokens: total, inputTokens: total - 10, cachedInputTokens: total / 2 },
+        last: { totalTokens: last, inputTokens: last - 10, cachedInputTokens: last / 2 },
       },
-    ];
+    },
+  ];
+  const subStarted = (turnId) => ["turn/started", { threadId: "thread-sub", turn: { id: turnId } }];
+  const done = (turnId) => ["turn/completed", { turn: { id: turnId, status: "completed", error: null } }];
+
+  it("adds what spawned sub-agent threads spent during the turn", async () => {
     const session = makeTurnSession([
       [
         ["turn/started", { turn: { id: "turn-1" } }],
         counts("thread-1", "turn-1", 100, 100),
         ["thread/started", { thread: { id: "thread-sub", parentThreadId: "thread-1" } }],
+        subStarted("sub-1"),
         counts("thread-sub", "sub-1", 40, 40),
         counts("thread-sub", "sub-1", 100, 60),
         counts("thread-1", "turn-1", 160, 60),
@@ -74,6 +80,7 @@ describe("codex app-server session - per-turn token usage", () => {
         ["turn/started", { turn: { id: "turn-2" } }],
         counts("thread-1", "turn-2", 200, 40),
         // The same sub-agent, messaged again: only what it spent since turn 1 counts.
+        subStarted("sub-2"),
         counts("thread-sub", "sub-2", 130, 30),
         ["turn/completed", { turn: { id: "turn-2", status: "completed", error: null } }],
       ],
@@ -86,6 +93,95 @@ describe("codex app-server session - per-turn token usage", () => {
     assert.equal(first.usage.total.totalTokens, 160, "the context total stays the main thread's");
     const second = await session.runTurn("two");
     assert.equal(second.usage.turnTotalTokens, 70);
+  });
+
+  it("counts a sub-agent resumed after a restart from its first new response", async () => {
+    // Recorded on codex 0.156.1: a fresh app-server resumes the parent (which
+    // replays its total) and the old sub-agent thread, whose first update is
+    // its new response on top of the old total (29888 + 15041 = 44929).
+    const session = makeTurnSession([
+      [
+        counts("thread-1", "old-turn", 42729, 14302),
+        ["turn/started", { turn: { id: "turn-1" } }],
+        counts("thread-1", "turn-1", 57142, 14413),
+        subStarted("sub-2"),
+        counts("thread-sub", "sub-2", 44929, 15041),
+        counts("thread-sub", "sub-2", 60000, 15071),
+        counts("thread-1", "turn-1", 86103, 14514),
+        done("turn-1"),
+      ],
+    ]);
+    const result = await session.runTurn("one");
+    assert.equal(result.usage.turnTotalTokens, 86103 - 42729 + 60000 - 29888);
+  });
+
+  it("does not count a sub-agent's replayed total", async () => {
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        counts("thread-1", "turn-1", 100, 100),
+        // A replay: a turn id this session never saw start.
+        counts("thread-sub", "old-sub-turn", 5000, 3000),
+        subStarted("sub-1"),
+        counts("thread-sub", "sub-1", 5040, 40),
+        done("turn-1"),
+      ],
+    ]);
+    const result = await session.runTurn("one");
+    assert.equal(result.usage.turnTotalTokens, 140);
+  });
+
+  it("gives sub-agent spend after a turn ended to the next turn", async () => {
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        counts("thread-1", "turn-1", 100, 100),
+        subStarted("sub-1"),
+        counts("thread-sub", "sub-1", 40, 40),
+        done("turn-1"),
+        // The sub-agent keeps working after the parent's turn completed.
+        counts("thread-sub", "sub-1", 90, 50),
+      ],
+      [["turn/started", { turn: { id: "turn-2" } }], counts("thread-1", "turn-2", 130, 30), done("turn-2")],
+    ]);
+    const first = await session.runTurn("one");
+    assert.equal(first.usage.turnTotalTokens, 140);
+    await new Promise((resolve) => setImmediate(resolve));
+    const second = await session.runTurn("two");
+    assert.equal(second.usage.turnTotalTokens, 80);
+  });
+
+  it("reports sub-agent spend when the main thread sent no update of its own", async () => {
+    const session = makeTurnSession([
+      [
+        counts("thread-1", "old-turn", 1000, 100),
+        ["turn/started", { turn: { id: "turn-1" } }],
+        subStarted("sub-1"),
+        counts("thread-sub", "sub-1", 40, 40),
+        done("turn-1"),
+      ],
+    ]);
+    const result = await session.runTurn("one");
+    assert.equal(result.usage.turnTotalTokens, 40);
+  });
+
+  it("drops the cache split, not the total, when a sub-agent reports no input split", async () => {
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        counts("thread-1", "turn-1", 100, 100),
+        subStarted("sub-1"),
+        [
+          "thread/tokenUsage/updated",
+          { threadId: "thread-sub", turnId: "sub-1", tokenUsage: { total: { totalTokens: 40 }, last: { totalTokens: 40 } } },
+        ],
+        done("turn-1"),
+      ],
+    ]);
+    const result = await session.runTurn("one");
+    assert.equal(result.usage.turnTotalTokens, 140);
+    assert.equal(result.usage.turnInputTokens, undefined);
+    assert.equal(result.usage.turnCachedInputTokens, undefined);
   });
 
   it("reports each turn's share of the thread total", async () => {
