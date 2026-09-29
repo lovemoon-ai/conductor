@@ -1,6 +1,6 @@
 # Conductor
 
-[Website](https://conductor-ai.top/) · [Docs](https://conductor-ai.top/docs/)
+[Website](https://conductor.conductor-ai.top/) · [Docs](https://conductor.conductor-ai.top/docs/)
 
 Conductor is an open-source control plane for AI coding agents.
 

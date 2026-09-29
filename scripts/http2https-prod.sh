@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-domain="conductor-ai.top"
+domain="conductor.conductor-ai.top"
 
 ping $domain
 

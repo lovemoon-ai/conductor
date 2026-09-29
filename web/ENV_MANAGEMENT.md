@@ -70,7 +70,7 @@ cp .env.example .env.production.volcengine
 
 **Key settings**:
 
-- `API_BASE_URL=https://conductor-ai.top/`
+- `API_BASE_URL=https://conductor.conductor-ai.top/`
 - `DATABASE_URL=file:/opt/conductor/prisma/schema.sqlite.db` with an absolute path
 - `JWT_SECRET`: **must be replaced with a production-grade secret**
 - `AUTH_DEV_CODE`: **remove it or leave it empty**

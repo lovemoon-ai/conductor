@@ -98,7 +98,7 @@ conductor fire --backend <name> --resume <session-id>
 If `conductor` is missing, broken, or too old, prefer the public installer first:
 
 ```bash
-curl -fsSL https://conductor-ai.top/install.sh | bash
+curl -fsSL https://conductor.conductor-ai.top/install.sh | bash
 conductor --version
 ```
 

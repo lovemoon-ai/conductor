@@ -8,9 +8,8 @@
 # The canonical host is `conductor.conductor-ai.top`. Every daemon, every CLI
 # and the web UI talk to it; it is the ONLY host that serves real traffic.
 #
-# `conductor-ai.top` (the apex) is RETIRED and kept solely as a 301 to the
-# canonical host. Do not add proxy rules to it — a request that reaches the
-# apex should bounce, not be served.
+# `conductor-ai.top` (the apex) is RETIRED and answers every request with a
+# 404 — no redirect. Do not add proxy rules to it.
 #
 # Why this warning exists: the 2026-06-30 migration to the subdomain created
 # the new vhost BY HAND on the box and deliberately left the apex alone
@@ -31,14 +30,14 @@ map $http_upgrade $connection_upgrade {
   ''      close;
 }
 
-# Retired apex: bounce everything to the canonical subdomain. Its certificate
-# must stay renewed for as long as this block exists, or the redirect itself
-# fails TLS before it can redirect.
+# Retired apex: serves nothing (404), no redirect. Its certificate
+# must stay renewed for as long as this block exists, or HTTPS fails TLS
+# before it can answer.
 server {
   listen 80;
   server_name conductor-ai.top;
 
-  return 301 https://conductor.conductor-ai.top$request_uri;
+  return 404;
 }
 
 server {
@@ -50,7 +49,7 @@ server {
   include /etc/letsencrypt/options-ssl-nginx.conf;
   ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-  return 301 https://conductor.conductor-ai.top$request_uri;
+  return 404;
 }
 
 server {
