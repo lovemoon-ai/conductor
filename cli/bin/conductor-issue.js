@@ -5,6 +5,7 @@
  *
  * Subcommands:
  *   list [--project ...] [--status <s>] [--limit N]
+ *        [--all-projects | --project-ids a,b]   (cross-project listing)
  *   show <id>
  *   create --title <t> [--description <d> | --description-file FILE | --description-stdin]
  *          [--priority P1|P2|P3] [--status backlog|doing|done]
@@ -12,6 +13,7 @@
  *   update <id> [--title ...] [--description ...] [--priority ...] [--status ...]
  *   start <id>          (alias for update --status doing)
  *   done <id> [--evidence <text>|@FILE]
+ *   delete <id> --yes    (the server refuses issues still in doing)
  *
  * Global flags supported on every write subcommand:
  *   --json, --dry-run, --project, --config-file
@@ -39,6 +41,7 @@ import {
   reportError,
   resolveProject,
 } from "../src/entity-helpers.js";
+import { apiPath, argsError, buildHttp, sendOrPreview, formatTable, projectLabels } from "../src/backend-http.js";
 
 const isMainModule = (() => {
   const currentFile = fileURLToPath(import.meta.url);
@@ -75,7 +78,78 @@ function parseStatusList(value) {
     .filter(Boolean);
 }
 
+function parseIdList(value) {
+  if (value === undefined || value === null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values
+    .flatMap((entry) => String(entry).split(","))
+    .map((entry) => entry.trim())
+    .filter(Boolean))];
+}
+
+/**
+ * Cross-project listing straight off GET /api/issues: no `project_id` lists
+ * every project the user can access (own + collaborations); `project_ids`
+ * lists exactly those projects (what the merged cross-daemon view uses). The
+ * route has no status/limit params, so those filters are applied here.
+ */
+async function handleListAcross(argv, deps) {
+  const projectIds = parseIdList(argv.projectIds);
+  if (argv.allProjects && projectIds.length > 0) {
+    throw argsError("Pass either --all-projects or --project-ids, not both");
+  }
+  if (argv.project && (argv.allProjects || projectIds.length > 0)) {
+    throw argsError("--project cannot be combined with --all-projects/--project-ids");
+  }
+  const http = await buildHttp(deps);
+  const raw = await http.get("/api/issues", {
+    query: projectIds.length > 0 ? { project_ids: projectIds.join(",") } : undefined,
+  });
+  let issues = Array.isArray(raw) ? raw : [];
+  const statuses = parseStatusList(argv.status);
+  if (statuses && statuses.length > 0) {
+    issues = issues.filter((issue) => statuses.includes(issue.status));
+  }
+  if (argv.limit) issues = issues.slice(0, Number(argv.limit));
+  if (argv.json) {
+    printJson(deps.stdout, issues);
+    return EXIT.OK;
+  }
+  if (issues.length === 0) {
+    printPretty(deps.stdout, "(no issues)");
+    return EXIT.OK;
+  }
+  const names = await projectLabels(http);
+  const rows = issues.map((issue) => {
+    const projectId = issue.projectId ?? issue.project_id ?? "";
+    const projectLabel = issue.projectName ?? issue.project_name ?? names.get(projectId) ?? projectId;
+    return [issue.id, projectLabel, issue.status ?? "", issue.priority ?? "", issue.title ?? ""];
+  });
+  for (const line of formatTable(["ID", "PROJECT", "STATUS", "PRIO", "TITLE"], rows)) {
+    printPretty(deps.stdout, line);
+  }
+  return EXIT.OK;
+}
+
+async function handleDelete(argv, deps) {
+  if (!argv.yes && !argv.dryRun) {
+    throw argsError("Refusing to delete without --yes");
+  }
+  const http = await buildHttp(deps);
+  const result = await sendOrPreview(http, argv, deps, "DELETE", apiPath("issues", argv.id), undefined);
+  if (result.dryRun) return EXIT.OK;
+  if (argv.json) {
+    printJson(deps.stdout, { deleted: true, id: argv.id });
+    return EXIT.OK;
+  }
+  printPretty(deps.stdout, `Deleted issue ${argv.id}`);
+  return EXIT.OK;
+}
+
 async function handleList(argv, deps) {
+  if (argv.allProjects || parseIdList(argv.projectIds).length > 0) {
+    return handleListAcross(argv, deps);
+  }
   const apis = await buildApis(deps);
   const project = await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
   const list = await apis.issues.listIssues({
@@ -267,7 +341,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "List issues",
         (cmd) => cmd
           .option("status", { type: "string", describe: "Comma-separated status filter (e.g. backlog,doing)" })
-          .option("limit", { type: "number" }),
+          .option("limit", { type: "number" })
+          .option("all-projects", { type: "boolean", default: false, describe: "List issues across every accessible project" })
+          .option("project-ids", { type: "string", describe: "Comma-separated project ids to list issues across" }),
         async (argv) => {
           exitCode = await handleList(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -330,6 +406,16 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
             status: "done",
             ...(evidence !== undefined ? { evidence } : {}),
           });
+        },
+      )
+      .command(
+        "delete <id>",
+        "Delete an issue (requires --yes)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("yes", { type: "boolean", default: false, describe: "Confirm the deletion" }),
+        async (argv) => {
+          exitCode = await handleDelete(argv, { ...handlerDeps, configFile: argv.configFile });
         },
       )
       .demandCommand(1)

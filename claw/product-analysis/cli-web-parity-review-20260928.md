@@ -142,3 +142,27 @@
 1. 新增 `cli/test/api-parity.test.js`：列出所有 `web/src/app/api/**/route.ts` 的方法，和一份清单（`cli/api-parity.json`）对照。清单里每个“路由 + 方法”要么写对应的 CLI 命令，要么写 `"web-only": "<理由>"`。新增路由但清单没更新时，测试直接失败。
 2. 在 `claw/sop/04_review-code.md` 的 review 检查项里加一条：“新增或修改用户级 API 时，是否同步了 SDK 和 CLI？”
 3. CLAUDE.md 里现在的要求是“每个功能至少有一个 API 路由测试，外加一个 widget 或 SDK 测试”。可以改成“用户级功能必须有 SDK 方法 + CLI 命令 + CLI 测试”。
+
+---
+
+## 补齐状态（2026-09-29）
+
+上面的 P1、P2、P3 已全部实现。新命令通过 `cli/src/backend-http.js` 直接调用前端使用的同一批 `/api/...` 路由，所用 token 与 SDK 相同，因此不依赖 SDK 发版。
+
+| 领域 | 新增命令 | 代码位置 |
+|---|---|---|
+| task | `stop` `interrupt` `restart` `delete --yes [--permanent]` `archive` `unarchive` `rename` `pin/unpin` `move [--back]` `labels [--clear]` `share/unshare` `persistent` `round start/end` `cleanup-worktree` `terminal open/show/close` `resume` `schedule update`；`create` 新增 `--daemon-host --agent --global-backend --worktree --remote-worktree --persistent`；`send --attach`；`messages --follow`；`list --all-projects / --project-ids` | `cli/src/task-commands.js`、`cli/bin/conductor-task.js` |
+| project | `update` `refresh` `delete --yes` `reorder` `agents` `collab invite/join/leave` `labels list/add/rename/remove` | `cli/bin/conductor-project.js` |
+| issue | `delete --yes`、`list --all-projects / --project-ids` | `cli/bin/conductor-issue.js` |
+| daemon | `restart` `upgrade [--status/--wait]` `sessions` `accounts` `switch-account` `commands list/run/status` `share create/list/revoke/show-invite/accept` | `cli/src/daemon-share-commands.js` |
+| 用户与全局 | `conductor search`；`conductor settings global-backends/catchphrases/daily-report/task-list/task-card-groups/project-card-groups/reports`；`conductor auth whoami/tokens list/create/revoke` | `cli/bin/conductor-{search,settings,auth}.js` |
+
+**有意不做的：**
+- 登录、注册、OAuth、支付：登录已经由 `conductor config` 负责。
+- `GET /api/daemon-shares/mine`：这是 owner 的 daemon 用来拉取 guest token 的接口，会明文返回凭据。别人共享给你的 daemon 已经显示在 `conductor daemon list` 里。
+- `GET /api/auth/tokens/latest`：会打印原始 token。
+- PTY 交互式接入：CLI 只能开关终端、查看终端对应的任务。交互式终端可以直接用 `conductor remote exec`。
+
+**顺带修复：** `project hide/unhide` 会清空项目的 metadata，详见 `claw/lessons/arch_cli-project-hide-wipes-project-metadata-20260929.md`。
+
+**尚未做：** 第一部分建议的 API 对齐检查测试（`cli/api-parity.json` 清单 + 测试）。

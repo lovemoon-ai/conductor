@@ -24,7 +24,8 @@ import { DAEMON_QUERY_VERBS, main as runDaemonQuery } from "./conductor-daemon-q
 
 const argv = hideBin(process.argv);
 
-// `conductor daemon list|tools|quota` are read-only queries, not a daemon launch.
+// `conductor daemon list|tools|quota|restart|upgrade|sessions|accounts|switch-account|commands|share`
+// talk to the backend about daemons; they are not a daemon launch.
 // Exit (so startup below never runs) only after stdout drains: a piped
 // --json payload over 64KB would otherwise be cut off.
 if (DAEMON_QUERY_VERBS.has(argv[0])) {
@@ -181,6 +182,10 @@ const args = yargs(argv)
   .example("$0 --nohup", "Run daemon in background with logfile")
   .example("$0 --nohup --force", "Restart daemon in background by stopping the existing one")
   .example("$0 list | tools <host> | quota <host>", "Query online daemons, their AI tools and quota")
+  .example("$0 restart <host> | upgrade <host> [--wait]", "Restart or upgrade a remote daemon")
+  .example("$0 sessions <host> | accounts <host> | switch-account <host> <name>", "Resumable AI sessions, codex accounts")
+  .example("$0 commands list|run|status <host> ...", "Run a daemon's custom commands")
+  .example("$0 share create|list|revoke|show-invite|accept ...", "Share a daemon with another user")
   .help()
   .strict()
   .parse();

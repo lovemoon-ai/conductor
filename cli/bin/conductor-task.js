@@ -16,6 +16,24 @@
  *   schedule list <id>
  *   schedule create <id> [<message>] (--delay 10m | --at ISO | --every 1h)
  *   schedule delete <id> <schedule-id>
+ *   schedule update <id> <schedule-id> [<message>] [--delay|--at|--every ...]
+ *   stop <id> | interrupt <id> [--target-reply-to <msg-id>]
+ *   restart <id> [--strategy inplace|new_task] [--backend] [--refresh-session]
+ *           [--daemon-host <h>] [--first-message <text>]
+ *   delete <id> --yes [--permanent] | archive <id> | unarchive <id> [--daemon-host <h>]
+ *   rename <id> <title> | pin <id> | unpin <id> | labels <id> [<label-id>...] [--clear]
+ *   move <id> [<project>] [--back] | share <id> | unshare <id>
+ *   persistent <id> [--enable|--disable] [--instructions ...] [--summary ...]
+ *   round end <id> | round start <id> [<message>] [--backend] [--daemon-host] [--worktree inherit|new|none]
+ *   cleanup-worktree <id> | terminal open|close|show <id>
+ *   resume --daemon-host <h> --backend <b> --session <id> [--session-file <p>] [--title] [--prompt]
+ *
+ *   create also takes: --daemon-host, --agent <name>[:backend] (repeatable; first
+ *   is the worker), --global-backend <host>:<backend>, --worktree,
+ *   --remote-worktree <host>, --persistent
+ *   send also takes: --attach FILE (repeatable)
+ *   messages also takes: --follow [--interval <sec>] [--until-idle]
+ *   list also takes (without --archived): --all-projects, --project-ids a,b
  *
  * Global flags supported on every write subcommand:
  *   --json, --dry-run, --project, --config-file
@@ -42,6 +60,7 @@ import {
   reportError,
   resolveProject,
 } from "../src/entity-helpers.js";
+import * as extra from "../src/task-commands.js";
 
 const isMainModule = (() => {
   const currentFile = fileURLToPath(import.meta.url);
@@ -281,8 +300,14 @@ async function handleList(argv, deps) {
   // Validated here rather than with yargs implies/conflicts: those count the
   // boolean defaults as "set", and the parser's fail() does not stop the handler.
   let argsProblem = null;
-  if (!argv.archived && (argv.search !== undefined || argv.allProjects || argv.page !== undefined)) {
-    argsProblem = "--search, --all-projects and --page require --archived";
+  if (!argv.archived && (argv.search !== undefined || argv.page !== undefined)) {
+    argsProblem = "--search and --page require --archived";
+  } else if (!argv.archived && (argv.allProjects || argv.projectIds) && (argv.project || argv.issue || argv.includeMoved)) {
+    argsProblem = "--all-projects / --project-ids cannot be combined with --project, --issue, or --include-moved";
+  } else if (argv.allProjects && argv.projectIds) {
+    argsProblem = "Pass either --all-projects or --project-ids, not both";
+  } else if (argv.archived && argv.projectIds) {
+    argsProblem = "--project-ids cannot be combined with --archived (use --all-projects)";
   } else if (argv.archived && (argv.issue || argv.status || argv.includeMoved || (argv.allProjects && argv.project))) {
     argsProblem = "--archived cannot be combined with --issue, --status, --include-moved, or --project with --all-projects";
   }
@@ -291,6 +316,7 @@ async function handleList(argv, deps) {
     err.code = "ARGS";
     throw err;
   }
+  if (!argv.archived && (argv.allProjects || argv.projectIds)) return extra.handleMultiProjectList(argv, deps);
   const apis = await buildApis(deps);
   if (argv.archived) return handleArchivedList(argv, deps, apis);
   const project = await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
@@ -334,6 +360,12 @@ async function handleCreate(argv, deps) {
     const err = new Error("--title must not be empty");
     err.code = "ARGS";
     throw err;
+  }
+  if (extra.hasExtendedCreateOptions(argv)) {
+    // The SDK's createTask only forwards the basic fields; the extended options
+    // (daemon, agent group, global backend, worktree, persistent) go straight to
+    // the route with the same payload the web Create Task dialog sends.
+    return extra.handleExtendedCreate(argv, deps, project.id, title);
   }
 
   const body = {
@@ -446,6 +478,9 @@ async function handleSend(argv, deps) {
   // `--metadata-json '{"actor":"system"}'` cannot spoof CLI audit fields
   // (review H1). The CLI's `actor: "cli"` always wins inside `audit`.
   const metadata = buildAuditMetadata(deps.env, extraMetadata || {});
+  if ([].concat(argv.attach || []).filter(Boolean).length > 0) {
+    return extra.handleSendWithAttachments(argv, deps, content, metadata);
+  }
   const body = {
     role: "user",
     content,
@@ -527,6 +562,9 @@ async function handleMessages(argv, deps) {
     limit: argv.limit ? Number(argv.limit) : undefined,
     before: argv.before ? String(argv.before) : undefined,
   });
+  if (argv.follow) {
+    return extra.followMessages(argv, deps, apis, Array.isArray(list) ? list : []);
+  }
   if (argv.json) {
     printJson(deps.stdout, Array.isArray(list) ? list : []);
     return EXIT.OK;
@@ -623,6 +661,43 @@ async function handleScheduleDelete(argv, deps) {
   return EXIT.OK;
 }
 
+async function handleScheduleUpdate(argv, deps) {
+  const hasMessage = (argv.message !== undefined && argv.message !== "") || argv.fromFile || argv.stdin;
+  const content = hasMessage
+    ? readMessageInput({
+      positional: argv.message,
+      fromFile: argv.fromFile,
+      useStdin: Boolean(argv.stdin),
+      stdin: deps.stdin,
+    })
+    : undefined;
+  const hasSchedule = argv.delay !== undefined || argv.at !== undefined || argv.every !== undefined;
+  const schedule = hasSchedule ? parseScheduleOptions(argv) : undefined;
+  return extra.handleScheduleUpdate(argv, deps, content, schedule);
+}
+
+function withMessageInput(cmd) {
+  return cmd
+    .option("stdin", { type: "boolean", default: false })
+    .option("from-file", { type: "string" });
+}
+
+function scheduleModeOptions(cmd) {
+  return cmd
+    .option("delay", { type: "string", describe: "Send once after a duration, e.g. 10m or 2h" })
+    .option("at", { type: "string", describe: "Send once at an ISO/local date-time string" })
+    .option("every", { type: "string", describe: "Repeat every duration, e.g. 30m or 1h" })
+    .option("if-idle", { type: "boolean", default: false, describe: "For repeats, only send when the AI is idle" })
+    .option("max-runs", { type: "number", describe: "For repeats, stop after N sends" })
+    .option("max-skips", { type: "number", describe: "For repeats, stop after N skips" })
+    .option("stop-at", { type: "string", describe: "For repeats, stop after this date-time" })
+    .option("keep-when-task-stopped", {
+      type: "boolean",
+      default: false,
+      describe: "For repeats, skip instead of completing when the task is not running",
+    });
+}
+
 export async function main(argvInput = hideBin(process.argv), deps = {}) {
   const stdout = deps.stdout || process.stdout;
   const stderr = deps.stderr || process.stderr;
@@ -630,6 +705,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
   const cwd = deps.cwd || process.cwd();
   const consoleErr = { error: (msg) => stderr.write(`${msg}\n`) };
   const handlerDeps = { ...deps, stdout, stderr, env, cwd };
+  const run = (handler) => async (argv) => {
+    exitCode = await handler(argv, { ...handlerDeps, configFile: argv.configFile });
+  };
 
   let exitCode = EXIT.OK;
   try {
@@ -654,7 +732,8 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           })
           .option("archived", { type: "boolean", describe: "List archived tasks instead of active ones" })
           .option("search", { type: "string", describe: "With --archived: match title or transcript text" })
-          .option("all-projects", { type: "boolean", describe: "With --archived: search every project" })
+          .option("all-projects", { type: "boolean", describe: "List tasks across every project (with --archived: search every project)" })
+          .option("project-ids", { type: "string", describe: "Comma-separated project ids to list together (merged cross-daemon view)" })
           .option("page", { type: "number", describe: "With --archived: result page (10 per page)" }),
         async (argv) => {
           exitCode = await handleList(argv, { ...handlerDeps, configFile: argv.configFile });
@@ -680,7 +759,17 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("parent-task-id", {
             type: "string",
             describe: "Display the new task in the same task-card group as this task",
-          }),
+          })
+          .option("daemon-host", { type: "string", describe: "Run the AI on this daemon (defaults to the project's daemon)" })
+          .option("agent", {
+            type: "string",
+            array: true,
+            describe: "Multi-agent group member <name>[:backend]; repeat it. The first is the worker, the rest reviewers",
+          })
+          .option("global-backend", { type: "string", describe: "Run the AI on a global backend <host>:<backend> (RFC 0041)" })
+          .option("worktree", { type: "boolean", describe: "Run in a new git worktree on the project's daemon" })
+          .option("remote-worktree", { type: "string", describe: "Run in a new git worktree on this remote daemon" })
+          .option("persistent", { type: "boolean", describe: "Create a persistent task (RFC 0039)" }),
         async (argv) => {
           exitCode = await handleCreate(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -709,7 +798,8 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .positional("message", { type: "string" })
           .option("stdin", { type: "boolean", default: false })
           .option("from-file", { type: "string" })
-          .option("metadata-json", { type: "string", describe: "Extra JSON metadata to merge into the message" }),
+          .option("metadata-json", { type: "string", describe: "Extra JSON metadata to merge into the message" })
+          .option("attach", { type: "string", array: true, describe: "Attach a local file; repeat for several" }),
         async (argv) => {
           exitCode = await handleSend(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -730,14 +820,182 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       )
       .command(
         "messages <id>",
-        "Pull a slice of task messages and exit (no --follow in this RFC)",
+        "Pull a slice of task messages (or --follow to stream new ones)",
         (cmd) => cmd
           .positional("id", { type: "string", demandOption: true })
           .option("limit", { type: "number" })
-          .option("before", { type: "string", describe: "Cursor: message id to paginate before" }),
+          .option("before", { type: "string", describe: "Cursor: message id to paginate before" })
+          .option("follow", { alias: "f", type: "boolean", default: false, describe: "Keep polling and print new messages" })
+          .option("interval", { type: "number", default: 2, describe: "With --follow: poll interval in seconds" })
+          .option("until-idle", { type: "boolean", default: false, describe: "With --follow: stop once the task is no longer running" }),
         async (argv) => {
           exitCode = await handleMessages(argv, { ...handlerDeps, configFile: argv.configFile });
         },
+      )
+      .command(
+        "stop <id>",
+        "Stop (kill) a running task",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run(extra.handleStop),
+      )
+      .command(
+        "interrupt <id>",
+        "Interrupt the current AI turn (the Stop button in the chat)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("target-reply-to", { type: "string", describe: "Reply target of the turn to interrupt (defaults to the latest user message)" }),
+        run(extra.handleInterrupt),
+      )
+      .command(
+        "restart <id>",
+        "Restart a task's AI session (in place, or as a new task)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("strategy", { choices: ["inplace", "new_task"], describe: "inplace resumes the session; new_task forks a successor" })
+          .option("backend", { type: "string", describe: "Switch to this AI backend" })
+          .option("refresh-session", { type: "boolean", default: false, describe: "Start a fresh AI session in place" })
+          .option("daemon-host", { type: "string", describe: "Run the restarted session on this daemon" })
+          .option("first-message", { type: "string", describe: "With --strategy new_task: first message instead of the transcript handoff" }),
+        run(extra.handleRestart),
+      )
+      .command(
+        "delete <id>",
+        "Delete a task (--permanent deletes an archived task for good)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("permanent", { type: "boolean", default: false, describe: "Permanently delete an archived task" })
+          .option("yes", { alias: "y", type: "boolean", default: false, describe: "Confirm the deletion" }),
+        run(extra.handleDelete),
+      )
+      .command(
+        "archive <id>",
+        "Archive (pack) a task: stop it and keep its transcript searchable",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run(extra.handleArchive),
+      )
+      .command(
+        "unarchive <id>",
+        "Restore an archived task",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("daemon-host", { type: "string", describe: "Restore on this daemon (required when the original is offline)" })
+          .option("backend", { type: "string", describe: "Restore with this AI backend" }),
+        run(extra.handleUnarchive),
+      )
+      .command(
+        "rename <id> <title>",
+        "Rename a task",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }).positional("title", { type: "string", demandOption: true }),
+        run(extra.handleRename),
+      )
+      .command(
+        "pin <id>",
+        "Pin a task to the top of the list",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run((argv, deps) => extra.handlePin(argv, deps, true)),
+      )
+      .command(
+        "unpin <id>",
+        "Unpin a task",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run((argv, deps) => extra.handlePin(argv, deps, false)),
+      )
+      .command(
+        "move <id> [targetProject]",
+        "Show a task under another project (display only; --back files it under its own project)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .positional("targetProject", { type: "string", describe: "Target project id or name" })
+          .option("back", { type: "boolean", default: false }),
+        run(extra.handleMove),
+      )
+      .command(
+        "labels <id> [labelIds..]",
+        "Replace the labels attached to a task",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .positional("labelIds", { type: "string", array: true })
+          .option("clear", { type: "boolean", default: false, describe: "Remove all labels" }),
+        run(extra.handleLabels),
+      )
+      .command(
+        "share <id>",
+        "Create (or print) the read-only share link of a task",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run(extra.handleShare),
+      )
+      .command(
+        "unshare <id>",
+        "Revoke a task's share link",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run(extra.handleUnshare),
+      )
+      .command(
+        "persistent <id>",
+        "Change persistent-task settings (RFC 0039)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .option("enable", { type: "boolean" })
+          .option("disable", { type: "boolean" })
+          .option("instructions", { type: "string", describe: "Standing instructions carried into every round" })
+          .option("summary", { type: "string", describe: "Carried-over summary" }),
+        run(extra.handlePersistent),
+      )
+      .command(
+        "round",
+        "End the current round or start a new one on a persistent task",
+        (cmd) => cmd
+          .command(
+            "end <id>",
+            "End the current round",
+            (sub) => sub.positional("id", { type: "string", demandOption: true }),
+            run(extra.handleRoundEnd),
+          )
+          .command(
+            "start <id> [message]",
+            "Start a new round (fresh AI session) with a first message",
+            (sub) => withMessageInput(sub
+              .positional("id", { type: "string", demandOption: true })
+              .positional("message", { type: "string" }))
+              .option("backend", { type: "string" })
+              .option("daemon-host", { type: "string" })
+              .option("worktree", { choices: ["inherit", "new", "none"] })
+              .option("expected-round", { type: "number", describe: "Refuse if another client already moved past this round" }),
+            run((argv, deps) => extra.handleRoundStart(argv, deps, () => readMessageInput({
+              positional: argv.message,
+              fromFile: argv.fromFile,
+              useStdin: Boolean(argv.stdin),
+              stdin: deps.stdin,
+            }))),
+          )
+          .demandCommand(1),
+      )
+      .command(
+        "cleanup-worktree <id>",
+        "Remove a stopped task's isolated git worktree",
+        (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
+        run(extra.handleCleanupWorktree),
+      )
+      .command(
+        "terminal",
+        "Open, show, or close the PTY terminal attached to a task",
+        (cmd) => cmd
+          .command("open <id>", "Attach a PTY terminal to the task", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "open")))
+          .command("show <id>", "Show the attached terminal", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "show")))
+          .command("close <id>", "Close and delete the attached terminal", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "close")))
+          .demandCommand(1),
+      )
+      .command(
+        "resume",
+        "Resume an existing AI CLI session as a new app task (see `conductor daemon sessions <host>`)",
+        (cmd) => cmd
+          .option("daemon-host", { type: "string", demandOption: true })
+          .option("backend", { type: "string", demandOption: true })
+          .option("session", { type: "string", demandOption: true, describe: "Session id" })
+          .option("session-file", { type: "string", describe: "Session file path on the daemon" })
+          .option("title", { type: "string" })
+          .option("prompt", { type: "string", describe: "First instruction after resuming" }),
+        run(extra.handleResume),
       )
       .command(
         "schedule",
@@ -774,6 +1032,17 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
               }),
             async (argv) => {
               exitCode = await handleScheduleCreate(argv, { ...handlerDeps, configFile: argv.configFile });
+            },
+          )
+          .command(
+            "update <id> <scheduleId> [message]",
+            "Edit an active scheduled message's text and/or schedule",
+            (sub) => scheduleModeOptions(withMessageInput(sub
+              .positional("id", { type: "string", demandOption: true })
+              .positional("scheduleId", { type: "string", demandOption: true })
+              .positional("message", { type: "string" }))),
+            async (argv) => {
+              exitCode = await handleScheduleUpdate(argv, { ...handlerDeps, configFile: argv.configFile });
             },
           )
           .command(
