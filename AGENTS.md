@@ -11,6 +11,7 @@
 - `cd web && pnpm build && pnpm start` builds and runs the production server.
 - `cd web && pnpm test` runs web tests with Vitest.
 - `cd modules/conductor-sdk && pnpm test` runs SDK tests with Vitest.
+- The root `package-lock.json` (npm workspaces: `cli`, `modules/*`) must be regenerated from a clean checkout with no `node_modules` anywhere: `npm install --package-lock-only`. Running it next to pnpm-installed `cli/node_modules` records links into `.pnpm/` that break `npm ci` (PR Checks rejects them).
 - Tight-loop helpers: `cd web && npx prisma studio`, `cd web && pnpm test`, and `cd modules/conductor-sdk && pnpm test`.
 
 ## Coding Style & Naming Conventions

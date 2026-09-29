@@ -325,12 +325,31 @@ jobs:
         with:
           node-version: 24
 
+      - name: Reject lockfile links into a local pnpm store
+        shell: bash
+        # Running `npm install` at the root while cli/ or modules/* still have a
+        # pnpm-installed node_modules records their deps as `"link": true` into
+        # `node_modules/.pnpm/...` on that machine. `npm ci` then installs none
+        # of them (the CLI could not even load yargs). Regenerate from a clean
+        # checkout with no node_modules: `npm install --package-lock-only`.
+        run: |
+          set -euo pipefail
+          bad=$(node -e '
+            const lock = require("./package-lock.json");
+            const hits = Object.entries(lock.packages || {})
+              .filter(([, v]) => v.link && String(v.resolved || "").includes(".pnpm"))
+              .map(([k, v]) => `${k} -> ${v.resolved}`);
+            console.log(hits.join("\n"));
+          ')
+          if [[ -n "$bad" ]]; then
+            echo "::error::package-lock.json links packages into a local pnpm store. Regenerate it from a clean checkout (no node_modules) with 'npm install --package-lock-only'."
+            echo "$bad"
+            exit 1
+          fi
+
       - name: Install workspace dependencies
         shell: bash
-        # --no-package-lock: the root package-lock.json records cli/'s
-        # dependencies as links into a local pnpm store (cli/node_modules/.pnpm),
-        # so `npm ci` installs no yargs etc. for the CLI. Resolve fresh instead.
-        run: npm install --no-package-lock --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Build the SDKs the CLI imports
         shell: bash
