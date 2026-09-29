@@ -30,3 +30,16 @@ summaries still read the last segment's `usage`, which is the context size.
 - When a task card number looks off, recompute it from the session JSONL
   (dedupe by requestId, include `subagents/*.jsonl`) before drawing cost
   conclusions.
+
+## Same gap in Codex (fixed the same day)
+Codex multi-agent streams every spawned sub-agent thread over the parent's
+app-server connection. `handleNotification` drops all events whose `threadId`
+is not the session's thread. That filter exists so a sub-agent's
+`turn/completed` cannot end the parent turn, but it also drops the sub-agent's
+`thread/tokenUsage/updated`, so the turn counted only the main thread.
+The fix records each sub-agent thread's total. The first update seen in a turn
+fixes the baseline (the previous known total, else `total - last`), and the
+turn's usage adds each sub-thread's delta. Context size stays the main
+thread's. Verified live on ruofo (codex 0.156.1): the turn reported 72,084 =
+main 42,744 + sub-agent 29,340, where the old code reported 42,744.
+Lesson: a "not my thread" filter must still let accounting events through.

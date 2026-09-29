@@ -48,6 +48,46 @@ function makeTurnSession(turns) {
 }
 
 describe("codex app-server session - per-turn token usage", () => {
+  it("adds what spawned sub-agent threads spent during the turn", async () => {
+    const counts = (threadId, turnId, total, last) => [
+      "thread/tokenUsage/updated",
+      {
+        threadId,
+        turnId,
+        tokenUsage: {
+          total: { totalTokens: total, inputTokens: total - 10, cachedInputTokens: total / 2 },
+          last: { totalTokens: last, inputTokens: last - 10, cachedInputTokens: last / 2 },
+        },
+      },
+    ];
+    const session = makeTurnSession([
+      [
+        ["turn/started", { turn: { id: "turn-1" } }],
+        counts("thread-1", "turn-1", 100, 100),
+        ["thread/started", { thread: { id: "thread-sub", parentThreadId: "thread-1" } }],
+        counts("thread-sub", "sub-1", 40, 40),
+        counts("thread-sub", "sub-1", 100, 60),
+        counts("thread-1", "turn-1", 160, 60),
+        ["turn/completed", { turn: { id: "turn-1", status: "completed", error: null } }],
+      ],
+      [
+        ["turn/started", { turn: { id: "turn-2" } }],
+        counts("thread-1", "turn-2", 200, 40),
+        // The same sub-agent, messaged again: only what it spent since turn 1 counts.
+        counts("thread-sub", "sub-2", 130, 30),
+        ["turn/completed", { turn: { id: "turn-2", status: "completed", error: null } }],
+      ],
+    ]);
+    const first = await session.runTurn("one");
+    assert.deepEqual(
+      [first.usage.turnTotalTokens, first.usage.turnInputTokens, first.usage.turnCachedInputTokens],
+      [260, 240, 130],
+    );
+    assert.equal(first.usage.total.totalTokens, 160, "the context total stays the main thread's");
+    const second = await session.runTurn("two");
+    assert.equal(second.usage.turnTotalTokens, 70);
+  });
+
   it("reports each turn's share of the thread total", async () => {
     const session = makeTurnSession([
       turn("turn-1", [[60, 60], [90, 30]]),

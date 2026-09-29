@@ -119,6 +119,16 @@ function subtractTokenCounts(a, b) {
   };
 }
 
+function addTokenCounts(a, b) {
+  const split = a.inputTokens !== undefined && b.inputTokens !== undefined;
+  return {
+    totalTokens: a.totalTokens + b.totalTokens,
+    ...(split
+      ? { inputTokens: a.inputTokens + b.inputTokens, cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens }
+      : {}),
+  };
+}
+
 /**
  * Adds tokens spent outside the reported attempt (an overflowed first try) to a
  * turn result or error. Only the total grows: the input split, and so the cache
@@ -341,6 +351,10 @@ export class CodexAppServerSession extends EventEmitter {
     // its own usage has arrived since; see snapshotTokenUsage().
     this.turnTokenBaseline = null;
     this.turnTokensSeen = false;
+    // Spawned sub-agent threads report their own thread totals: the latest one
+    // per thread, and each thread's total when the current turn first saw it.
+    this.subThreadTokenTotals = new Map();
+    this.subThreadTokenBaselines = new Map();
     this.currentTurnStatus = null;
     this.currentTurnActivityAt = 0;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
@@ -633,6 +647,22 @@ export class CodexAppServerSession extends EventEmitter {
   beginTurnTokenAccounting() {
     this.turnTokenBaseline = readTokenCounts(this.tokenUsage?.total);
     this.turnTokensSeen = false;
+    this.subThreadTokenBaselines = new Map();
+  }
+
+  /** Track a spawned sub-agent thread's total; its first update in a turn fixes its baseline. */
+  noteSubThreadTokenUsage(threadId, tokenUsage) {
+    const total = readTokenCounts(tokenUsage?.total);
+    if (!total) {
+      return;
+    }
+    if (this.currentTurn && !this.subThreadTokenBaselines.has(threadId)) {
+      this.subThreadTokenBaselines.set(
+        threadId,
+        this.subThreadTokenTotals.get(threadId) ?? subtractTokenCounts(total, readTokenCounts(tokenUsage.last)),
+      );
+    }
+    this.subThreadTokenTotals.set(threadId, total);
   }
 
   /**
@@ -646,9 +676,15 @@ export class CodexAppServerSession extends EventEmitter {
     if (!this.tokenUsage) {
       return null;
     }
-    const turn = this.turnTokensSeen
+    let turn = this.turnTokensSeen
       ? subtractTokenCounts(readTokenCounts(this.tokenUsage.total), this.turnTokenBaseline)
       : null;
+    for (const [threadId, baseline] of this.subThreadTokenBaselines) {
+      const spent = subtractTokenCounts(this.subThreadTokenTotals.get(threadId), baseline);
+      if (turn && spent) {
+        turn = addTokenCounts(turn, spent);
+      }
+    }
     return {
       ...this.tokenUsage,
       ...(turn
@@ -724,6 +760,8 @@ export class CodexAppServerSession extends EventEmitter {
     this.tokenUsage = null;
     this.turnTokenBaseline = null;
     this.turnTokensSeen = false;
+    this.subThreadTokenTotals = new Map();
+    this.subThreadTokenBaselines = new Map();
     this.booted = false;
     this.bootPromise = null;
   }
@@ -1037,6 +1075,9 @@ export class CodexAppServerSession extends EventEmitter {
     const threadId = typeof params?.threadId === "string" ? params.threadId.trim() : "";
     if (threadId && this.sessionId && threadId !== this.sessionId) {
       this.touchTurnActivity();
+      if (method === "thread/tokenUsage/updated") {
+        this.noteSubThreadTokenUsage(threadId, params.tokenUsage);
+      }
       return;
     }
     switch (method) {
