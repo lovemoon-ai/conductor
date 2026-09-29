@@ -41,21 +41,18 @@ export const resolveAgentWebsocketUrl = (backendUrl: string): string => {
   }
 };
 
+// The retired apex answers 404, so a stale env value or request origin must
+// never leak it into URLs handed to daemons or users (share links, config).
 export const resolvePublicBackendUrl = (fallbackOrigin?: string): string => {
   const configured =
     process.env.NEXT_PUBLIC_URL ||
     process.env.PUBLIC_BACKEND_URL ||
     process.env.BACKEND_URL;
 
-  if (typeof configured === "string" && configured.trim()) {
-    return configured.trim();
-  }
-
-  return fallbackOrigin || "http://localhost:6152";
-};
-
-export const resolveDeviceAuthorizationBaseUrl = (fallbackOrigin?: string): string => {
-  const resolved = resolvePublicBackendUrl(fallbackOrigin).replace(/\/+$/, "");
+  const resolved =
+    typeof configured === "string" && configured.trim()
+      ? configured.trim()
+      : fallbackOrigin || "http://localhost:6152";
 
   try {
     const parsed = new URL(resolved);
@@ -71,6 +68,9 @@ export const resolveDeviceAuthorizationBaseUrl = (fallbackOrigin?: string): stri
     return resolved;
   }
 };
+
+export const resolveDeviceAuthorizationBaseUrl = (fallbackOrigin?: string): string =>
+  resolvePublicBackendUrl(fallbackOrigin).replace(/\/+$/, "");
 
 /**
  * True when the public backend URL is sourced from an explicit env var rather
