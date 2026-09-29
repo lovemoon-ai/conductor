@@ -244,8 +244,12 @@ export class ProjectsApi {
     options: ProjectWriteOptions = {},
   ): Promise<Project> {
     const targetId = looksLikeProjectId(idOrName) ? idOrName.trim() : (await this.resolveById(idOrName)).id;
-    const metadata = buildAuditMetadata(options.metadata, this.options);
-    const payload = await this.client.patchProjectByQuery(targetId, { hidden, metadata });
+    // Send `hidden` only, exactly like the web UI. The project PATCH route
+    // *replaces* `project.metadata` with any `metadata` it receives, so the
+    // audit-only blob this used to send wiped the project's task labels, memos
+    // and binding data on every hide/unhide.
+    void options;
+    const payload = await this.client.patchProjectByQuery(targetId, { hidden });
     return normalizeProject(payload as Record<string, any>);
   }
 

@@ -204,28 +204,17 @@ describe('ProjectsApi', () => {
     expect(sent.daemonHost).toBe('host-a');
   });
 
-  test('setProjectHidden patches with hidden + audit metadata', async () => {
+  test('setProjectHidden patches hidden only, never metadata', async () => {
+    // The project PATCH route replaces project.metadata wholesale, so sending an
+    // audit-only metadata object would wipe task labels, memos and binding data.
     const { client, api } = makeApi([{ id: 'p1', name: 'Demo' }]);
-    await api.setProjectHidden('p1', true);
+    await api.setProjectHidden('p1', true, {
+      metadata: { audit: { actor: 'cli', cliVersion: '0.2.0' } },
+    });
     expect(client.patchProjectByQueryCalls).toHaveLength(1);
     const call = client.patchProjectByQueryCalls[0];
     expect(call.id).toBe('p1');
-    expect(call.body.hidden).toBe(true);
-    expect((call.body.metadata as any).audit).toMatchObject({ actor: 'sdk' });
-  });
-
-  test('setProjectHidden propagates caller metadata.audit to server', async () => {
-    const { client, api } = makeApi([{ id: 'p1', name: 'Demo' }]);
-    await api.setProjectHidden('p1', false, {
-      metadata: { audit: { actor: 'cli', cliVersion: '0.2.0' }, reason: 'restored' },
-    });
-    const call = client.patchProjectByQueryCalls[0];
-    expect((call.body.metadata as any).audit).toMatchObject({
-      actor: 'cli',
-      cliVersion: '0.2.0',
-      sdkVersion: '0.0.0-test',
-    });
-    expect((call.body.metadata as any).reason).toBe('restored');
+    expect(call.body).toEqual({ hidden: true });
   });
 
   test('setDefaultProject resolves id-or-name, returns Project, ships metadata', async () => {
