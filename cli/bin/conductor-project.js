@@ -20,6 +20,7 @@
  *   collab invite [<id|name>]
  *   collab join <token|invite-url> (--into <id|name> | --create-project <name>)
  *   collab leave <id|name>
+ *   collab show-invite <token|invite-url>
  *   labels list [<id|name>]
  *   labels add <name>                 (target project via --project)
  *   labels rename <label> <new-name>
@@ -546,6 +547,35 @@ async function handleCollabInvite(argv, deps) {
 }
 
 /** Accept a bare invite token or an invite URL ending in /app/invite/<token>. */
+/** Preview an invite (what the web /app/invite/<token> page shows) before joining. */
+async function handleCollabShowInvite(argv, deps) {
+  const inviteToken = parseInviteToken(argv.token);
+  const http = await buildHttp(deps);
+  const data = await http.get(apiPath("invitations", inviteToken));
+  if (argv.json) {
+    printJson(deps.stdout, data);
+    return EXIT.OK;
+  }
+  const collaboration = data?.collaboration ?? {};
+  const members = Array.isArray(collaboration.members) ? collaboration.members : [];
+  printPretty(deps.stdout, `Collaboration ${collaboration.id ?? ""} (${members.length} member${members.length === 1 ? "" : "s"})`);
+  if (data?.alreadyJoined) printPretty(deps.stdout, "You have already joined this collaboration.");
+  if (data?.isFull) printPretty(deps.stdout, "This collaboration is full.");
+  if (data?.suggestedProjectName) {
+    const note = data.suggestedProjectNameHidden ? " (a hidden project already has this name; unhide it to join with it)" : "";
+    printPretty(deps.stdout, `Suggested project name: ${data.suggestedProjectName}${note}`);
+  }
+  const candidates = (Array.isArray(data?.candidateProjects) ? data.candidateProjects : []).filter((p) => p.canJoin);
+  if (candidates.length) {
+    printPretty(deps.stdout, "Projects you can join with (--into):");
+    for (const project of candidates) {
+      printPretty(deps.stdout, `  ${project.id}  ${project.name}${project.daemonHost ? `@${project.daemonHost}` : ""}`);
+    }
+  }
+  printPretty(deps.stdout, `Join with: conductor project collab join ${inviteToken} (--into <project> | --create-project <name>)`);
+  return EXIT.OK;
+}
+
 export function parseInviteToken(input) {
   const text = String(input ?? "").trim();
   if (!text) return "";
@@ -990,6 +1020,14 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
               .option("daemon-host", { type: "string", describe: "Disambiguate --into across daemons" }),
             async (argv) => {
               exitCode = await handleCollabJoin(argv, { ...handlerDeps, configFile: argv.configFile });
+            },
+          )
+          .command(
+            "show-invite <token>",
+            "Preview a collaboration invite before joining",
+            (sub) => sub.positional("token", { type: "string", describe: "Invite token or invite URL" }),
+            async (argv) => {
+              exitCode = await handleCollabShowInvite(argv, { ...handlerDeps, configFile: argv.configFile });
             },
           )
           .command(

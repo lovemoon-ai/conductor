@@ -165,4 +165,4 @@
 
 **顺带修复：** `project hide/unhide` 会清空项目的 metadata，详见 `claw/lessons/arch_cli-project-hide-wipes-project-metadata-20260929.md`。
 
-**尚未做：** 第一部分建议的 API 对齐检查测试（`cli/api-parity.json` 清单 + 测试）。
+**自动检查（已完成）：** `cli/api-parity.json` 列出 `web/src/app/api` 下的每一个路由和方法，每项要么写对应的 CLI 命令，要么写 `skip` 原因。`cli/test/api-parity.test.js` 在以下情况失败：新增的路由或方法没有登记；清单里的路由已经不存在；清单写的 CLI 命令不存在（逐条执行 `conductor <命令> --help` 核对）。PR Checks 新增 `cli-api-parity` job 跑这个测试。AGENTS.md 和 `claw/sop/04_review-code.md` 也加上了这条规则。补清单时发现的两处缺口已一并补上：`task attachment download` 和 `project collab show-invite`。

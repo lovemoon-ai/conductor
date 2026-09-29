@@ -310,3 +310,40 @@ jobs:
             exit 1
           fi
           echo "OK: no 'db push' instructions in touched changesets."
+
+  cli-api-parity:
+    name: CLI covers every web API route
+    # AGENTS.md: anything the web UI can do, the `conductor` CLI must do too.
+    # cli/api-parity.json maps every web/src/app/api route + method to a CLI
+    # command (or a skip reason); the test fails for unmapped routes, stale
+    # entries, and mapped commands that do not exist.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install workspace dependencies
+        shell: bash
+        # --no-package-lock: the root package-lock.json records cli/'s
+        # dependencies as links into a local pnpm store (cli/node_modules/.pnpm),
+        # so `npm ci` installs no yargs etc. for the CLI. Resolve fresh instead.
+        run: npm install --no-package-lock --no-audit --no-fund
+
+      - name: Build the SDKs the CLI imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build --workspace @love-moon/ai-sdk
+          npm run build --workspace @love-moon/conductor-sdk
+
+      - name: Check CLI / web API parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! node --test cli/test/api-parity.test.js; then
+            echo "::error::A web API route is not covered by the CLI. Add the matching \`conductor\` command and map the route in cli/api-parity.json (or give a \`skip\` reason for daemon internals, sign-in, billing, webhooks, cron)."
+            exit 1
+          fi

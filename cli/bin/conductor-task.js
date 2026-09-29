@@ -26,6 +26,7 @@
  *   persistent <id> [--enable|--disable] [--instructions ...] [--summary ...]
  *   round end <id> | round start <id> [<message>] [--backend] [--daemon-host] [--worktree inherit|new|none]
  *   cleanup-worktree <id> | terminal open|close|show <id>
+ *   attachment download <id> <attachment-id> [-o FILE|DIR|-]
  *   resume --daemon-host <h> --backend <b> --session <id> [--session-file <p>] [--title] [--prompt]
  *
  *   create also takes: --daemon-host, --agent <name>[:backend] (repeatable; first
@@ -983,6 +984,21 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .command("open <id>", "Attach a PTY terminal to the task", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "open")))
           .command("show <id>", "Show the attached terminal", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "show")))
           .command("close <id>", "Close and delete the attached terminal", (sub) => sub.positional("id", { type: "string", demandOption: true }), run((argv, deps) => extra.handleTerminal(argv, deps, "close")))
+          .demandCommand(1),
+      )
+      .command(
+        "attachment",
+        "Download a message attachment",
+        (cmd) => cmd
+          .command(
+            "download <id> <attachmentId>",
+            "Save an attachment (ids are in `task messages --json`)",
+            (sub) => sub
+              .positional("id", { type: "string", demandOption: true })
+              .positional("attachmentId", { type: "string", demandOption: true })
+              .option("output", { alias: "o", type: "string", describe: "File or directory to write to; - for stdout" }),
+            run(extra.handleAttachmentDownload),
+          )
           .demandCommand(1),
       )
       .command(

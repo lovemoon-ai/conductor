@@ -3,7 +3,8 @@
  *
  * Register handlers by "METHOD /api/path" (exact path, no query string). Each
  * handler receives `{ method, path, query, body, headers }` and returns either a
- * plain value (sent as a 200 JSON body) or `{ status, body }`. Every request
+ * plain value (sent as a 200 JSON body) or `{ status, body, headers? }`; a
+ * Buffer body is sent as raw bytes. Every request
  * is recorded in `calls` so tests can assert on the exact wire request.
  */
 
@@ -24,6 +25,7 @@ export function createFakeFetch(routes = {}) {
     const handler = routes[`${method} ${parsed.pathname}`];
     let status = 200;
     let payload;
+    let responseHeaders = {};
     if (!handler) {
       status = 404;
       payload = { error: `no fake route for ${method} ${parsed.pathname}` };
@@ -32,16 +34,25 @@ export function createFakeFetch(routes = {}) {
       if (result && typeof result === "object" && "status" in result && "body" in result) {
         status = result.status;
         payload = result.body;
+        responseHeaders = result.headers || {};
       } else {
         payload = result;
       }
     }
-    const text = payload === undefined ? "" : JSON.stringify(payload);
+    // `{ status, body: Buffer, headers }` sends raw bytes (downloads).
+    const raw = Buffer.isBuffer(payload) ? payload : null;
+    const text = raw ? raw.toString("utf8") : (payload === undefined ? "" : JSON.stringify(payload));
+    const headers = new Headers(responseHeaders);
     return {
       ok: status >= 200 && status < 300,
       status,
+      headers,
       text: async () => text,
       json: async () => JSON.parse(text),
+      arrayBuffer: async () => {
+        const bytes = raw ?? Buffer.from(text, "utf8");
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      },
     };
   }
   fakeFetch.calls = calls;

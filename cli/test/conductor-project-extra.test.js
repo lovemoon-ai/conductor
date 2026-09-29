@@ -328,6 +328,33 @@ describe("conductor project collab", () => {
   });
 });
 
+describe("conductor project collab show-invite", () => {
+  it("previews an invite URL and lists joinable projects", async () => {
+    const r = await run(["collab", "show-invite", "https://app.example/app/invite/tok9"], {
+      "GET /api/invitations/tok9": {
+        collaboration: { id: "c1", members: [{ userId: "u1" }, { userId: "u2" }] },
+        candidateProjects: [
+          { id: "p2", name: "beta", daemonHost: "m1", canJoin: true },
+          { id: "p3", name: "gamma", daemonHost: "m2", canJoin: false },
+        ],
+        alreadyJoined: false,
+        isFull: false,
+        suggestedProjectName: "shared",
+      },
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /Collaboration c1 \(2 members\)/);
+    assert.match(r.out, /p2  beta@m1/);
+    assert.equal(r.out.includes("gamma"), false);
+    assert.match(r.out, /collab join tok9/);
+  });
+
+  it("maps an unknown invite to exit 4", async () => {
+    const r = await run(["collab", "show-invite", "nope"], { "GET /api/invitations/nope": notFound });
+    assert.equal(r.code, 4);
+  });
+});
+
 describe("conductor project labels", () => {
   const merged = [
     { id: "p1", name: "alpha", daemonHost: "m1", workspacePath: "/w/a" },

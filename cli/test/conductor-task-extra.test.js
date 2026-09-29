@@ -309,6 +309,37 @@ describe("conductor task create / resume / list extensions", () => {
   });
 });
 
+describe("conductor task attachment download", () => {
+  it("saves the file under the server-supplied name, confined to the target dir", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-dl-"));
+    const { code, err, calls } = await runWithFetch(main, ["attachment", "download", "t1", "a1", "-o", dir], {
+      "GET /api/tasks/t1/attachments/a1": {
+        status: 200,
+        body: Buffer.from("hello-bytes"),
+        headers: { "content-disposition": "attachment; filename=\"../../evil.txt\"" },
+      },
+    });
+    assert.equal(code, 0, err);
+    assert.equal(calls[0].method, "GET");
+    assert.equal(fs.readFileSync(path.join(dir, "evil.txt"), "utf8"), "hello-bytes");
+  });
+
+  it("-o - writes the bytes to stdout", async () => {
+    const { code, out } = await runWithFetch(main, ["attachment", "download", "t1", "a1", "-o", "-"], {
+      "GET /api/tasks/t1/attachments/a1": { status: 200, body: Buffer.from("raw"), headers: {} },
+    });
+    assert.equal(code, 0);
+    assert.equal(out, "raw");
+  });
+
+  it("maps a missing attachment to exit 4", async () => {
+    const { code } = await runWithFetch(main, ["attachment", "download", "t1", "nope", "-o", "-"], {
+      "GET /api/tasks/t1/attachments/nope": { status: 404, body: { error: "Not found" } },
+    });
+    assert.equal(code, 4);
+  });
+});
+
 describe("conductor task send --attach / messages --follow / schedule update", () => {
   it("uploads attachments then binds them to the message", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-attach-"));

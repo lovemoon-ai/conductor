@@ -365,6 +365,40 @@ export async function handleSendWithAttachments(argv, deps, content, metadata) {
   return print(deps, argv, data, `Sent message ${data?.id ? `${data.id} ` : ""}with ${attachmentIds.length} attachment(s) to task ${argv.id}`);
 }
 
+/** Filename from `Content-Disposition` (RFC 5987 `filename*` first). */
+function dispositionFileName(header) {
+  const value = String(header || "");
+  const star = value.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^"|"$/g, ""));
+    } catch {
+      // fall through
+    }
+  }
+  const plain = value.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1].trim() : null;
+}
+
+/** Save a message attachment (ids are in `task messages --json` → attachments). */
+export async function handleAttachmentDownload(argv, deps) {
+  const http = await buildHttp(deps);
+  const response = await http.download(taskPath(argv.id, "attachments", argv.attachmentId));
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (argv.output === "-") {
+    deps.stdout.write(bytes);
+    return EXIT.OK;
+  }
+  const headerName = dispositionFileName(response.headers?.get?.("content-disposition"));
+  // basename(): a server-supplied name must never write outside the target dir.
+  const fileName = path.basename(headerName || String(argv.attachmentId));
+  const cwd = deps.cwd || process.cwd();
+  let target = path.resolve(cwd, argv.output ? String(argv.output) : fileName);
+  if (argv.output && fs.existsSync(target) && fs.statSync(target).isDirectory()) target = path.join(target, fileName);
+  fs.writeFileSync(target, bytes);
+  return print(deps, argv, { path: target, bytes: bytes.length }, `Saved ${bytes.length} bytes to ${target}`);
+}
+
 // ---- follow ---------------------------------------------------------------
 
 const TERMINAL_STATUSES = new Set(["completed", "killed", "failed", "stopped", "achieved"]);

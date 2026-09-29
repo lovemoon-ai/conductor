@@ -134,11 +134,29 @@ export function createBackendHttp({ config, fetchImpl, env = process.env }) {
     return payload;
   }
 
+  /** GET a binary body; resolves to the raw fetch Response (caller streams it). */
+  async function download(pathname, options = {}) {
+    let response;
+    try {
+      response = await doFetch(buildUrl(pathname, options.query), {
+        method: "GET",
+        headers: { Authorization: `Bearer ${config.agentToken}`, Accept: "*/*" },
+      });
+    } catch (error) {
+      throw new BackendHttpError(`Download failed: ${error?.message || String(error)}`, undefined, undefined);
+    }
+    if (!response.ok) {
+      throw new BackendHttpError(`Backend responded with ${response.status}`, response.status, await readBody(response));
+    }
+    return response;
+  }
+
   return {
     baseUrl: base,
     url: buildUrl,
     request,
     upload,
+    download,
     get: (pathname, options) => request("GET", pathname, options),
     post: (pathname, body, options = {}) => request("POST", pathname, { ...options, body }),
     put: (pathname, body, options = {}) => request("PUT", pathname, { ...options, body }),
