@@ -71,6 +71,32 @@ function sumStreamedUsage(usageByMessageId) {
   return total;
 }
 
+/**
+ * A finished turn's usage. A turn that waits on background tasks emits one result per
+ * segment, and `usage` covers only the last one; `modelUsage` accumulates every API call
+ * the query's process made (all segments and subagents), so prefer its sum.
+ */
+function resultUsage(resultMessage) {
+  const total = {};
+  for (const entry of Object.values(resultMessage.modelUsage || {})) {
+    for (const [from, to] of [
+      ["inputTokens", "input_tokens"],
+      ["cacheCreationInputTokens", "cache_creation_input_tokens"],
+      ["cacheReadInputTokens", "cache_read_input_tokens"],
+      ["outputTokens", "output_tokens"],
+    ]) {
+      const value = Number(entry?.[from]);
+      if (Number.isFinite(value)) {
+        total[to] = (total[to] || 0) + value;
+      }
+    }
+  }
+  if (Object.keys(total).length) {
+    return total;
+  }
+  return resultMessage.usage ? { ...resultMessage.usage } : null;
+}
+
 function normalizeClaudeBackend(backend) {
   const normalized = String(backend || "").trim().toLowerCase();
   if (normalized === "claude-code") {
@@ -1126,7 +1152,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
             ? [...resultMessage.permission_denials]
             : [],
           // A failed turn still spent tokens.
-          usage: resultMessage.usage ? { ...resultMessage.usage } : null,
+          usage: resultUsage(resultMessage),
         });
       }
 
@@ -1164,7 +1190,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
 
       return {
         text: responseText,
-        usage: resultMessage.usage ? { ...resultMessage.usage } : null,
+        usage: resultUsage(resultMessage),
         items: currentTurn.items,
         events: [],
         provider: this.backend,

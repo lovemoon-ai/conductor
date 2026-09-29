@@ -72,6 +72,55 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("reports every segment and subagent of a turn that waited on background tasks", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            // Real SDK shape: `usage` is per segment, `modelUsage` is cumulative for the process.
+            yield {
+              type: "result",
+              subtype: "success",
+              session_id: "claude-bg-1",
+              result: "waiting",
+              usage: { input_tokens: 20, cache_creation_input_tokens: 40548, output_tokens: 393 },
+              modelUsage: {
+                "claude-haiku-4-5": { inputTokens: 616, outputTokens: 410, cacheReadInputTokens: 0, cacheCreationInputTokens: 40548 },
+              },
+            };
+            yield { type: "system", subtype: "task_notification", task_id: "a1", status: "completed", usage: { total_tokens: 13966 } };
+            yield {
+              type: "result",
+              subtype: "success",
+              session_id: "claude-bg-1",
+              result: "done",
+              usage: { input_tokens: 10, cache_creation_input_tokens: 2574, cache_read_input_tokens: 20877, output_tokens: 106 },
+              modelUsage: {
+                "claude-haiku-4-5": { inputTokens: 644, outputTokens: 813, cacheReadInputTokens: 33850, cacheCreationInputTokens: 57069 },
+                "claude-opus-5-5": { inputTokens: 6, outputTokens: 7, cacheReadInputTokens: 100, cacheCreationInputTokens: 50 },
+              },
+            };
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    const result = await session.runTurn("hello");
+
+    assert.equal(result.text, "done");
+    assert.deepEqual(result.usage, {
+      input_tokens: 650,
+      output_tokens: 820,
+      cache_read_input_tokens: 33950,
+      cache_creation_input_tokens: 57119,
+    });
+
+    await session.close();
+  });
+
   it("falls back to streamed usage when an interrupted query ends without a result", async () => {
     const assistant = (id, usage) => ({
       type: "assistant",
