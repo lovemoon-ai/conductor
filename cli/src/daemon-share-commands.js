@@ -138,6 +138,7 @@ async function handleUpgrade(argv, deps) {
   const path = apiPath("agents", argv.host, "update");
   let status;
   if (argv.status) {
+    if (argv.dryRun) throw argsError("--dry-run cannot be combined with --status");
     status = await http.get(path);
   } else {
     const { dryRun, data } = await sendOrPreview(http, argv, deps, "POST", path, undefined);
@@ -286,7 +287,7 @@ async function handleCommandsRun(argv, deps) {
   if (!argv.wait) {
     if (argv.json) printJson(deps.stdout, data);
     else {
-      printPretty(deps.stdout, `${data?.started === false ? "Already running" : "Started"} ${data?.key ?? argv.key} (run ${data?.runId ?? "?"}, ${data?.status ?? "running"})`);
+      printPretty(deps.stdout, `Started ${data?.key ?? argv.key} (run ${data?.runId ?? "?"}, ${data?.status ?? "running"})`);
       if (data?.runId) printPretty(deps.stdout, `Follow with: conductor daemon commands status ${argv.host} ${data.runId}`);
     }
     return runExitCode(data);
@@ -295,12 +296,25 @@ async function handleCommandsRun(argv, deps) {
   const now = deps.now || Date.now;
   const deadline = now() + (argv.waitTimeout ?? COMMAND_WAIT_TIMEOUT_MS / 1000) * 1000;
   let run = data;
+  let pollWarned = false;
   const statusPath = apiPath("agents", argv.host, "custom-commands", "runs", data?.runId ?? "");
   while (run?.status === "running") {
     if (!data?.runId) throw new Error("server did not return a runId to wait on");
     if (now() > deadline) throw new Error(`timed out waiting for run ${data.runId}`);
     await sleep(POLL_INTERVAL_MS);
-    run = await http.get(statusPath);
+    try {
+      run = await http.get(statusPath);
+    } catch (error) {
+      // A 5xx / network blip on the status route says nothing about the run,
+      // which keeps going on the daemon: keep polling until the deadline.
+      // 4xx (unknown run, lost access) will not heal, so surface it.
+      const status = error?.statusCode;
+      if (typeof status === "number" && status < 500) throw error;
+      if (!argv.json && !pollWarned) {
+        deps.stderr.write(`(status poll failed: ${error?.message ?? error}; retrying)\n`);
+        pollWarned = true;
+      }
+    }
   }
   if (argv.json) printJson(deps.stdout, run);
   else printRunStatus(deps.stdout, run);
@@ -401,6 +415,17 @@ async function handleShareAccept(argv, deps) {
 const hostPositional = (cmd) => cmd.positional("host", { type: "string", describe: "Daemon host name" });
 
 /** Register the verbs on the `conductor daemon` yargs instance. */
+/**
+ * `--dry-run` is a global daemon option but only write verbs can preview a
+ * request; reject it on read-only verbs instead of silently ignoring it.
+ */
+export function readOnly(handler) {
+  return (argv, deps) => {
+    if (argv.dryRun) throw argsError("--dry-run only applies to verbs that change something; this one only reads");
+    return handler(argv, deps);
+  };
+}
+
 export function registerDaemonRemoteCommands(y, run) {
   return y
     .command(
@@ -425,13 +450,13 @@ export function registerDaemonRemoteCommands(y, run) {
       (cmd) => hostPositional(cmd)
         .option("backend", { type: "array", string: true, describe: "Only these backends (repeat or comma-separate)" })
         .option("limit", { type: "number", describe: "Max sessions (1-200)" }),
-      run(handleSessions),
+      run(readOnly(handleSessions)),
     )
     .command(
       "accounts <host>",
       "List the codex accounts stored on a daemon (* = current)",
       hostPositional,
-      run(handleAccounts),
+      run(readOnly(handleAccounts)),
     )
     .command(
       "switch-account <host> [name]",
@@ -445,7 +470,7 @@ export function registerDaemonRemoteCommands(y, run) {
       "commands",
       "List, run and inspect a daemon's custom commands",
       (cmd) => cmd
-        .command("list <host>", "List custom commands configured on a daemon", hostPositional, run(handleCommandsList))
+        .command("list <host>", "List custom commands configured on a daemon", hostPositional, run(readOnly(handleCommandsList)))
         .command(
           "run <host> <key>",
           "Start a custom command",
@@ -459,7 +484,7 @@ export function registerDaemonRemoteCommands(y, run) {
           "status <host> <runId>",
           "Show a custom command run's status, exit code and output tail",
           (sub) => hostPositional(sub).positional("runId", { type: "string" }),
-          run(handleCommandsStatus),
+          run(readOnly(handleCommandsStatus)),
         )
         .demandCommand(1),
     )
@@ -478,7 +503,7 @@ export function registerDaemonRemoteCommands(y, run) {
           "list",
           "List the live shares of your daemons",
           (sub) => sub.option("host", { type: "string", describe: "Only shares of this daemon" }),
-          run(handleShareList),
+          run(readOnly(handleShareList)),
         )
         .command(
           "revoke <id>",
@@ -490,7 +515,7 @@ export function registerDaemonRemoteCommands(y, run) {
           "show-invite <token>",
           "Show what an invite token/link grants",
           (sub) => sub.positional("token", { type: "string", describe: "Invite token or full invite URL" }),
-          run(handleShareShowInvite),
+          run(readOnly(handleShareShowInvite)),
         )
         .command(
           "accept <token>",

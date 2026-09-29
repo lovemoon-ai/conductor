@@ -15,7 +15,11 @@ import { apiPath, argsError, buildHttp, formatTable, projectLabels, sendOrPrevie
 import { EXIT, buildApis, buildAuditMetadata, printJson, printPretty, resolveProject } from "./entity-helpers.js";
 
 // Destructive mutations (delete / archive) can wait on a daemon round trip.
-const TASK_MUTATION_TIMEOUT_MS = 60_000;
+// restart can wait up to 60s for a daemon ack (refresh-session / reclaim in
+// web/src/app/api/tasks/[taskId]/restart/route.ts) and then still spawn a
+// successor, so stay well above that: a client-side timeout while the server
+// carries on invites a retry that creates a duplicate task.
+const TASK_MUTATION_TIMEOUT_MS = 150_000;
 
 const MIME_BY_EXT = {
   ".gif": "image/gif", ".jpeg": "image/jpeg", ".jpg": "image/jpeg", ".png": "image/png",
@@ -164,10 +168,16 @@ export async function handleUnarchive(argv, deps) {
     }
     throw error;
   }
+  const backend = trimmed(argv.backend);
+  // `unachieve` plans against the task's current backend, so an "inplace" plan
+  // becomes a 409 at `restart` once --backend switches it. Drop the strategy in
+  // that case and let `restart` pick: inplace on the same backend, new_task on a
+  // different one (what the web "create new task" recovery sends).
+  const keepStrategy = !(backend && plan?.strategy === "inplace");
   const restartBody = {
-    strategy: plan?.strategy,
+    ...(keepStrategy && plan?.strategy ? { strategy: plan.strategy } : {}),
     ...(plan?.agentHost ? { agent_host: plan.agentHost } : {}),
-    ...(trimmed(argv.backend) ? { backend_type: trimmed(argv.backend) } : {}),
+    ...(backend ? { backend_type: backend } : {}),
   };
   const data = await http.post(taskPath(argv.id, "restart"), restartBody, { timeoutMs: TASK_MUTATION_TIMEOUT_MS });
   const task = data?.task;
@@ -243,6 +253,68 @@ export async function handleUnshare(argv, deps) {
   const { dryRun, data } = await sendOrPreview(http, argv, deps, "DELETE", taskPath(argv.id, "share"));
   if (dryRun) return EXIT.OK;
   return print(deps, argv, data ?? { unshared: true }, `Revoked the share link of task ${argv.id}`);
+}
+
+/** `abc`, `/share/abc` or `https://host/share/abc` → `abc`. */
+export function extractShareToken(input) {
+  const raw = trimmed(input);
+  if (!raw) throw argsError("share token or link is required");
+  const match = raw.match(/\/share\/([^/?#]+)/);
+  if (match) return decodeURIComponent(match[1]);
+  if (/^[a-z]+:\/\//i.test(raw) || raw.includes("/")) throw argsError(`not a task share link: ${raw}`);
+  return raw;
+}
+
+/** Read a shared task (what the public /share/<token> page shows). */
+export async function handleShared(argv, deps) {
+  const token = extractShareToken(argv.token);
+  const http = await buildHttp(deps);
+  const data = await http.get(apiPath("shared", token));
+  if (argv.json) {
+    printJson(deps.stdout, data);
+    return EXIT.OK;
+  }
+  const task = data?.task ?? {};
+  const header = [`${task.title ?? "(untitled)"}${task.status ? ` [${task.status}]` : ""}`];
+  if (task.expiresAt) header.push(`link expires ${task.expiresAt}`);
+  printPretty(deps.stdout, header.join(" · "));
+  for (const msg of Array.isArray(data?.messages) ? data.messages : []) {
+    printPretty(deps.stdout, `[${msg.role || "msg"}] ${String(msg.content ?? "")}`);
+  }
+  return EXIT.OK;
+}
+
+// Mirrors web/src/lib/speech/transcribe.ts (MAX_AUDIO_BYTES, isSupportedAudioType).
+const SPEECH_MAX_BYTES = 25 * 1024 * 1024;
+const SPEECH_MIME_BY_EXT = { ".wav": "audio/wav", ".mp3": "audio/mpeg" };
+
+/** Speech to text through the same route as the web composer's voice input. */
+export async function handleTranscribe(argv, deps) {
+  const filePath = path.resolve(deps.cwd || process.cwd(), String(argv.file));
+  let stats;
+  try {
+    stats = fs.statSync(filePath);
+  } catch {
+    stats = null;
+  }
+  if (!stats || !stats.isFile()) throw argsError(`File not found: ${filePath}`);
+  if (stats.size === 0) throw argsError(`File is empty: ${filePath}`);
+  if (stats.size > SPEECH_MAX_BYTES) throw argsError(`File is larger than 25 MB: ${filePath}`);
+  const name = path.basename(filePath);
+  const type = SPEECH_MIME_BY_EXT[path.extname(name).toLowerCase()];
+  if (!type) throw argsError("Only .wav and .mp3 audio is supported");
+  const http = await buildHttp(deps);
+  if (argv.dryRun) {
+    return sendOrPreview(http, argv, deps, "POST", apiPath("speech", "transcribe"), {
+      file: `<upload ${name}>`,
+      ...(trimmed(argv.language) ? { language: trimmed(argv.language) } : {}),
+    }).then(() => EXIT.OK);
+  }
+  const form = new FormData();
+  form.set("file", new Blob([fs.readFileSync(filePath)], { type }), name);
+  if (trimmed(argv.language)) form.set("language", trimmed(argv.language));
+  const data = await http.upload(apiPath("speech", "transcribe"), form);
+  return print(deps, argv, data, String(data?.text ?? ""));
 }
 
 // ---- persistent tasks (RFC 0039) -----------------------------------------
@@ -402,6 +474,25 @@ export async function handleAttachmentDownload(argv, deps) {
 // ---- follow ---------------------------------------------------------------
 
 const TERMINAL_STATUSES = new Set(["completed", "killed", "failed", "stopped", "achieved"]);
+const FOLLOW_PAGE_SIZE = 50;
+const FOLLOW_MAX_PAGES = 20;
+
+/**
+ * Latest messages, oldest first, reaching back with `before` until a page
+ * overlaps what was already printed, so a burst of more than one page between
+ * polls is not dropped. Bounded so a first poll on a huge task stays cheap.
+ */
+async function fetchUnseenMessages(apis, taskId, seen) {
+  let messages = [];
+  for (let page = 0; page < FOLLOW_MAX_PAGES; page += 1) {
+    const before = messages[0]?.id;
+    const batch = await apis.tasks.listTaskMessages(taskId, { limit: FOLLOW_PAGE_SIZE, ...(before ? { before } : {}) });
+    const list = Array.isArray(batch) ? batch : [];
+    messages = [...list, ...messages];
+    if (list.length < FOLLOW_PAGE_SIZE || seen.size === 0 || list.some((msg) => seen.has(msg?.id))) break;
+  }
+  return messages;
+}
 
 /**
  * Poll new messages until interrupted (or, with --until-idle, until the task
@@ -424,8 +515,7 @@ export async function followMessages(argv, deps, apis, initial) {
   const maxPolls = Number.isFinite(deps.maxFollowPolls) ? deps.maxFollowPolls : Infinity;
   for (let polls = 0; polls < maxPolls; polls += 1) {
     await sleep(intervalMs);
-    const batch = await apis.tasks.listTaskMessages(argv.id, { limit: 50 });
-    (Array.isArray(batch) ? batch : []).forEach(emit);
+    (await fetchUnseenMessages(apis, argv.id, seen)).forEach(emit);
     if (argv.untilIdle) {
       const task = await apis.tasks.getTask(argv.id);
       const status = (typeof task?.asObject === "function" ? task.asObject() : task)?.status;
@@ -478,6 +568,15 @@ export function buildExtendedCreateBody(argv, deps, projectId, title) {
   if (globalBackend && (agents.length || trimmed(argv.daemonHost))) {
     throw argsError("--global-backend cannot be combined with --agent or --daemon-host");
   }
+  // Both are rejected by POST /api/tasks; fail before the round trip.
+  if (globalBackend && trimmed(argv.remoteWorktree)) {
+    throw argsError("--global-backend cannot be combined with --remote-worktree");
+  }
+  if (globalBackend && trimmed(argv.backend) && trimmed(argv.backend) !== globalBackend.backend) {
+    throw argsError(
+      `--backend ${trimmed(argv.backend)} does not match --global-backend backend ${globalBackend.backend}; drop --backend`,
+    );
+  }
   const metadata = buildAuditMetadata(deps.env, argv.persistent ? { persistent: { enabled: true } } : {});
   const body = {
     projectId,
@@ -509,6 +608,15 @@ function printCreated(deps, argv, data) {
   const reviewers = data?.reviewer_task_ids ?? data?.reviewerTaskIds;
   if (Array.isArray(reviewers) && reviewers.length) {
     printPretty(deps.stdout, `Reviewer tasks: ${reviewers.join(", ")}`);
+  }
+  // Same warning as the SDK create path in bin/conductor-task.js.
+  const grouping = data?.grouping;
+  if (grouping?.grouped === false) {
+    const parent = grouping.parentTaskId ?? grouping.parent_task_id;
+    printPretty(
+      deps.stderr,
+      `Warning: ${grouping.warning || `task was not grouped with ${parent}`}. The task itself was created successfully.`,
+    );
   }
   return EXIT.OK;
 }

@@ -8,7 +8,8 @@ The CLI can now do what the web app can:
 - `conductor task`: `stop`, `interrupt`, `restart`, `delete`, `archive`/`unarchive`,
   `rename`, `pin`/`unpin`, `move`, `labels`, `share`/`unshare`, `persistent`,
   `round start|end`, `cleanup-worktree`, `terminal open|show|close`, `resume`,
-  `attachment download`, and `schedule update`. `create` also takes `--daemon-host`, `--agent` (multi-agent group),
+  `attachment download`, `shared <token|link>` (read a shared task), `transcribe <audio>`
+  (speech to text), and `schedule update`. `create` also takes `--daemon-host`, `--agent` (multi-agent group),
   `--global-backend`, `--worktree`, `--remote-worktree` and `--persistent`.
   `send --attach` uploads files, `messages --follow` streams new messages, and
   `list --all-projects` / `--project-ids` lists tasks across projects.

@@ -82,6 +82,27 @@ describe("conductor issue list across projects", () => {
     assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i1"]);
   });
 
+  it("--json uses the same normalized shape as single-project list", async () => {
+    const r = await runWithFetch(main, ["list", "--all-projects", "--json"], {
+      "GET /api/issues": () => [
+        { id: "i9", project_id: "p1", projectName: "alpha", title: "Nine", status: "todo", created_at: "t0", activeTask: null },
+      ],
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(JSON.parse(r.out), [{
+      id: "i9", title: "Nine", status: "todo", projectId: "p1", createdAt: "t0",
+    }]);
+  });
+
+  it("--limit 0 is an args error on both list paths", async () => {
+    for (const args of [["list", "--all-projects", "--limit", "0"], ["list", "--project", "p1", "--limit", "0"]]) {
+      const r = await runWithFetch(main, args, { "GET /api/issues": () => ISSUES });
+      assert.equal(r.code, 2, args.join(" "));
+      assert.equal(r.calls.length, 0);
+      assert.match(r.err, /--limit must be a positive integer/);
+    }
+  });
+
   it("human output includes a PROJECT column", async () => {
     const r = await runWithFetch(main, ["list", "--all-projects"], { "GET /api/issues": () => ISSUES });
     assert.equal(r.code, 0, r.err);

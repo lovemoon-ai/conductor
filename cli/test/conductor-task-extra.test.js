@@ -131,6 +131,34 @@ describe("conductor task lifecycle verbs", () => {
     assert.match(err, /--daemon-host <l20\|box>/);
   });
 
+  it("unarchive --backend lets restart pick the strategy when the plan is inplace", async () => {
+    const { code, err, calls } = await runWithFetch(main, ["unarchive", "t1", "--backend", "codex"], {
+      "POST /api/tasks/t1/unachieve": { strategy: "inplace", agentHost: "mac", taskId: "t1" },
+      "POST /api/tasks/t1/restart": { mode: "new_task", task: { id: "t9", title: "Fix" } },
+    });
+    assert.equal(code, 0, err);
+    // An explicit "inplace" + a different backend is a 409 at /restart.
+    assert.deepEqual(calls[1].body, { agent_host: "mac", backend_type: "codex" });
+  });
+
+  it("unarchive --backend keeps a new_task plan", async () => {
+    const { code, err, calls } = await runWithFetch(main, ["unarchive", "t1", "--daemon-host", "l20", "--backend", "codex"], {
+      "POST /api/tasks/t1/unachieve": { strategy: "new_task", agentHost: "l20", taskId: "t1" },
+      "POST /api/tasks/t1/restart": { mode: "new_task", task: { id: "t9", title: "Fix" } },
+    });
+    assert.equal(code, 0, err);
+    assert.deepEqual(calls[1].body, { strategy: "new_task", agent_host: "l20", backend_type: "codex" });
+  });
+
+  it("unarchive without --backend passes the inplace plan through", async () => {
+    const { code, err, calls } = await runWithFetch(main, ["unarchive", "t1"], {
+      "POST /api/tasks/t1/unachieve": { strategy: "inplace", agentHost: "mac", taskId: "t1" },
+      "POST /api/tasks/t1/restart": { mode: "inplace_restart", task: { id: "t1", title: "Fix" } },
+    });
+    assert.equal(code, 0, err);
+    assert.deepEqual(calls[1].body, { strategy: "inplace", agent_host: "mac" });
+  });
+
   it("returns exit 4 when the task does not exist", async () => {
     const { code, err } = await runWithFetch(main, ["stop", "nope"], {
       "PATCH /api/tasks/nope": { status: 404, body: { error: "Not found" } },
@@ -248,18 +276,75 @@ describe("conductor task create / resume / list extensions", () => {
     assert.match(out, /Reviewer tasks: t6/);
   });
 
-  it("create --global-backend and --remote-worktree", async () => {
+  it("create --global-backend and --worktree", async () => {
     const { deps } = sdkDeps();
-    const { code, calls } = await runWithFetch(
+    const { code, err, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--remote-worktree", "ubuntu"],
+      ["create", "--title", "G", "--global-backend", "l20:claude", "--worktree"],
       { "POST /api/tasks": { id: "t7", title: "G" } },
       deps,
     );
-    assert.equal(code, 0);
+    assert.equal(code, 0, err);
     assert.deepEqual(calls[0].body.globalBackend, { host: "l20", backend: "claude" });
     assert.equal(calls[0].body.backendType, "claude");
-    assert.deepEqual(calls[0].body.launchConfig, { remoteWorktree: { host: "ubuntu" } });
+    assert.deepEqual(calls[0].body.launchConfig, { worktree: true });
+  });
+
+  it("create rejects --global-backend with --remote-worktree (server 409s it)", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, calls } = await runWithFetch(
+      main,
+      ["create", "--title", "G", "--global-backend", "l20:claude", "--remote-worktree", "ubuntu"],
+      {},
+      deps,
+    );
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
+    assert.match(err, /--remote-worktree/);
+  });
+
+  it("create rejects a --backend that differs from --global-backend", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, calls } = await runWithFetch(
+      main,
+      ["create", "--title", "G", "--global-backend", "l20:claude", "--backend", "codex"],
+      {},
+      deps,
+    );
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
+    assert.match(err, /does not match/);
+  });
+
+  it("create accepts a --backend equal to the --global-backend backend", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, calls } = await runWithFetch(
+      main,
+      ["create", "--title", "G", "--global-backend", "l20:claude", "--backend", "claude"],
+      { "POST /api/tasks": { id: "t7", title: "G" } },
+      deps,
+    );
+    assert.equal(code, 0, err);
+    assert.equal(calls[0].body.backendType, "claude");
+  });
+
+  it("create with new flags still warns when the parent grouping failed", async () => {
+    const { deps } = sdkDeps();
+    const { code, out, err } = await runWithFetch(
+      main,
+      ["create", "--title", "G", "--worktree", "--parent-task-id", "tp"],
+      {
+        "POST /api/tasks": {
+          id: "t8",
+          title: "G",
+          grouping: { parent_task_id: "tp", grouped: false, warning: "Task was created, but parent task grouping could not be saved" },
+        },
+      },
+      deps,
+    );
+    assert.equal(code, 0, err);
+    assert.match(out, /Created app task t8/);
+    assert.match(err, /Warning: Task was created, but parent task grouping could not be saved/);
   });
 
   it("create rejects --global-backend with --agent", async () => {
@@ -380,6 +465,80 @@ describe("conductor task send --attach / messages --follow / schedule update", (
     });
     assert.equal(code, 0, err);
     assert.equal(out, "[user] hi\n[assistant] hello\n");
+  });
+
+  it("messages --follow pages back so a burst of more than 50 is not dropped", async () => {
+    const { backend, deps } = sdkDeps({
+      messages: [{ id: "m000", taskId: "t1", role: "user", content: "start" }],
+      tasks: [{ id: "t1", projectId: "proj-1", title: "x", status: "running" }],
+    });
+    // Same paging as GET /api/tasks/:id/messages: newest `limit`, oldest first, `before` exclusive.
+    backend.listTaskMessages = async (taskId, params = {}) => {
+      let list = backend.messages.filter((m) => m.taskId === taskId);
+      if (params.before) list = list.slice(0, list.findIndex((m) => m.id === params.before));
+      return list.slice(-(params.limit ?? 50)).map((m) => ({ ...m }));
+    };
+    let polls = 0;
+    const { code, out, err } = await runWithFetch(main, ["messages", "t1", "--follow"], {}, {
+      ...deps,
+      maxFollowPolls: 1,
+      sleep: async () => {
+        polls += 1;
+        for (let i = 1; i <= 120; i += 1) {
+          backend.messages.push({ id: `m${String(i).padStart(3, "0")}`, taskId: "t1", role: "assistant", content: `n${i}` });
+        }
+      },
+    });
+    assert.equal(code, 0, err);
+    const lines = out.trim().split("\n");
+    assert.equal(lines.length, 121);
+    assert.equal(lines[0], "[user] start");
+    assert.equal(lines[1], "[assistant] n1");
+    assert.equal(lines[120], "[assistant] n120");
+  });
+
+  it("shared reads a share link by token", async () => {
+    const { code, out, err, calls } = await runWithFetch(main, ["shared", "https://backend.example/share/tok%2B1"], {
+      "GET /api/shared/tok%2B1": {
+        task: { id: "t1", title: "Fix", status: "completed", expiresAt: null },
+        messages: [{ id: "m1", role: "user", content: "hi" }, { id: "m2", role: "assistant", content: "done" }],
+      },
+    });
+    assert.equal(code, 0, err);
+    assert.equal(calls[0].method, "GET");
+    assert.equal(out, "Fix [completed]\n[user] hi\n[assistant] done\n");
+  });
+
+  it("shared surfaces 410 for an expired link", async () => {
+    const { code, err } = await runWithFetch(main, ["shared", "old"], {
+      "GET /api/shared/old": { status: 410, body: { error: "This shared link has expired" } },
+    });
+    assert.notEqual(code, 0);
+    assert.match(err, /expired/);
+  });
+
+  it("transcribe uploads the audio as multipart `file` with the language", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-speech-"));
+    const file = path.join(dir, "note.wav");
+    fs.writeFileSync(file, "RIFF-bytes");
+    const { code, out, err, calls } = await runWithFetch(main, ["transcribe", file, "--language", "zh"], {
+      "POST /api/speech/transcribe": { text: "你好" },
+    });
+    assert.equal(code, 0, err);
+    assert.ok(calls[0].body instanceof FormData);
+    assert.equal(calls[0].body.get("file").name, "note.wav");
+    assert.equal(calls[0].body.get("file").type, "audio/wav");
+    assert.equal(calls[0].body.get("language"), "zh");
+    assert.equal(out, "你好\n");
+  });
+
+  it("transcribe rejects unsupported audio before uploading", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-speech-"));
+    const file = path.join(dir, "note.ogg");
+    fs.writeFileSync(file, "x");
+    const { code, calls } = await runWithFetch(main, ["transcribe", file], {});
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
   });
 
   it("schedule update PATCHes content and schedule", async () => {

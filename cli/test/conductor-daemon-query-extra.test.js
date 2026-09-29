@@ -224,6 +224,30 @@ describe("conductor daemon commands", () => {
     assert.match(out, /--- stderr \(tail\) ---\noops/);
   });
 
+  it("run --wait keeps polling through a transient 502", async () => {
+    const answers = [
+      () => ({ status: 502, body: { error: "daemon did not answer" } }),
+      () => ({ runId: "run-1", key: "deploy", status: "completed", exitCode: 0 }),
+    ];
+    let i = 0;
+    const { code, err, calls } = await run(["commands", "run", "macmini", "deploy", "--wait"], {
+      "POST /api/agents/macmini/custom-commands/run": () => ({ key: "deploy", runId: "run-1", status: "running" }),
+      "GET /api/agents/macmini/custom-commands/runs/run-1": () => answers[i++](),
+    });
+    assert.equal(code, 0, err);
+    assert.equal(calls.length, 3);
+    assert.match(err, /status poll failed.*retrying/);
+  });
+
+  it("run --wait stops on a 404 from the status route", async () => {
+    const { code, calls } = await run(["commands", "run", "macmini", "deploy", "--wait"], {
+      "POST /api/agents/macmini/custom-commands/run": () => ({ key: "deploy", runId: "run-1", status: "running" }),
+      "GET /api/agents/macmini/custom-commands/runs/run-1": () => ({ status: 404, body: { error: "Run not found" } }),
+    });
+    assert.equal(code, 4);
+    assert.equal(calls.length, 2);
+  });
+
   it("run --dry-run sends nothing", async () => {
     const { code, calls } = await run(["commands", "run", "macmini", "deploy", "--dry-run"], {});
     assert.equal(code, 0);
@@ -350,4 +374,25 @@ describe("extractInviteToken", () => {
     assert.equal(extractInviteToken("https://x/app/daemon-share/a%2Bb#frag"), "a+b");
     assert.throws(() => extractInviteToken("https://x/other/abc"), /not a daemon share invite URL/);
   });
+});
+
+describe("conductor daemon --dry-run on read-only verbs", () => {
+  for (const args of [
+    ["list"],
+    ["tools", "macmini"],
+    ["quota", "macmini"],
+    ["sessions", "macmini"],
+    ["accounts", "macmini"],
+    ["commands", "list", "macmini"],
+    ["commands", "status", "macmini", "run-1"],
+    ["share", "list"],
+    ["upgrade", "macmini", "--status"],
+  ]) {
+    it(`${args.join(" ")} --dry-run is an args error`, async () => {
+      const { code, err, calls } = await run([...args, "--dry-run"], {});
+      assert.equal(code, 2, err);
+      assert.equal(calls.length, 0);
+      assert.match(err, /--dry-run/);
+    });
+  }
 });

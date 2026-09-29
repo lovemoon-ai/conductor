@@ -123,8 +123,8 @@
     "POST /api/projects/reorder": { "cli": "project reorder" },
 
     "GET /api/search": { "cli": "search" },
-    "GET /api/shared/[token]": { "skip": "public read-only share page (no auth)" },
-    "POST /api/speech/transcribe": { "skip": "voice input in the web composer" },
+    "GET /api/shared/[token]": { "cli": "task shared" },
+    "POST /api/speech/transcribe": { "cli": "task transcribe" },
 
     "GET /api/tasks": { "cli": "task list" },
     "POST /api/tasks": { "cli": "task create", "note": "also `task resume`" },

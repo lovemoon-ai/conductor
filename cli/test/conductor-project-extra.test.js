@@ -49,6 +49,13 @@ describe("conductor project update", () => {
     assert.equal(JSON.parse(r.out).id, "p2");
   });
 
+  it("rejects a relative --workspace-path (it is a path on the daemon)", async () => {
+    const r = await run(["update", "p2", "--workspace-path", "rel/dir", "--bind-daemon-host", "m9"], {});
+    assert.equal(r.code, 2);
+    assert.equal(r.calls.filter((c) => c.method === "PATCH").length, 0);
+    assert.match(r.err, /absolute path on daemon m9/);
+  });
+
   it("--merge-opt-out false sends false", async () => {
     const r = await run(["update", "p2", "--merge-opt-out", "false"], {
       "PATCH /api/projects": () => ({ id: "p2", name: "beta" }),

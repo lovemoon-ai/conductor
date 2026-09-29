@@ -15,7 +15,7 @@ import process from "node:process";
 import yargs from "yargs/yargs";
 
 import { EXIT, buildApis, printJson, printPretty, reportError } from "../src/entity-helpers.js";
-import { DAEMON_REMOTE_VERBS, printTable, registerDaemonRemoteCommands } from "../src/daemon-share-commands.js";
+import { DAEMON_REMOTE_VERBS, printTable, readOnly, registerDaemonRemoteCommands } from "../src/daemon-share-commands.js";
 
 export const DAEMON_QUERY_VERBS = new Set(["list", "tools", "quota", ...DAEMON_REMOTE_VERBS]);
 
@@ -148,13 +148,13 @@ export async function main(argvInput, deps = {}) {
           default: false,
           describe: `Include ephemeral ${FIRE_HOST_PREFIX}* hosts`,
         }),
-        run(handleList),
+        run(readOnly(handleList)),
       )
       .command(
         "tools <host>",
         "Show which AI tools are installed on a daemon and whether they are reachable",
         (cmd) => cmd.positional("host", { type: "string", describe: "Daemon host name" }),
-        run(handleTools),
+        run(readOnly(handleTools)),
       )
       .command(
         "quota <host>",
@@ -163,7 +163,7 @@ export async function main(argvInput, deps = {}) {
           .positional("host", { type: "string", describe: "Daemon host name" })
           .option("tool", { type: "string", describe: "Only this tool, e.g. claude or codex" })
           .option("refresh", { type: "boolean", default: false, describe: "Bypass the daemon's quota cache" }),
-        run(handleQuota),
+        run(readOnly(handleQuota)),
       );
     await registerDaemonRemoteCommands(y, run)
       .demandCommand(1)

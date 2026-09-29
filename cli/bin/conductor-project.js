@@ -411,8 +411,14 @@ async function handleUpdate(argv, deps) {
     if (!daemonHost) {
       throw argsError("--workspace-path needs a daemon: pass --bind-daemon-host <host>");
     }
+    // The path lives on `daemonHost`, which may not be this machine, so a
+    // relative path cannot be resolved here.
+    const workspacePath = String(argv.workspacePath).trim();
+    if (!path.isAbsolute(workspacePath)) {
+      throw argsError(`--workspace-path must be an absolute path on daemon ${daemonHost}`);
+    }
     body.daemonHost = String(daemonHost);
-    body.workspacePath = path.resolve(deps.cwd, String(argv.workspacePath));
+    body.workspacePath = path.normalize(workspacePath);
     body.bindingConfirmed = true;
   }
   const extra = parseJsonOption(argv.jsonBody, "--json-body");

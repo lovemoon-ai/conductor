@@ -22,7 +22,8 @@
  *           [--daemon-host <h>] [--first-message <text>]
  *   delete <id> --yes [--permanent] | archive <id> | unarchive <id> [--daemon-host <h>]
  *   rename <id> <title> | pin <id> | unpin <id> | labels <id> [<label-id>...] [--clear]
- *   move <id> [<project>] [--back] | share <id> | unshare <id>
+ *   move <id> [<project>] [--back] | share <id> | unshare <id> | shared <token|link>
+ *   transcribe <audio.wav|mp3> [--language <tag>]
  *   persistent <id> [--enable|--disable] [--instructions ...] [--summary ...]
  *   round end <id> | round start <id> [<message>] [--backend] [--daemon-host] [--worktree inherit|new|none]
  *   cleanup-worktree <id> | terminal open|close|show <id>
@@ -930,6 +931,20 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "Revoke a task's share link",
         (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
         run(extra.handleUnshare),
+      )
+      .command(
+        "shared <token>",
+        "Read a shared task (token or share link, as opened by the /share page)",
+        (cmd) => cmd.positional("token", { type: "string", demandOption: true, describe: "Share token or https://…/share/<token> link" }),
+        run(extra.handleShared),
+      )
+      .command(
+        "transcribe <file>",
+        "Speech to text for a .wav/.mp3 file (the web composer's voice input)",
+        (cmd) => cmd
+          .positional("file", { type: "string", demandOption: true })
+          .option("language", { type: "string", describe: "Language hint, e.g. zh or en" }),
+        run(extra.handleTranscribe),
       )
       .command(
         "persistent <id>",

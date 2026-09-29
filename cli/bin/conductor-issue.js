@@ -110,9 +110,15 @@ async function handleListAcross(argv, deps) {
   if (statuses && statuses.length > 0) {
     issues = issues.filter((issue) => statuses.includes(issue.status));
   }
-  if (argv.limit) issues = issues.slice(0, Number(argv.limit));
+  if (argv.limit !== undefined) issues = issues.slice(0, argv.limit);
   if (argv.json) {
-    printJson(deps.stdout, issues);
+    // Same shape as the single-project `list --json` (the SDK-normalized form).
+    printJson(deps.stdout, issues.map((issue) => issueAsObject({
+      ...issue,
+      projectId: issue.projectId ?? issue.project_id,
+      createdAt: issue.createdAt ?? issue.created_at,
+      updatedAt: issue.updatedAt ?? issue.updated_at,
+    })));
     return EXIT.OK;
   }
   if (issues.length === 0) {
@@ -147,6 +153,9 @@ async function handleDelete(argv, deps) {
 }
 
 async function handleList(argv, deps) {
+  if (argv.limit !== undefined && !(Number.isInteger(argv.limit) && argv.limit > 0)) {
+    throw argsError("--limit must be a positive integer");
+  }
   if (argv.allProjects || parseIdList(argv.projectIds).length > 0) {
     return handleListAcross(argv, deps);
   }
@@ -155,7 +164,7 @@ async function handleList(argv, deps) {
   const list = await apis.issues.listIssues({
     projectId: project.id,
     status: parseStatusList(argv.status),
-    limit: argv.limit ? Number(argv.limit) : undefined,
+    limit: argv.limit,
   });
   const objects = (Array.isArray(list) ? list : []).map(issueAsObject);
   if (argv.json) {
