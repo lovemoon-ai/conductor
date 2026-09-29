@@ -352,9 +352,12 @@ export class CodexAppServerSession extends EventEmitter {
     this.turnTokenBaseline = null;
     this.turnTokensSeen = false;
     // Spawned sub-agent threads report their own thread totals: the latest one
-    // per thread, and each thread's total when the current turn first saw it.
+    // per thread, the part already counted (or not theirs to count), what the
+    // last snapshot reported, and each thread's running turn id.
     this.subThreadTokenTotals = new Map();
     this.subThreadTokenBaselines = new Map();
+    this.subThreadTokensReported = new Map();
+    this.subThreadTurnIds = new Map();
     this.currentTurnStatus = null;
     this.currentTurnActivityAt = 0;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
@@ -647,19 +650,29 @@ export class CodexAppServerSession extends EventEmitter {
   beginTurnTokenAccounting() {
     this.turnTokenBaseline = readTokenCounts(this.tokenUsage?.total);
     this.turnTokensSeen = false;
-    this.subThreadTokenBaselines = new Map();
+    // What the previous turn reported is counted; sub-agent spend after that
+    // (including between turns) goes to this one.
+    for (const [threadId, reported] of this.subThreadTokensReported) {
+      this.subThreadTokenBaselines.set(threadId, reported);
+    }
+    this.subThreadTokensReported = new Map();
   }
 
-  /** Track a spawned sub-agent thread's total; its first update in a turn fixes its baseline. */
-  noteSubThreadTokenUsage(threadId, tokenUsage) {
+  /**
+   * Track a spawned sub-agent thread's total. Its first update fixes its
+   * baseline: `total - last`, or the whole total when it is a replay (a turn id
+   * we never saw start), like the main thread's after thread/resume.
+   */
+  noteSubThreadTokenUsage(threadId, { turnId, tokenUsage } = {}) {
     const total = readTokenCounts(tokenUsage?.total);
     if (!total) {
       return;
     }
-    if (this.currentTurn && !this.subThreadTokenBaselines.has(threadId)) {
+    if (!this.subThreadTokenBaselines.has(threadId)) {
+      const replay = !turnId || turnId !== this.subThreadTurnIds.get(threadId);
       this.subThreadTokenBaselines.set(
         threadId,
-        this.subThreadTokenTotals.get(threadId) ?? subtractTokenCounts(total, readTokenCounts(tokenUsage.last)),
+        replay ? total : subtractTokenCounts(total, readTokenCounts(tokenUsage.last)),
       );
     }
     this.subThreadTokenTotals.set(threadId, total);
@@ -680,9 +693,11 @@ export class CodexAppServerSession extends EventEmitter {
       ? subtractTokenCounts(readTokenCounts(this.tokenUsage.total), this.turnTokenBaseline)
       : null;
     for (const [threadId, baseline] of this.subThreadTokenBaselines) {
-      const spent = subtractTokenCounts(this.subThreadTokenTotals.get(threadId), baseline);
-      if (turn && spent) {
-        turn = addTokenCounts(turn, spent);
+      const latest = this.subThreadTokenTotals.get(threadId);
+      const spent = subtractTokenCounts(latest, baseline);
+      if (spent) {
+        turn = turn ? addTokenCounts(turn, spent) : spent;
+        this.subThreadTokensReported.set(threadId, latest);
       }
     }
     return {
@@ -762,6 +777,8 @@ export class CodexAppServerSession extends EventEmitter {
     this.turnTokensSeen = false;
     this.subThreadTokenTotals = new Map();
     this.subThreadTokenBaselines = new Map();
+    this.subThreadTokensReported = new Map();
+    this.subThreadTurnIds = new Map();
     this.booted = false;
     this.bootPromise = null;
   }
@@ -1075,8 +1092,10 @@ export class CodexAppServerSession extends EventEmitter {
     const threadId = typeof params?.threadId === "string" ? params.threadId.trim() : "";
     if (threadId && this.sessionId && threadId !== this.sessionId) {
       this.touchTurnActivity();
-      if (method === "thread/tokenUsage/updated") {
-        this.noteSubThreadTokenUsage(threadId, params.tokenUsage);
+      if (method === "turn/started" && typeof params?.turn?.id === "string") {
+        this.subThreadTurnIds.set(threadId, params.turn.id);
+      } else if (method === "thread/tokenUsage/updated") {
+        this.noteSubThreadTokenUsage(threadId, params);
       }
       return;
     }

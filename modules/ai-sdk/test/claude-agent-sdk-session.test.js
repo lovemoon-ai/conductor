@@ -152,6 +152,52 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
+  it("keeps an earlier segment's result usage when a later segment fails without one", async () => {
+    const session = new ClaudeAgentSdkSession("claude", {
+      cwd: process.cwd(),
+      logger: { log: () => {} },
+      sdkModule: {
+        query: () => ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "assistant",
+              session_id: "claude-bg-2",
+              message: { id: "msg-1", content: [], usage: { input_tokens: 5, output_tokens: 5 } },
+            };
+            yield {
+              type: "result",
+              subtype: "success",
+              session_id: "claude-bg-2",
+              result: "waiting",
+              usage: { input_tokens: 5, output_tokens: 5 },
+              modelUsage: { opus: { inputTokens: 50, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+            };
+            // The segment after a background task's notification, cut off mid-way.
+            yield {
+              type: "assistant",
+              session_id: "claude-bg-2",
+              message: { id: "msg-2", content: [], usage: { input_tokens: 7, output_tokens: 3 } },
+            };
+            throw new Error("socket hang up");
+          },
+          close: () => {},
+        }),
+      },
+    });
+
+    await assert.rejects(session.runTurn("hello"), (error) => {
+      assert.deepEqual(error.usage, {
+        input_tokens: 57,
+        output_tokens: 23,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      });
+      return true;
+    });
+
+    await session.close();
+  });
+
   it("keeps a stopped turn's streamed usage on the session-closed error", async () => {
     let session;
     session = new ClaudeAgentSdkSession("claude", {
