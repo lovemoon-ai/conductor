@@ -18,10 +18,20 @@ import {
   type PlannedInplaceTaskRestart,
 } from '@/lib/tasks/inplace-restart';
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
-import { normalizeOptionalString, normalizeTaskStatus, type JsonObject } from '@/lib/tasks/task-config';
+import { normalizeOptionalString, normalizeTaskStatus, parseJsonObject, type JsonObject } from '@/lib/tasks/task-config';
 import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
 import { buildTaskWorktreeLaunchConfig, type RemoteWorktreeLaunchConfig } from '@/lib/tasks/worktree';
-import { buildRemoteWorktreeBootstrap, resolveRemoteWorktreeTarget } from '@/lib/tasks/remote-worktree';
+import {
+  buildRemoteWorkspaceBootstrap,
+  buildRemoteWorktreeBootstrap,
+  resolveRemoteWorktreeTarget,
+} from '@/lib/tasks/remote-worktree';
+import {
+  readGlobalBackendRequest,
+  readTaskGlobalBackend,
+  resolveGlobalBackendMount,
+  type GlobalBackendMount,
+} from '@/lib/tasks/global-backend';
 import {
   buildAgentBootstrap,
   buildGroupMemberMetadata,
@@ -34,6 +44,7 @@ import {
   spawnAgentGroupReviewers,
 } from '@/lib/tasks/agent-group-spawn';
 import { isMissingGroupIdColumnError } from '@/lib/tasks/pty-compat';
+import { evaluateRuntimeHealth } from '@/lib/tasks/runtime-preflight';
 import {
   ConnectedAgent,
   normalizeBackendType,
@@ -555,6 +566,36 @@ export async function PATCH(
   if (agentGroup && input.remoteWorktreeHost) {
     return NextResponse.json({ error: 'remoteWorktree does not support agent groups' }, { status: 409 });
   }
+  // RFC 0041: the spawned task's AI runs on a global backend daemon while the
+  // code stays on the issue project's daemon.
+  const globalBackendRequest = input.globalBackend
+    ? readGlobalBackendRequest({ globalBackend: input.globalBackend })
+    : null;
+  if (globalBackendRequest && 'error' in globalBackendRequest) {
+    return NextResponse.json({ error: globalBackendRequest.error }, { status: globalBackendRequest.status });
+  }
+  if (globalBackendRequest && !shouldSpawnTask) {
+    return NextResponse.json(
+      {
+        error: linkedTask
+          ? 'This issue already has a linked task; it cannot be moved to a global backend'
+          : 'globalBackend only applies when moving the issue into doing starts a new task',
+      },
+      { status: 409 },
+    );
+  }
+  if (globalBackendRequest && agentGroup) {
+    return NextResponse.json({ error: 'global_backend does not support agent groups' }, { status: 409 });
+  }
+  if (globalBackendRequest && input.remoteWorktreeHost) {
+    return NextResponse.json(
+      { error: 'global_backend and remoteWorktree are mutually exclusive' },
+      { status: 409 },
+    );
+  }
+  // Daemon remembered in `metadata.daemonHost` for the next doing dialog; for
+  // a global-backend task that is the code's daemon, not the AI's.
+  let daemonHint: string | null = null;
 
   if (shouldSpawnTask && !activeTask) {
     // When the client just chose a merged-group sibling in the doing dialog,
@@ -592,12 +633,55 @@ export async function PATCH(
     }
 
     const connectedAgents = realtimeHub.getAgentsForUser(user.id) as ConnectedAgent[];
-    const resolvedAgentHost = resolveIssueSpawnAgentHost({
-      connectedAgents,
-      projectDaemonHost,
-      requestedBackendType,
-      requestedDaemonHost,
-    });
+    let globalMount: GlobalBackendMount | null = null;
+    if (globalBackendRequest) {
+      const resolvedMount = await resolveGlobalBackendMount({
+        userId: user.id,
+        tokenScope: user.tokenScope ?? null,
+        project: executionProject,
+        request: globalBackendRequest,
+        worktree: Boolean(projectRepoRoot),
+        connectedAgents,
+      });
+      if ('error' in resolvedMount) {
+        return NextResponse.json({ error: resolvedMount.error }, { status: resolvedMount.status });
+      }
+      if (!('local' in resolvedMount)) {
+        globalMount = resolvedMount;
+        // Same checks POST /api/tasks runs on the AI daemon: the CLI/SDK do not
+        // go through the dialog, which greys these out.
+        const aiAgent = connectedAgents.find((agent) => agent.host === resolvedMount.agentHost);
+        if (!aiAgent?.supportedBackends.includes(resolvedMount.backend)) {
+          return NextResponse.json(
+            { error: `Daemon ${resolvedMount.agentHost} does not support backend ${resolvedMount.backend}` },
+            { status: 409 },
+          );
+        }
+        const runtimeProblem = evaluateRuntimeHealth({ agent: aiAgent, backend: resolvedMount.backend });
+        if (runtimeProblem) {
+          return NextResponse.json(
+            {
+              error: 'runtime_unavailable',
+              backend: runtimeProblem.backend,
+              daemon_host: runtimeProblem.daemonHost,
+              reason: runtimeProblem.reason,
+              message: runtimeProblem.message,
+              recovery: runtimeProblem.recovery,
+            },
+            { status: 503 },
+          );
+        }
+      }
+    }
+    const issueBackendType = globalBackendRequest?.backend ?? requestedBackendType;
+    const resolvedAgentHost: IssueSpawnAgentHostResult = globalMount
+      ? { ok: true, agentHost: globalMount.agentHost }
+      : resolveIssueSpawnAgentHost({
+          connectedAgents,
+          projectDaemonHost,
+          requestedBackendType: issueBackendType,
+          requestedDaemonHost,
+        });
     if (!resolvedAgentHost.ok) {
       return NextResponse.json(
         { error: resolvedAgentHost.error },
@@ -621,7 +705,7 @@ export async function PATCH(
     if (agentGroupPlan && 'error' in agentGroupPlan) {
       return NextResponse.json({ error: agentGroupPlan.error }, { status: 400 });
     }
-    const spawnBackendType = agentGroupPlan?.workerBackendType ?? requestedBackendType;
+    const spawnBackendType = agentGroupPlan?.workerBackendType ?? issueBackendType;
     const executionAgent = agentGroupPlan
       ? connectedAgents.find((agent) => agent.host === agentHost)
       : undefined;
@@ -653,6 +737,13 @@ export async function PATCH(
       }
       remoteWorktree = resolved.remoteWorktree;
     }
+    if (globalMount) {
+      remoteWorktree = globalMount.remoteWorktree;
+    }
+    const remoteWorkspace = globalMount?.remoteWorkspace ?? null;
+    // The AI's read-only local clone: for a global backend only a real copy of
+    // this repository on its daemon.
+    const localClonePath = globalMount ? globalMount.localClonePath : projectWorkspacePath;
     // Detect `/goal ...` on the *current* (post-PATCH) description and decide
     // whether this todo→doing transition should dispatch as a native goal run
     // instead of a normal turn. We only honor goal mode on backends that today
@@ -690,10 +781,16 @@ export async function PATCH(
       : remoteWorktree
         ? buildRemoteWorktreeBootstrap({
             remoteWorktree,
-            localWorkspacePath: projectWorkspacePath,
+            localWorkspacePath: localClonePath,
             taskPrompt: issueContent,
           })
-        : issueContent;
+        : remoteWorkspace
+          ? buildRemoteWorkspaceBootstrap({
+              remoteWorkspace,
+              localWorkspacePath: localClonePath,
+              taskPrompt: issueContent,
+            })
+          : issueContent;
     const metadata = {
       ...(spawnBackendType ? { backendType: spawnBackendType } : {}),
       ...(initialContent ? { initialContent } : {}),
@@ -704,10 +801,23 @@ export async function PATCH(
             agent: agentGroupPlan.workerAgent,
           })
         : {}),
+      ...(globalMount?.metadata ?? {}),
     };
     let requestedTaskId: string | undefined;
     let launchConfig: JsonObject | null = null;
-    if (projectWorkspacePath) {
+    if (globalMount) {
+      // The AI starts in the mount project (a local clone, or the default
+      // project) and reaches the code over `conductor remote`.
+      const mountWorkspacePath = normalizeOptionalString(globalMount.mountProject.workspacePath);
+      const mountWorktreeBranch = normalizeOptionalString(globalMount.mountProject.worktreeBranch);
+      requestedTaskId = remoteWorktree ? randomUUID() : undefined;
+      launchConfig = {
+        ...(mountWorkspacePath ? { cwd: mountWorkspacePath } : {}),
+        ...(mountWorktreeBranch ? { worktreeBranch: mountWorktreeBranch } : {}),
+        ...(remoteWorktree ? { remoteWorktree } : {}),
+        ...(remoteWorkspace ? { remoteWorkspace } : {}),
+      };
+    } else if (projectWorkspacePath) {
       if (projectRepoRoot && !remoteWorktree) {
         requestedTaskId = randomUUID();
         try {
@@ -735,9 +845,11 @@ export async function PATCH(
       }
     }
 
+    daemonHint = globalMount ? projectDaemonHost : agentHost;
     spawnTaskArgs = {
       userId: user.id,
-      projectId: executionProject.id,
+      projectId: globalMount?.mountProject.id ?? executionProject.id,
+      ...(globalMount ? { secondProjectId: globalMount.secondProjectId } : {}),
       issueId: existing.id,
       title: resolvedTitle,
       agentHost,
@@ -772,7 +884,18 @@ export async function PATCH(
   }
 
   if (shouldRestartLinkedTask && linkedTask) {
-    const executionProject = issueProjectOwnerId === user.id
+    // RFC 0041: a global-backend task is filed on the AI daemon's project and
+    // reaches the code's daemon through its remote worktree / workspace.
+    const linkedGlobalBackend = readTaskGlobalBackend(linkedTask.metadata);
+    if (linkedGlobalBackend) {
+      const linkedLaunchConfig = parseJsonObject(linkedTask.launchConfig);
+      daemonHint = normalizeOptionalString(parseJsonObject(linkedLaunchConfig?.remoteWorktree)?.host)
+        ?? normalizeOptionalString(parseJsonObject(linkedLaunchConfig?.remoteWorkspace)?.host)
+        ?? null;
+    }
+    const executionProject = linkedGlobalBackend
+      ? await db.project.findFirst({ where: { id: linkedTask.projectId, userId: user.id } })
+      : issueProjectOwnerId === user.id
       ? existing.project
       : issueProjectCollaborationId
         ? (await getUserProjectForCollaboration(user.id, issueProjectCollaborationId))?.project ?? null
@@ -858,7 +981,7 @@ export async function PATCH(
   // what actually ran: replace the value with the daemon we resolved above.
   // Without this an SDK/CLI client could PATCH `metadata.daemonHost: "fake"`
   // and the issue would silently advertise the wrong machine next time.
-  const effectiveDaemonHost = spawnTaskArgs?.agentHost
+  const effectiveDaemonHost = daemonHint
     ?? restartPlan?.restartAgentHost
     ?? null;
   if (shouldEnterDoing && input.metadata !== undefined && input.metadata !== null) {

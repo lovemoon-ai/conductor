@@ -16,7 +16,7 @@ const pushToastMock = vi.fn();
 let searchParamsState = new URLSearchParams();
 let isDesktopViewport = true;
 let agentsState: {
-  agents: Array<{ id: string; host: string; supportedBackends?: string[]; capabilities?: string[] }>;
+  agents: Array<{ id: string; host: string; supportedBackends?: string[]; capabilities?: string[]; shared?: boolean }>;
   fetchAgents: typeof fetchAgentsMock;
 };
 let projectsState: {
@@ -160,6 +160,7 @@ vi.mock('@/features/issues', () => ({
       projectId: string;
       supportedBackends: string[];
       remoteWorktreeHosts?: string[];
+      globalBackends?: Array<{ host: string; backend: string; disabledReason: string | null }>;
     }>;
     initialDaemon?: string | null;
     initialBackend?: string | null;
@@ -169,6 +170,7 @@ vi.mock('@/features/issues', () => ({
       projectId: string;
       remoteWorktreeHost?: string;
       agents?: Array<{ name: string; backend?: string | null }>;
+      globalBackend?: { host: string; backend: string };
     }) => Promise<void> | void;
   }) => {
     if (!open) return null;
@@ -230,6 +232,23 @@ vi.mock('@/features/issues', () => ({
             confirm-move-issue-second
           </button>
         ) : null}
+        <div>global-backends={(initialOption?.globalBackends ?? []).map((entry) => `${entry.backend}@${entry.host}:${entry.disabledReason ?? 'ok'}`).join(';')}</div>
+        {initialOption?.globalBackends?.[0] ? (
+          <button
+            type="button"
+            onClick={() => {
+              const entry = initialOption.globalBackends![0];
+              void onConfirm({
+                backendType: entry.backend,
+                daemonHost: initialOption.host,
+                projectId: initialOption.projectId,
+                globalBackend: { host: entry.host, backend: entry.backend },
+              });
+            }}
+          >
+            confirm-move-issue-global
+          </button>
+        ) : null}
         <div>remote-worktree-hosts={daemonOptions.map((option) => `${option.host}>${(option.remoteWorktreeHosts ?? []).join(',')}`).join(';')}</div>
         {initialOption?.remoteWorktreeHosts?.[0] ? (
           <button
@@ -249,6 +268,15 @@ vi.mock('@/features/issues', () => ({
       </div>
     );
   },
+}));
+
+const globalBackendsState = vi.hoisted(() => ({
+  backends: [] as Array<{ host: string; backend: string }>,
+  hydrated: true,
+  hydrate: vi.fn(),
+}));
+vi.mock('@/features/user-preferences/global-ai-backends', () => ({
+  useGlobalAiBackendsStore: (selector: (state: typeof globalBackendsState) => unknown) => selector(globalBackendsState),
 }));
 
 vi.mock('@/features/tasks', () => ({
@@ -286,6 +314,7 @@ describe('IssuesPage', () => {
     deleteIssueMock.mockReset();
     replaceMock.mockReset();
     pushToastMock.mockReset();
+    globalBackendsState.backends = [];
 
     agentsState = {
       agents: [
@@ -851,6 +880,99 @@ describe('IssuesPage', () => {
         metadata: { backendType: 'claude', daemonHost: 'daemon-a' },
       });
     });
+  });
+
+  it('offers global AI backends for a bound project and forwards the pick (RFC 0041)', async () => {
+    searchParamsState = new URLSearchParams('projectId=project-bound');
+    globalBackendsState.backends = [
+      { host: 'daemon-a', backend: 'claude' },
+      { host: 'gpu-box', backend: 'codex' },
+      { host: 'laptop', backend: 'claude' },
+    ];
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'] },
+        { id: 'daemon-2', host: 'gpu-box', supportedBackends: ['codex'], capabilities: ['global_backend_v1'] },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      ...projectsState,
+      projects: [{ id: 'project-bound', name: 'Bound', daemonHost: 'daemon-a', repoRoot: '/repo' } as any],
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [{
+        id: 'issue-1',
+        projectId: 'project-bound',
+        title: 'Run elsewhere',
+        status: 'todo',
+        position: 0,
+        createdAt: '2026-04-14T00:00:00.000Z',
+      }],
+    };
+
+    render(<IssuesPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    // The project's own daemon is not repeated; an offline one is greyed out.
+    expect(screen.getByText('global-backends=codex@gpu-box:ok;claude@laptop:laptop is offline')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'confirm-move-issue-global' }));
+
+    await waitFor(() => {
+      expect(updateIssueMock).toHaveBeenCalledWith('issue-1', {
+        status: 'doing',
+        position: 0,
+        globalBackend: { host: 'gpu-box', backend: 'codex' },
+        metadata: { backendType: 'codex', daemonHost: 'daemon-a' },
+      });
+    });
+  });
+
+  it.each([
+    {
+      name: 'the global backend daemon is shared with the user',
+      codeShared: false,
+      aiShared: true,
+      expected: 'global-backends=codex@gpu-box:gpu-box is shared with you; global backends only work between your own daemons',
+    },
+    {
+      name: 'the project daemon is shared with the user',
+      codeShared: true,
+      aiShared: false,
+      expected: 'global-backends=codex@gpu-box:daemon-a is shared with you; global backends only work between your own daemons',
+    },
+  ])('greys out global AI backends when $name', ({ codeShared, aiShared, expected }) => {
+    searchParamsState = new URLSearchParams('projectId=project-bound');
+    globalBackendsState.backends = [{ host: 'gpu-box', backend: 'codex' }];
+    agentsState = {
+      agents: [
+        { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'], shared: codeShared },
+        { id: 'daemon-2', host: 'gpu-box', supportedBackends: ['codex'], capabilities: ['global_backend_v1'], shared: aiShared },
+      ],
+      fetchAgents: fetchAgentsMock,
+    };
+    projectsState = {
+      ...projectsState,
+      projects: [{ id: 'project-bound', name: 'Bound', daemonHost: 'daemon-a', repoRoot: '/repo' } as any],
+    };
+    issuesState = {
+      ...issuesState,
+      issues: [{
+        id: 'issue-1',
+        projectId: 'project-bound',
+        title: 'Run elsewhere',
+        status: 'todo',
+        position: 0,
+        createdAt: '2026-04-14T00:00:00.000Z',
+      }],
+    };
+
+    render(<IssuesPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'status-issue' }));
+
+    expect(screen.getByText(expected)).toBeInTheDocument();
   });
 
   it('pairs workspace hosts with each AI daemon because a project without a git remote merges with any', async () => {

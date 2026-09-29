@@ -98,6 +98,8 @@ export interface UpdateIssueInput {
   type?: string;
   status?: string;
   metadata?: Record<string, unknown>;
+  /** RFC 0041: on todo→doing, run the spawned task's AI on this global backend. */
+  globalBackend?: { host: string; backend: string };
 }
 
 export interface UpdateIssueStatusOptions {
@@ -205,6 +207,9 @@ export class IssuesApi {
     }
     if (patch.status !== undefined) {
       params.status = patch.status;
+    }
+    if (patch.globalBackend !== undefined) {
+      params.globalBackend = patch.globalBackend;
     }
     // We always include audit metadata on writes. If the caller passes a
     // `metadata` patch, we merge our audit keys with theirs (caller wins).

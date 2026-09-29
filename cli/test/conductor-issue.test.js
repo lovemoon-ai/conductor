@@ -199,6 +199,78 @@ describe("conductor issue update path picks the right SDK call", () => {
     assert.equal(patch.body.status, "doing");
     assert.equal(patch.body.metadata.audit.actor, "cli");
   });
+
+  it("start --global-backend sends globalBackend and its backend type", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      issues: [{
+        id: "issue-5", projectId: "proj-1", title: "T", status: "todo", priority: "P1",
+        // What the server echoes once the task runs on the global backend.
+        activeTask: { id: "task-1", agentHost: "ubuntu" },
+      }],
+    });
+    const code = await main(
+      ["start", "issue-5", "--global-backend", "Codex@ubuntu", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const patch = backend.calls.find((c) => c.method === "patchIssue");
+    assert.deepEqual(patch.body.globalBackend, { host: "ubuntu", backend: "codex" });
+    assert.equal(patch.body.metadata.backendType, "codex");
+    assert.equal(patch.body.metadata.audit.actor, "cli");
+    assert.equal(stderr.collect(), "");
+  });
+
+  it("start --global-backend warns when the server started the task elsewhere", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      // An older server drops globalBackend and runs on the project's daemon.
+      issues: [{
+        id: "issue-8", projectId: "proj-1", title: "T", status: "todo", priority: "P1",
+        activeTask: { id: "task-2", agent_host: "macmini" },
+      }],
+    });
+    const code = await main(
+      ["start", "issue-8", "--global-backend", "codex@ubuntu", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0);
+    assert.match(stderr.collect(), /did not start on codex@ubuntu \(it runs on macmini\).*too old/);
+  });
+
+  it("start --backend sets the spawned task's backend type", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      issues: [{ id: "issue-6", projectId: "proj-1", title: "T", status: "todo", priority: "P1" }],
+    });
+    const code = await main(
+      ["start", "issue-6", "--backend", "claude", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const patch = backend.calls.find((c) => c.method === "patchIssue");
+    assert.equal(patch.body.globalBackend, undefined);
+    assert.equal(patch.body.metadata.backendType, "claude");
+  });
+
+  it("start rejects a malformed --global-backend", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(
+      ["start", "issue-7", "--global-backend", "codex"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 2);
+    assert.match(stderr.collect(), /<backend>@<host>/);
+    assert.equal(backend.calls.find((c) => c.method === "patchIssue"), undefined);
+  });
 });
 
 describe("conductor issue update arg-checks", () => {

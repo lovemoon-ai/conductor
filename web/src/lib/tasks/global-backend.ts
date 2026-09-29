@@ -87,7 +87,10 @@ export const resolveGlobalBackendMount = async (args: {
   userId: string;
   tokenScope?: string | null;
   /** The project the user is creating the task in (its code lives on this project's daemon). */
-  project: Project;
+  project: Pick<
+    Project,
+    "id" | "name" | "daemonHost" | "workspacePath" | "repoRoot" | "worktreeBranch" | "lastCommit" | "gitRemoteUrl" | "mergeOptOut"
+  >;
   request: GlobalAiBackend;
   worktree: boolean;
   connectedAgents: Array<{ host: string; capabilities: string[] }>;
