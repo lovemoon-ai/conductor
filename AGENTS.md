@@ -11,6 +11,7 @@
 - `cd web && pnpm build && pnpm start` builds and runs the production server.
 - `cd web && pnpm test` runs web tests with Vitest.
 - `cd modules/conductor-sdk && pnpm test` runs SDK tests with Vitest.
+- The root `package-lock.json` (npm workspaces: `cli`, `modules/*`) must be regenerated from a clean checkout with no `node_modules` anywhere: `npm install --package-lock-only`. Running it next to pnpm-installed `cli/node_modules` records links into `.pnpm/` that break `npm ci` (PR Checks rejects them).
 - Tight-loop helpers: `cd web && npx prisma studio`, `cd web && pnpm test`, and `cd modules/conductor-sdk && pnpm test`.
 
 ## Coding Style & Naming Conventions
@@ -21,6 +22,7 @@
 - Next.js API routes can be tested with integration tests; use Prisma test helpers to seed data and clean up afterward.
 - SDK tests live in `modules/conductor-sdk/tests` and should be run with `cd modules/conductor-sdk && pnpm test`.
 - Every feature needs at least one API route test plus either a widget or SDK test to guard the end-to-end path.
+- Anything a user can do in the web UI must also be doable from the `conductor` CLI. When you add or change a user-facing API route, add the CLI command (with a CLI test) and map the route in `cli/api-parity.json`; `cli/test/api-parity.test.js` fails for unmapped routes, stale entries, and mapped commands that do not exist. Use `skip` with a reason only for daemon/agent internals, sign-in, billing, webhooks and cron.
 
 ## Review Lessons Before Commit
 - For bugfix commits, write a review document before committing.

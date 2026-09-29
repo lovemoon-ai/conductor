@@ -1,5 +1,7 @@
 /**
- * conductor daemon list|tools|quota — read-only queries about daemons.
+ * conductor daemon list|tools|quota — read-only queries about daemons, plus the
+ * remote-control / sharing verbs in src/daemon-share-commands.js (restart,
+ * upgrade, sessions, accounts, switch-account, commands, share).
  *
  *   list [--all]                          Online daemons, CLI version, AI backends
  *   tools <host>                          AI tools installed on a daemon + network
@@ -12,23 +14,15 @@ import process from "node:process";
 
 import yargs from "yargs/yargs";
 
-import { EXIT, buildApis, pad, printJson, printPretty, reportError } from "../src/entity-helpers.js";
+import { EXIT, buildApis, printJson, printPretty, reportError } from "../src/entity-helpers.js";
+import { DAEMON_REMOTE_VERBS, printTable, readOnly, registerDaemonRemoteCommands } from "../src/daemon-share-commands.js";
 
-export const DAEMON_QUERY_VERBS = new Set(["list", "tools", "quota"]);
+export const DAEMON_QUERY_VERBS = new Set(["list", "tools", "quota", ...DAEMON_REMOTE_VERBS]);
 
 // Ephemeral per-task `conductor fire` processes also register as agents.
 const FIRE_HOST_PREFIX = "conductor-fire-";
 
 const WINDOW_LABELS = { fiveHour: "5h", weekly: "weekly", weeklySonnet: "weekly-sonnet" };
-
-function printTable(stream, header, rows) {
-  const widths = header
-    .slice(0, -1)
-    .map((title, i) => Math.max(title.length, ...rows.map((row) => String(row[i]).length)));
-  for (const row of [header, ...rows]) {
-    printPretty(stream, row.map((cell, i) => (i < widths.length ? pad(cell, widths[i]) : cell)).join("  "));
-  }
-}
 
 function formatReset(window) {
   if (typeof window.resetAt !== "number") return window.resetOnDate ?? "";
@@ -139,12 +133,13 @@ export async function main(argvInput, deps = {}) {
   };
 
   try {
-    await yargs(argvInput)
+    const y = yargs(argvInput)
       .scriptName("conductor daemon")
       .strict()
       .help()
       .option("json", { type: "boolean", default: false })
       .option("config-file", { type: "string", describe: "Path to Conductor config file" })
+      .option("dry-run", { type: "boolean", default: false, describe: "Print the request a write verb would send, without sending it" })
       .command(
         "list",
         "List online daemons with their CLI version and AI backends",
@@ -153,13 +148,13 @@ export async function main(argvInput, deps = {}) {
           default: false,
           describe: `Include ephemeral ${FIRE_HOST_PREFIX}* hosts`,
         }),
-        run(handleList),
+        run(readOnly(handleList)),
       )
       .command(
         "tools <host>",
         "Show which AI tools are installed on a daemon and whether they are reachable",
         (cmd) => cmd.positional("host", { type: "string", describe: "Daemon host name" }),
-        run(handleTools),
+        run(readOnly(handleTools)),
       )
       .command(
         "quota <host>",
@@ -168,8 +163,9 @@ export async function main(argvInput, deps = {}) {
           .positional("host", { type: "string", describe: "Daemon host name" })
           .option("tool", { type: "string", describe: "Only this tool, e.g. claude or codex" })
           .option("refresh", { type: "boolean", default: false, describe: "Bypass the daemon's quota cache" }),
-        run(handleQuota),
-      )
+        run(readOnly(handleQuota)),
+      );
+    await registerDaemonRemoteCommands(y, run)
       .demandCommand(1)
       .fail((msg, err) => {
         // Throw so the command handler does not run after a validation error

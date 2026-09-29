@@ -310,3 +310,59 @@ jobs:
             exit 1
           fi
           echo "OK: no 'db push' instructions in touched changesets."
+
+  cli-api-parity:
+    name: CLI covers every web API route
+    # AGENTS.md: anything the web UI can do, the `conductor` CLI must do too.
+    # cli/api-parity.json maps every web/src/app/api route + method to a CLI
+    # command (or a skip reason); the test fails for unmapped routes, stale
+    # entries, and mapped commands that do not exist.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Reject lockfile links into a local pnpm store
+        shell: bash
+        # Running `npm install` at the root while cli/ or modules/* still have a
+        # pnpm-installed node_modules records their deps as `"link": true` into
+        # `node_modules/.pnpm/...` on that machine. `npm ci` then installs none
+        # of them (the CLI could not even load yargs). Regenerate from a clean
+        # checkout with no node_modules: `npm install --package-lock-only`.
+        run: |
+          set -euo pipefail
+          bad=$(node -e '
+            const lock = require("./package-lock.json");
+            const hits = Object.entries(lock.packages || {})
+              .filter(([, v]) => v.link && String(v.resolved || "").includes(".pnpm"))
+              .map(([k, v]) => `${k} -> ${v.resolved}`);
+            console.log(hits.join("\n"));
+          ')
+          if [[ -n "$bad" ]]; then
+            echo "::error::package-lock.json links packages into a local pnpm store. Regenerate it from a clean checkout (no node_modules) with 'npm install --package-lock-only'."
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Install workspace dependencies
+        shell: bash
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the SDKs the CLI imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build --workspace @love-moon/ai-sdk
+          npm run build --workspace @love-moon/conductor-sdk
+
+      - name: Check CLI / web API parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! node --test cli/test/api-parity.test.js; then
+            echo "::error::A web API route is not covered by the CLI. Add the matching \`conductor\` command and map the route in cli/api-parity.json (or give a \`skip\` reason for daemon internals, sign-in, billing, webhooks, cron)."
+            exit 1
+          fi

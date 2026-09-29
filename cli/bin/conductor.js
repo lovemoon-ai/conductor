@@ -5,17 +5,20 @@
  *
  * Subcommands:
  *   fire     - Run AI coding agents with Conductor integration
- *   daemon   - Start long-running daemon for task orchestration
+ *   daemon   - Start the daemon, or query/control daemons (list/restart/upgrade/share/...)
  *   config   - Interactive configuration setup
  *   update   - Update the CLI to the latest version
  *   diagnose - Diagnose a task in production/backend
  *   send-file - Upload a local file into a task session
  *   channel  - Connect user-owned chat channel providers
  *   serve-ai - Start an OpenAI-compatible local AI server
- *   project  - Manage Conductor projects (list/show/create/...)
- *   issue    - Manage issues (list/show/create/update/start/done)
- *   task     - Manage tasks (create/list/show/send/messages/schedule)
+ *   project  - Manage Conductor projects (list/create/update/delete/collab/labels/...)
+ *   issue    - Manage issues (list/show/create/update/start/done/delete)
+ *   task     - Manage tasks (create/send/stop/restart/archive/share/schedule/...)
  *   remote   - Run commands and copy files on another daemon's host
+ *   search   - Search message history across all tasks
+ *   settings - Manage user preferences (global backends, catchphrases, daily report, ...)
+ *   auth     - Show the signed-in user and manage API tokens
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -52,6 +55,9 @@ export function runConductorCli(args = argv, deps = {}) {
     "issue",
     "task",
     "remote",
+    "search",
+    "settings",
+    "auth",
   ];
 
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
@@ -127,17 +133,23 @@ Usage: conductor <subcommand> [options]
 
 Subcommands:
   fire      Run AI coding agents with Conductor integration
-  daemon    Start long-running daemon (or: daemon list/tools/quota to query daemons)
+  daemon    Start long-running daemon (or: daemon list/tools/quota/sessions/restart/
+            upgrade/accounts/commands/share to query and control daemons)
   config    Interactive configuration setup
   update    Update the CLI to the latest version
   diagnose  Diagnose a task and print likely root cause
   send-file Upload a local file into a task session
   channel   Connect user-owned chat channel providers
   serve-ai  Start an OpenAI-compatible local AI server
-  project   Manage Conductor projects (list/show/create/...)
-  issue     Manage issues (list/show/create/update/start/done)
-  task      Manage tasks (create/list/show/send/messages/schedule)
+  project   Manage Conductor projects (list/show/create/update/delete/reorder/
+            agents/collab/labels/...)
+  issue     Manage issues (list/show/create/update/start/done/delete)
+  task      Manage tasks (create/send/insert/interrupt/stop/restart/delete/
+            archive/unarchive/rename/pin/move/labels/share/round/resume/...)
   remote    Run commands and copy files on another daemon's host (exec/cp/wait/mcp)
+  search    Search message history across all tasks
+  settings  Manage user preferences (global-backends/catchphrases/daily-report/reports/...)
+  auth      Show the signed-in user and manage API tokens (whoami/tokens)
 
 Options:
   -h, --help     Show this help message
@@ -163,8 +175,14 @@ Examples:
   conductor task create --title "Refactor module" --prompt "Extract the parser" --backend codex
   conductor task send <task-id> "please add a unit test"
   conductor task schedule create <task-id> "follow up" --delay 10m
+  conductor task create --title "Refactor" --agent feature-dev --agent code-reviewer --worktree
+  conductor task restart <task-id> --strategy new_task --backend codex
+  conductor daemon upgrade macmini --wait
   conductor remote exec --target ubuntu --workspace /home/duino/ws/holomotion ls .
   conductor remote cp ./build.tar.gz ubuntu:/srv/app/build.tar.gz
+  conductor search "flaky test" --limit 20
+  conductor settings catchphrases add "please add a unit test"
+  conductor auth tokens create --name ci
 
 For subcommand-specific help:
   conductor fire --help
@@ -179,6 +197,9 @@ For subcommand-specific help:
   conductor issue --help
   conductor task --help
   conductor remote --help
+  conductor search --help
+  conductor settings --help
+  conductor auth --help
 
 Version: ${pkgJson.version}
 `);

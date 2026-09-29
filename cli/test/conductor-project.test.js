@@ -216,17 +216,13 @@ describe("conductor project hide", () => {
     const data = JSON.parse(stdout.collect().trim());
     assert.equal(data.dryRun, true);
     assert.equal(data.request.method, "PATCH");
-    assert.equal(data.request.body.hidden, true);
-    // Audit fields are namespaced; CLI's actor wins.
-    assert.equal(data.request.body.metadata.audit.actor, "cli");
+    assert.deepEqual(data.request.body, { hidden: true });
     assert.equal(backend.calls.find((c) => c.method === "patchProjectByQuery"), undefined);
   });
 
-  it("hide propagates audit metadata through to the SDK transport (review H2a)", async () => {
-    // Previously the CLI passed the third arg (`body` containing metadata) to
-    // `setProjectHidden(idOrName, hidden)`, which the SDK silently dropped.
-    // After the fix, the SDK accepts `(idOrName, hidden, options)` so audit
-    // info actually reaches the `patchProjectByQuery` body.
+  it("hide sends hidden only, so the server keeps the project's metadata", async () => {
+    // The project PATCH route replaces metadata wholesale; an audit-only blob
+    // used to erase the project's task labels, memos and binding data.
     const stdout = makeStream();
     const stderr = makeStream();
     const backend = new FakeBackendApi({
@@ -239,8 +235,7 @@ describe("conductor project hide", () => {
     assert.equal(code, 0);
     const patch = backend.calls.find((c) => c.method === "patchProjectByQuery");
     assert.ok(patch);
-    assert.equal(patch.body.hidden, true);
-    assert.equal(patch.body.metadata.audit.actor, "cli");
+    assert.deepEqual(patch.body, { hidden: true });
   });
 
   it("surfaces 400 from hiding the default project", async () => {
