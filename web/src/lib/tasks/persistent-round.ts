@@ -148,6 +148,8 @@ export async function startPersistentRound(input: {
   userId: string;
   taskId: string;
   content: string;
+  /** Stored on the round's first message (e.g. the sender's clientRequestId for retry dedupe). */
+  messageMetadata?: Record<string, unknown> | null;
   backendType?: string | null;
   agentHost?: string | null;
   worktree?: PersistentRoundWorktreeMode;
@@ -359,7 +361,13 @@ export async function startPersistentRound(input: {
         select: { id: true, createdAt: true },
       });
       const userMessage = await tx.message.create({
-        data: { taskId: task.id, role: "user", content, createdAt: messageAt },
+        data: {
+          taskId: task.id,
+          role: "user",
+          content,
+          createdAt: messageAt,
+          ...(input.messageMetadata ? { metadata: JSON.stringify(input.messageMetadata) } : {}),
+        },
         select: { id: true, createdAt: true },
       });
       const updated = await tx.task.findUnique({

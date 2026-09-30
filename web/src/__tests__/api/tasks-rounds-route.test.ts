@@ -373,6 +373,19 @@ describe("persistent task rounds API", () => {
       expect((vi.mocked(finalizeAiTaskCreation).mock.calls[0][0] as any).agentHost).toBe("mini-2");
     });
 
+    it("stores the sender's message metadata (clientRequestId) on the round's first message", async () => {
+      const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+      const result = await startPersistentRound({
+        userId: "user-1",
+        taskId: "task-1",
+        content: "go",
+        messageMetadata: { clientRequestId: "req-1" },
+      });
+      expect(result.ok).toBe(true);
+      const firstMessage = vi.mocked(db.message.create).mock.calls[1][0].data as any;
+      expect(JSON.parse(firstMessage.metadata)).toEqual({ clientRequestId: "req-1" });
+    });
+
     it("stops a task whose status is unknown", async () => {
       useTask({ status: "unknown" });
       expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);

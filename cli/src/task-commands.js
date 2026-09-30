@@ -431,6 +431,26 @@ export async function uploadAttachments(http, taskId, files, cwd) {
   return ids;
 }
 
+const FIRE_OWNER_RETRY_WINDOW_MS = 10_000;
+
+/**
+ * Retries the transient startup race (the task's fire has not bound yet, so
+ * nothing was persisted) for up to 10s, like the web composer.
+ */
+export async function retryWhileFireOwnerMissing(send, deps = {}) {
+  const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + FIRE_OWNER_RETRY_WINDOW_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      const notReady = error?.statusCode === 409 && error?.details?.code === "task_missing_active_fire_owner";
+      if (!notReady || Date.now() >= deadline) throw error;
+      await sleep(Math.min(1_500, 500 * attempt));
+    }
+  }
+}
+
 export async function handleSendWithAttachments(argv, deps, content, metadata) {
   const files = [].concat(argv.attach || []).filter(Boolean);
   const http = await buildHttp(deps);
@@ -443,7 +463,7 @@ export async function handleSendWithAttachments(argv, deps, content, metadata) {
     return EXIT.OK;
   }
   const attachmentIds = await uploadAttachments(http, argv.id, files, deps.cwd);
-  const data = await http.post(taskPath(argv.id, "messages"), { ...body, attachmentIds });
+  const data = await retryWhileFireOwnerMissing(() => http.post(taskPath(argv.id, "messages"), { ...body, attachmentIds }), deps);
   return print(deps, argv, data, `Sent message ${data?.id ? `${data.id} ` : ""}with ${attachmentIds.length} attachment(s) to task ${argv.id}`);
 }
 
