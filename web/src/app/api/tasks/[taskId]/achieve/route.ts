@@ -66,6 +66,10 @@ export async function POST(
     });
   }
 
+  if ((existing.taskType ?? "ai_task") !== "ai_task") {
+    return NextResponse.json({ error: "Only ai_task can be packed" }, { status: 409 });
+  }
+
   const achievedAt = new Date();
   // Force a non-terminal task into `killed` so its (now torn-down) runtime and
   // status agree, and so an in-place un-pack later succeeds.
