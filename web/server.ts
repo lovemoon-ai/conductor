@@ -16,6 +16,7 @@ import { reconcileOrphanedTaskAttachmentFiles, startTaskAttachmentJanitor } from
 import { startTransferJanitor } from "./src/lib/transfers/transfer-store";
 import { assertTaskAttachmentStorageConfigured } from "./src/lib/tasks/task-file-storage";
 import { startScheduledMessageDispatcher } from "./src/lib/tasks/scheduled-messages";
+import { startIdlePersistentRoundSweeper } from "./src/lib/tasks/persistent-round";
 import {
   reconcileDailyReportSchedules,
   startDailyReportDispatcher,
@@ -91,6 +92,7 @@ app.prepare().then(async () => {
     }));
   });
   startScheduledMessageDispatcher();
+  startIdlePersistentRoundSweeper();
   const dailyReportSchema = await ensureDailyReportSchema();
   if (dailyReportSchema.skippedReason === "error") {
     console.warn(

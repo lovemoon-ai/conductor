@@ -324,9 +324,10 @@ export async function handlePersistent(argv, deps) {
   if (argv.enable && argv.disable) throw argsError("Pass --enable or --disable, not both");
   if (argv.enable) body.enabled = true;
   if (argv.disable) body.enabled = false;
+  if (argv.autoEndRound !== undefined) body.autoEndRound = Boolean(argv.autoEndRound);
   if (argv.instructions !== undefined) body.instructions = String(argv.instructions);
   if (argv.summary !== undefined) body.summary = String(argv.summary);
-  if (Object.keys(body).length === 0) throw argsError("Pass at least one of --enable, --disable, --instructions, --summary");
+  if (Object.keys(body).length === 0) throw argsError("Pass at least one of --enable, --disable, --auto-end-round, --instructions, --summary");
   const http = await buildHttp(deps);
   const { dryRun, data } = await sendOrPreview(http, argv, deps, "PATCH", taskPath(argv.id, "persistent"), body);
   if (dryRun) return EXIT.OK;

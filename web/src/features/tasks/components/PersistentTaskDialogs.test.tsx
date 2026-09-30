@@ -67,6 +67,18 @@ describe('PersistentTaskSettingsDialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(updateTaskPersistentMock).toHaveBeenCalledWith('task-1', { instructions: 'Keep replies short.' });
   });
+
+  it('auto-ends rounds by default and saves the opt-out', async () => {
+    fetchTaskMock.mockResolvedValue(null);
+    const onClose = vi.fn();
+    render(<PersistentTaskSettingsDialog task={buildTask({})} open onClose={onClose} />);
+    const checkbox = screen.getByLabelText('Auto-end round after 1h idle');
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(updateTaskPersistentMock).toHaveBeenCalledWith('task-1', { autoEndRound: false });
+  });
 });
 
 describe('NewRoundDialog', () => {

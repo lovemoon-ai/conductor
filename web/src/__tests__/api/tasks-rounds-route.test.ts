@@ -45,6 +45,7 @@ vi.mock("@/lib/db", () => ({
     $transaction: vi.fn(),
     task: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       findUnique: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -72,6 +73,7 @@ const { realtimeHub } = await import("@/lib/realtime/hub");
 const { appendUserMessageToTask, TaskIngressError } = await import("@/lib/channel/task-ingress-service");
 const { stopTaskBeforeRelaunch } = await import("@/lib/tasks/task-stop");
 const { finalizeAiTaskCreation } = await import("@/lib/tasks/create-ai-task");
+const { endIdlePersistentRounds } = await import("@/lib/tasks/persistent-round");
 
 const project = {
   id: "project-1",
@@ -628,6 +630,42 @@ describe("persistent task rounds API", () => {
       const response = await call(patchPersistent, "/persistent", "PATCH", { summary: 42 });
       expect(response.status).toBe(400);
       expect(db.task.updateMany).not.toHaveBeenCalled();
+      expect((await call(patchPersistent, "/persistent", "PATCH", { autoEndRound: "no" })).status).toBe(400);
+    });
+
+    it("turns auto-ending rounds off", async () => {
+      expect((await call(patchPersistent, "/persistent", "PATCH", { autoEndRound: false })).status).toBe(200);
+      expect(storedPersistent()).toMatchObject({ enabled: true, autoEndRound: false });
+    });
+  });
+
+  describe("auto-ending idle rounds", () => {
+    const now = Date.parse("2026-09-30T12:00:00.000Z");
+    const lastMessage = (role: string, minutesAgo: number) =>
+      vi.mocked(db.message.findFirst).mockResolvedValue({ role, createdAt: new Date(now - minutesAgo * 60_000) } as any);
+    const sweep = async (runtimeState: unknown = null) => {
+      mockPrismaQuery(db.task.findMany).mockImplementation(async () => [{ ...stored, runtimeState }] as any);
+      vi.mocked(appendUserMessageToTask).mockResolvedValue({ task: null, message: { id: "req-auto" } } as any);
+      await endIdlePersistentRounds(now);
+    };
+
+    it("ends a round whose AI reply has gone unanswered for an hour, like End round", async () => {
+      lastMessage("sdk", 61);
+      await sweep();
+      expect(storedPersistent()).toMatchObject({ roundEndMessageId: "req-auto", roundEndedAt: expect.any(String) });
+    });
+
+    it("leaves recent, unanswered-by-AI, busy, ended and opted-out rounds alone", async () => {
+      lastMessage("sdk", 30);
+      await sweep();
+      lastMessage("user", 120);
+      await sweep();
+      lastMessage("sdk", 120);
+      await sweep({ replyInProgress: true });
+      useTask({ metadata: persistentMetadata({ autoEndRound: false }) });
+      await sweep();
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+      expect(storedPersistent().roundEndedAt).toBeUndefined();
     });
   });
 });

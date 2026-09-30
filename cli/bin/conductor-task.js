@@ -959,6 +959,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .positional("id", { type: "string", demandOption: true })
           .option("enable", { type: "boolean" })
           .option("disable", { type: "boolean" })
+          .option("auto-end-round", { type: "boolean", describe: "End the round after 1h without a reply (default on; --no-auto-end-round to turn off)" })
           .option("instructions", { type: "string", describe: "Standing instructions carried into every round" })
           .option("summary", { type: "string", describe: "Carried-over summary" }),
         run(extra.handlePersistent),

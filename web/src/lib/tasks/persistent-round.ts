@@ -225,6 +225,59 @@ export async function endPersistentRound(input: {
   return { ok: true, task: updated };
 }
 
+export const PERSISTENT_ROUND_IDLE_MS = 60 * 60_000;
+
+/**
+ * Ends every auto-ending round whose last message is an AI reply the user has
+ * left unanswered for an hour, exactly like pressing End round.
+ */
+export async function endIdlePersistentRounds(now = Date.now()): Promise<void> {
+  const tasks = await db.task.findMany({
+    where: { achievedAt: null, metadata: { contains: '"persistent"' } },
+    select: {
+      id: true,
+      metadata: true,
+      project: { select: { userId: true } },
+      runtimeState: { select: { replyInProgress: true } },
+    },
+  });
+  for (const task of tasks) {
+    const state = readPersistentTaskState(parseJsonObject(task.metadata));
+    if (!state?.enabled || !state.autoEndRound || state.roundEndedAt || state.roundStarting) continue;
+    if (task.runtimeState?.replyInProgress) continue;
+    const last = await db.message.findFirst({
+      where: { taskId: task.id },
+      orderBy: { createdAt: "desc" },
+      select: { role: true, createdAt: true },
+    });
+    if (!last || last.role === "user" || now - last.createdAt.getTime() < PERSISTENT_ROUND_IDLE_MS) continue;
+    const result = await endPersistentRound({ userId: task.project.userId, taskId: task.id }).catch((error) => {
+      console.warn(`[persistent-round] auto-end failed for ${task.id}:`, error);
+      return null;
+    });
+    if (result && !result.ok) {
+      console.warn(`[persistent-round] auto-end skipped for ${task.id}: ${result.error}`);
+    }
+  }
+}
+
+let idleRoundTimer: ReturnType<typeof setInterval> | null = null;
+
+export function startIdlePersistentRoundSweeper(intervalMs = 60_000): void {
+  if (idleRoundTimer) return;
+  let inFlight = false;
+  idleRoundTimer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    void endIdlePersistentRounds()
+      .catch((error) => console.error("[persistent-round] idle sweep failed:", error))
+      .finally(() => {
+        inFlight = false;
+      });
+  }, intervalMs);
+  idleRoundTimer.unref?.();
+}
+
 /**
  * Starts a new round: stops the previous fire, then dispatches `create_task`
  * for the SAME task id without a session, so the daemon starts a fresh AI
