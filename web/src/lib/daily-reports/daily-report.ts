@@ -900,10 +900,27 @@ const findHiddenProjectIds = async (userId: string): Promise<Set<string>> =>
 const excludeArchivedProjects = (
   report: DailyReportResponse,
   hiddenProjectIds: Set<string>,
-): DailyReportResponse => ({
-  ...report,
-  payload: { ...report.payload, ...excludeArchivedReportProjects(report.payload, hiddenProjectIds) },
-});
+): DailyReportResponse => {
+  const visible = excludeArchivedReportProjects(report.payload, hiddenProjectIds);
+  if (visible.projects === report.payload.projects) {
+    return report;
+  }
+  // The saved summary still covers the hidden projects. The rule summary is
+  // rendered from `projects`, so render it again; an AI summary is free text
+  // that cannot be trimmed reliably, so the rule summary replaces it.
+  const payload: DailyReportPayload = { ...report.payload, ...visible };
+  if (payload.summarizer?.provider === "glm") {
+    payload.summarizer = {
+      ...payload.summarizer,
+      provider: "rules",
+      model: null,
+      status: "fallback",
+      error: "The AI summary covered projects archived since; showing the rule summary",
+    };
+  }
+  const summaryMarkdown = buildMarkdown(payload);
+  return { ...report, payload, summaryMarkdown, summary_markdown: summaryMarkdown };
+};
 
 export const serializeDailyReportRun = (
   row: DailyReportRunRow,

@@ -474,8 +474,8 @@ describe("daily reports", () => {
         reportDate: "2026-07-01",
         totals: { projects: 2, tasks: 3, messages: 5, completed: 3, running: 0, killed: 0 },
         projects: [
-          { projectId: "p-visible", stats: stats(1, 2) },
-          { projectId: "p-archived", stats: stats(2, 3) },
+          { projectId: "p-visible", stats: stats(1, 2), timeline: [] },
+          { projectId: "p-archived", stats: stats(2, 3), timeline: [] },
         ],
       }),
       deliveryChannels: JSON.stringify(["in_app"]),
@@ -494,6 +494,52 @@ describe("daily reports", () => {
     for (const payload of [report.payload, listed.payload]) {
       expect(payload.projects.map((project) => project.projectId)).toEqual(["p-visible"]);
       expect(payload.totals).toEqual({ projects: 1, tasks: 1, messages: 2, completed: 1, running: 0, killed: 0 });
+    }
+  });
+
+  it("re-renders the summary of a saved report without the archived projects", async () => {
+    const project = (projectId: string, projectName: string) => ({
+      projectId,
+      projectName,
+      daemonHost: null,
+      summary: `${projectName} work`,
+      stats: { tasksTouched: 1, tasks_touched: 1, messages: 1, completed: 1, running: 0, killed: 0 },
+      timeline: [],
+    });
+    const savedRow = (summaryMarkdown: string, summarizer: Record<string, unknown>) => ({
+      id: "report-1",
+      userId: "user-1",
+      reportDate: "2026-07-01",
+      timezone: "Asia/Shanghai",
+      status: "generated",
+      summaryMarkdown,
+      payloadJson: JSON.stringify({
+        reportDate: "2026-07-01",
+        timezone: "Asia/Shanghai",
+        totals: { projects: 2, tasks: 2, messages: 2, completed: 2, running: 0, killed: 0 },
+        projects: [project("p-visible", "Visible"), project("p-archived", "Archived")],
+        summarizer,
+      }),
+      deliveryChannels: JSON.stringify(["in_app"]),
+      sentAt: null,
+      lastError: null,
+      createdAt: date("2026-07-01T10:00:00.000Z"),
+      updatedAt: date("2026-07-01T10:00:00.000Z"),
+    });
+    for (const [summaryMarkdown, summarizer] of [
+      ["## Visible\n## Archived", { provider: "rules", status: "not_requested" }],
+      ["### Archived: 值得", { provider: "glm", model: "glm-5.2", status: "success" }],
+    ] as const) {
+      mockProjectLookups(["p-archived"], []);
+      vi.mocked(db.dailyReportRun.findUnique).mockResolvedValue(savedRow(summaryMarkdown, summarizer) as any);
+
+      const report = await getDailyReport({ userId: "user-1", reportDate: "2026-07-01" });
+
+      expect(report.summaryMarkdown).toContain("## Visible");
+      expect(report.summaryMarkdown).toContain("- Projects: 1");
+      expect(report.summaryMarkdown).not.toContain("Archived");
+      expect(report.summary_markdown).toBe(report.summaryMarkdown);
+      expect(report.payload.summarizer).toMatchObject({ provider: "rules" });
     }
   });
 });
