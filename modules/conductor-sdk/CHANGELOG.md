@@ -1,5 +1,63 @@
 # @love-moon/conductor-sdk
 
+## 0.16.0
+
+### Minor Changes
+
+- 7c45a56: `conductor issue start` can pick the AI for the task it spawns: `--backend <b>`,
+  or `--global-backend <backend>@<host>` to run the AI on one of your global AI
+  backends while the code stays on the project's daemon (same as the web "Move
+  Issue To Doing" dialog). The SDK's `updateIssue` forwards `globalBackend`.
+
+  Requires a Conductor web server that ships issue global backends (the same
+  release): deploy the web server before publishing the CLI/SDK. An older server
+  ignores `--global-backend` and starts a plain task on the project's daemon; the
+  CLI then prints a warning instead of failing silently.
+
+### Patch Changes
+
+- 0495b79: The CLI can now do what the web app can:
+
+  - `conductor task`: `stop`, `interrupt`, `restart`, `delete`, `archive`/`unarchive`,
+    `rename`, `pin`/`unpin`, `move`, `labels`, `share`/`unshare`, `persistent`,
+    `round start|end`, `cleanup-worktree`, `terminal open|show|close`, `resume`,
+    `attachment download`, `shared <token|link>` (read a shared task), `transcribe <audio>`
+    (speech to text), and `schedule update`. `create` also takes `--daemon-host`, `--agent` (multi-agent group),
+    `--global-backend`, `--worktree`, `--remote-worktree` and `--persistent`.
+    `send --attach` uploads files, `messages --follow` streams new messages, and
+    `list --all-projects` / `--project-ids` lists tasks across projects.
+  - `conductor project`: `update`, `refresh`, `delete`, `reorder`, `agents`,
+    `collab invite|show-invite|join|leave`, `labels list|add|rename|remove`.
+  - `conductor issue`: `delete`, and `list --all-projects` / `--project-ids`.
+  - `conductor daemon`: `restart`, `upgrade [--status|--wait]`, `sessions`, `accounts`,
+    `switch-account`, `commands list|run|status`, `share create|list|revoke|show-invite|accept`.
+  - New `conductor search`, `conductor settings` (global backends, catchphrases, daily
+    report, task-list and card-group preferences, generated reports) and `conductor auth`
+    (`whoami`, `tokens list|create|revoke`).
+
+  Fix: `conductor project hide/unhide` (and the SDK's `setProjectHidden`) no longer erase
+  the project's metadata (task labels, memos, binding data).
+
+  On a cross-daemon merged project, `project hide/unhide`, `delete` and
+  `update --merge-opt-out` act on every daemon, like the web. `hide/unhide --json`
+  still prints the target project, plus `ids` for every project changed.
+  `delete --daemon-host <h>` deletes only that copy; a group delete stops at the
+  first failure and says which ids were deleted. `update --merge-opt-out` lists the
+  same-name projects it also split or re-merged.
+
+- b68fadf: `conductor issue` now matches the web issue board:
+  `start --daemon <host> [--project <id>]` picks the daemon, or the merged-group
+  sibling project, that the task runs on (on another member's shared project the
+  server decides). `--priority` takes `P0|P1|P2`, and `--status` uses
+  `todo|doing|done`; `create` no longer offers `doing`. `list --status` is sent to
+  the server and still applied locally, so an older server that ignores it filters
+  too. An invalid argument now exits 2 without sending a request. The SDK's
+  `updateIssue` forwards `projectId`, and `listIssues` sends multiple statuses to
+  the server and filters the result the same way.
+
+  The matching web server changes (metadata patches merge instead of replacing,
+  `GET /api/issues?status=` filtering) should be deployed before publishing.
+
 ## 0.15.2
 
 ## 0.15.1

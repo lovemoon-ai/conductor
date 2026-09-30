@@ -1,5 +1,22 @@
 # @love-moon/ai-sdk
 
+## 0.16.0
+
+### Patch Changes
+
+- 5c81d06: Claude turns that wait on background subagents now report their full token
+  usage. Such a turn emits one result per segment and the task card used to show
+  only the last segment; it now sums the result's `modelUsage`, which covers
+  every segment, every subagent and small side calls. `conductor serve-ai`'s
+  `prompt_tokens` / `completion_tokens` come from the same usage, so they now
+  include those too. A turn cut off after an earlier segment keeps that
+  segment's usage.
+- b69d665: Codex turns that spawn sub-agents now include the sub-agents' tokens in the
+  turn usage. Their `thread/tokenUsage/updated` notifications carry the
+  sub-agent's own thread id and were dropped with its other events. A
+  sub-agent's replayed total is not counted, and whatever it spends after the
+  parent turn ends goes to the next turn.
+
 ## 0.15.2
 
 ## 0.15.1
