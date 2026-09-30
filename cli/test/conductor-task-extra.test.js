@@ -411,7 +411,8 @@ describe("conductor task create / resume / list extensions", () => {
   for (const [label, sessionsRoute, reason] of [
     ["the daemon cannot list sessions (older daemon)",
       { status: 409, body: { error: "daemon_capability_missing" } }, /could not list sessions on mac/],
-    ["the daemon is offline", { status: 404, body: { error: "daemon_offline" } }, /could not list sessions on mac/],
+    ["the daemon is too slow to list sessions",
+      { status: 504, body: { error: "daemon_timeout" } }, /could not list sessions on mac/],
     ["the session is not in the list",
       { sessions: [{ backend: "codex", session_id: "other", project_id: "proj-2" }] }, /session s1 is not among the codex sessions listed on mac/],
   ]) {
@@ -427,6 +428,24 @@ describe("conductor task create / resume / list extensions", () => {
       assert.equal(calls.at(-1).body.projectId, "proj-cwd");
       assert.match(err, reason);
       assert.match(err, /using the project from the current directory/);
+    });
+  }
+
+  for (const [label, sessionsRoute] of [
+    ["the daemon is offline", { status: 404, body: { error: "daemon_offline" } }],
+    ["the token is rejected", { status: 401, body: { error: "Unauthorized" } }],
+    ["the server fails", { status: 500, body: { error: "boom" } }],
+  ]) {
+    it(`resume fails instead of guessing a project when ${label}`, async () => {
+      const { deps } = sdkDeps({ projects: [seedProject, otherProject, cwdProject] });
+      const { code, calls } = await runWithFetch(
+        main,
+        ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "s1"],
+        { "GET /api/agents/mac/sessions": sessionsRoute, "POST /api/tasks": { id: "t8" } },
+        deps,
+      );
+      assert.notEqual(code, 0);
+      assert.ok(!calls.some((call) => call.method === "POST"), "no task is created");
     });
   }
 

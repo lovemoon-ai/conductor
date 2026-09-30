@@ -482,6 +482,22 @@ describe("conductor project — cross-daemon merged groups act like the web", ()
     assert.deepEqual(out.ids, ["q1", "q2"]);
   });
 
+  it("hide of a group stops at the first failure and reports what changed", async () => {
+    const backend = new FakeBackendApi({ projects: GROUP });
+    const patch = backend.patchProjectByQuery.bind(backend);
+    backend.patchProjectByQuery = async (projectId, body) => {
+      if (projectId === "q2") {
+        backend.calls.push({ method: "patchProjectByQuery", projectId, body });
+        throw new Error("Backend responded with 500");
+      }
+      return patch(projectId, body);
+    };
+    const r = await runWithFetch(main, ["hide", "repo", "--daemon-host", "m1"], {}, makeCliDeps(backend));
+    assert.notEqual(r.code, 0);
+    assert.deepEqual(hiddenPatches(backend), [["q1", true], ["q2", true]]);
+    assert.match(r.err, /Hidden: q1; not hidden: q2\. Failed on q2 \(Backend responded with 500\)/);
+  });
+
   it("unhide of a hidden member restores the whole group", async () => {
     const r = await runGroup(["unhide", "q3"]);
     assert.equal(r.code, 0, r.err);

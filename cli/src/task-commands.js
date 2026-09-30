@@ -703,6 +703,8 @@ export async function handleResume(argv, deps) {
  * When the daemon cannot list the session, falls back to the project from the
  * current directory / environment with a warning.
  */
+const SESSION_LIST_UNAVAILABLE = new Set(["daemon_capability_missing", "daemon_timeout"]);
+
 async function sessionProjectId(http, apis, deps, host, backend, sessionId) {
   const fromCwd = async (reason) => {
     printPretty(deps.stderr, `Warning: ${reason}; using the project from the current directory. Pass --project to choose one.`);
@@ -713,7 +715,11 @@ async function sessionProjectId(http, apis, deps, host, backend, sessionId) {
     // The route has no session-id filter; 200 is its maximum page.
     data = await http.get(apiPath("agents", host, "sessions"), { query: { backends: backend, limit: 200 } });
   } catch (error) {
-    return fromCwd(`could not list sessions on ${host} (${error?.message ?? error})`);
+    // Only "this daemon cannot list sessions" falls back (an older daemon, or
+    // one too slow to answer); auth, offline and server errors are real.
+    const code = error?.details?.error;
+    if (!SESSION_LIST_UNAVAILABLE.has(code)) throw error;
+    return fromCwd(`could not list sessions on ${host} (${code})`);
   }
   const session = (data?.sessions ?? []).find((s) => s?.session_id === sessionId);
   if (!session) return fromCwd(`session ${sessionId} is not among the ${backend} sessions listed on ${host}`);
