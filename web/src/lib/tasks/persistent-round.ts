@@ -82,16 +82,51 @@ const ROUND_START_CLAIM_TTL_MS = 2 * 60_000;
  * fire): a concurrent start sees the claim and backs off, so its stop_task can
  * never reach the daemon after our create_task. Returns the claim id, or null.
  */
-async function claimRoundStart(taskId: string, round: number): Promise<string | null> {
+async function claimRoundStart(
+  taskId: string,
+  round: number,
+  clientMessageId: string | null,
+): Promise<string | null> {
   const id = randomUUID();
   const claimed = await updateTaskMetadata(db.task, taskId, (metadata) => {
     const current = readPersistentTaskState(metadata);
     if (!current?.enabled || current.round !== round) return null;
     const claimAt = current.roundStarting ? Date.parse(current.roundStarting.at) : NaN;
     if (Date.now() - claimAt < ROUND_START_CLAIM_TTL_MS) return null;
-    return withPersistentState(metadata, { roundStarting: { id, at: new Date().toISOString() } });
+    return withPersistentState(metadata, {
+      roundStarting: { id, at: new Date().toISOString(), clientMessageId },
+    });
   });
   return claimed ? id : null;
+}
+
+const ROUND_START_RETRY_POLL_MS = 250;
+
+/**
+ * A retry of a send whose first attempt still holds the round-start claim (it
+ * is waiting for the previous fire to stop). Waits for that attempt instead of
+ * reporting round_changed: "delivered" once its message exists, "released"
+ * when it gave up without one (the retry may then try itself).
+ */
+async function awaitSameSenderRoundStart(
+  taskId: string,
+  clientMessageId: string,
+): Promise<"delivered" | "released" | "other"> {
+  const deadline = Date.now() + ROUND_START_CLAIM_TTL_MS;
+  while (Date.now() < deadline) {
+    if (await db.message.findFirst({ where: { taskId, clientMessageId }, select: { id: true } })) {
+      return "delivered";
+    }
+    const row = await db.task.findUnique({ where: { id: taskId }, select: { metadata: true } });
+    const claim = readPersistentTaskState(parseJsonObject(row?.metadata))?.roundStarting ?? null;
+    if (claim?.clientMessageId !== clientMessageId) {
+      // Committed between the two reads, or released without a message.
+      const committed = await db.message.findFirst({ where: { taskId, clientMessageId }, select: { id: true } });
+      return committed ? "delivered" : claim ? "other" : "released";
+    }
+    await new Promise((resolve) => setTimeout(resolve, ROUND_START_RETRY_POLL_MS));
+  }
+  return "other";
 }
 
 async function releaseRoundStart(taskId: string, claimId: string): Promise<void> {
@@ -102,6 +137,27 @@ async function releaseRoundStart(taskId: string, claimId: string): Promise<void>
   ).catch((error) => {
     console.warn(`[persistent-round] failed to release round-start claim on ${taskId}:`, error);
   });
+}
+
+const CLIENT_MESSAGE_ID_IN_USE_MESSAGE = "This client request id is already used by another message.";
+const clientMessageIdInUse = () =>
+  fail(409, CLIENT_MESSAGE_ID_IN_USE_MESSAGE, {
+    error: "client_request_id_in_use",
+    message: CLIENT_MESSAGE_ID_IN_USE_MESSAGE,
+  });
+
+/** The result the first attempt of a retried send produced. */
+async function retriedRoundStart(
+  userId: string,
+  taskId: string,
+  clientMessageId: string,
+): Promise<PersistentRoundResult> {
+  const [task, message] = await Promise.all([
+    findPersistentTask(userId, taskId),
+    db.message.findFirst({ where: { taskId, clientMessageId }, select: { id: true } }),
+  ]);
+  if (!task || !message) return fail(404, "Not found");
+  return { ok: true, task, messageId: message.id };
 }
 
 const ROUND_CHANGED_MESSAGE = "This task has moved to another round; review it before starting a new one.";
@@ -303,7 +359,22 @@ export async function startPersistentRound(input: {
         : projectCwdLaunchConfig;
   }
 
-  const claimId = await claimRoundStart(task.id, state.round);
+  const clientMessageId = normalizeOptionalString(input.clientMessageId);
+  if (clientMessageId) {
+    // The column is unique across all tasks: refuse a clash before anything is stopped.
+    const clash = await db.message.findFirst({
+      where: { clientMessageId, taskId: { not: task.id } },
+      select: { id: true },
+    });
+    if (clash) return clientMessageIdInUse();
+  }
+
+  let claimId = await claimRoundStart(task.id, state.round, clientMessageId);
+  if (!claimId && clientMessageId) {
+    const outcome = await awaitSameSenderRoundStart(task.id, clientMessageId);
+    if (outcome === "delivered") return retriedRoundStart(input.userId, task.id, clientMessageId);
+    if (outcome === "released") claimId = await claimRoundStart(task.id, state.round, clientMessageId);
+  }
   if (!claimId) return roundChanged();
 
   const round = state.round + 1;
@@ -404,7 +475,7 @@ export async function startPersistentRound(input: {
           content,
           createdAt: messageAt,
           ...(input.messageMetadata ? { metadata: JSON.stringify(input.messageMetadata) } : {}),
-          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+          ...(clientMessageId ? { clientMessageId } : {}),
         },
         select: { id: true, createdAt: true },
       });
@@ -416,9 +487,11 @@ export async function startPersistentRound(input: {
     });
   } catch (error) {
     if (error instanceof RoundChangedError) return roundChanged();
+    // Another task took the id between the check above and the insert.
+    if ((error as { code?: unknown })?.code === "P2002") return clientMessageIdInUse();
     throw error;
   } finally {
-    if (!transaction) await releaseRoundStart(task.id, claimId);
+    if (!transaction) await releaseRoundStart(task.id, claimId!);
   }
   const { divider, userMessage, updated, metadata } = transaction;
 
