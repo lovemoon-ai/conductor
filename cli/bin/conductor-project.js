@@ -34,6 +34,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -210,7 +211,9 @@ async function handleCreate(argv, deps) {
   const defaultName = argv.name && String(argv.name).trim()
     ? String(argv.name).trim()
     : (path.basename(workspacePath) || undefined);
-  const daemonHost = argv.daemonHost ? String(argv.daemonHost) : undefined;
+  // workspacePath is a path on this machine, so bind to this machine's daemon
+  // unless told otherwise (the server needs daemonHost + workspacePath).
+  const daemonHost = argv.daemonHost ? String(argv.daemonHost) : localDaemonName(config, env);
   const isDefault = Boolean(argv.default);
   const metadata = buildAuditMetadata(env);
   if (argv.clientRequestId) {
@@ -237,23 +240,14 @@ async function handleCreate(argv, deps) {
     return EXIT.OK;
   }
 
-  if (!isDefault) {
-    if (!daemonHost && !config?.daemonName) {
-      // Service-side will error when daemon is not reachable; we surface a
-      // clearer hint here per "Decisions on leftover RFC questions" §1.
-      // We don't proactively probe — but we *do* improve the wording when
-      // the server returns "daemon not reachable".
-    }
-  }
-
   let created;
   try {
     created = await apis.projects.createProject(body);
   } catch (err) {
     if (isDaemonUnreachableError(err)) {
-      const host = daemonHost || "(local daemon)";
+      const serverMessage = String(err.details?.error || err.message || "").trim();
       const friendly = new Error(
-        `Daemon at ${host} not reachable. Start one with \`conductor daemon\` or pass --daemon-host <h> to use an existing one.`,
+        `${serverMessage.replace(/\.?$/, ".")} Start it with \`conductor daemon\`, or pass --daemon-host <h> to use another online daemon.`,
       );
       friendly.statusCode = err.statusCode;
       throw friendly;
@@ -269,8 +263,21 @@ async function handleCreate(argv, deps) {
   return EXIT.OK;
 }
 
+/** The daemon name `conductor daemon` registers with on this machine. */
+function localDaemonName(config, env) {
+  const name =
+    (typeof config?.daemonName === "string" && config.daemonName.trim()) ||
+    (typeof env?.CONDUCTOR_DAEMON_NAME === "string" && env.CONDUCTOR_DAEMON_NAME.trim()) ||
+    os.hostname().trim();
+  return name || undefined;
+}
+
+// The server answers 409 with `code` daemon_offline / daemon_unreachable
+// (web/src/lib/projects/daemon-binding.ts).
 function isDaemonUnreachableError(err) {
   if (!err) return false;
+  const code = err.details?.code;
+  if (code === "daemon_offline" || code === "daemon_unreachable") return true;
   const message = err.message || "";
   if (/daemon/i.test(message) && /(not reachable|unreachable|cannot reach|connection refused|ECONN)/i.test(message)) {
     return true;
@@ -320,26 +327,32 @@ async function handleSetHidden(argv, deps, hidden) {
     cwd: deps.cwd,
     daemonHost: argv.daemonHost,
   });
-  const url = `${buildBaseUrl(apis.config)}/api/projects?projectId=${encodeURIComponent(project.id)}`;
+  // Like the web project list, a cross-daemon merged project is hidden or
+  // restored on every daemon at once.
+  const members = displayedGroup(await apis.projects.listProjects({ includeHidden: true }), project);
   // No `metadata` here: the project PATCH route replaces the whole metadata
   // blob with whatever it is sent, so an audit-only object would erase the
   // project's task labels, memos and binding data. The web UI sends `hidden` alone.
   const body = { hidden };
   if (argv.dryRun) {
-    emitDryRun(deps.stdout, argv.json, makeDryRunPayload("PATCH", url, body));
+    for (const member of members) {
+      const url = `${buildBaseUrl(apis.config)}/api/projects?projectId=${encodeURIComponent(member.id)}`;
+      emitDryRun(deps.stdout, argv.json, makeDryRunPayload("PATCH", url, body));
+    }
     return EXIT.OK;
   }
-  const updated = await apis.projects.setProjectHidden(project.id, hidden);
+  const updated = [];
+  for (const member of members) {
+    updated.push(await apis.projects.setProjectHidden(member.id, hidden));
+  }
   if (argv.json) {
-    printJson(deps.stdout, projectAsObject(updated));
+    printJson(deps.stdout, members.length > 1 ? updated.map(projectAsObject) : projectAsObject(updated[0]));
     return EXIT.OK;
   }
-  printPretty(
-    deps.stdout,
-    hidden
-      ? `Hid project ${project.name ?? project.id}`
-      : `Unhid project ${project.name ?? project.id}`,
-  );
+  const what = members.length > 1
+    ? `merged project ${project.name ?? project.id} on ${members.length} daemons`
+    : `project ${project.name ?? project.id}`;
+  printPretty(deps.stdout, hidden ? `Hid ${what}` : `Unhid ${what}`);
   return EXIT.OK;
 }
 
@@ -431,15 +444,37 @@ async function handleUpdate(argv, deps) {
   if (Object.keys(body).length === 0) {
     throw argsError("Nothing to update: pass --name, --merge-opt-out, --workspace-path or --json-body");
   }
+  // Same as the web Split/Merge toggle: splitting opts out every member of the
+  // merged group; merging clears the opt-out on every same-name project on
+  // another daemon, whichever side had opted out.
+  let peers = [];
+  if (mergeOptOut !== undefined) {
+    const apis = await buildApis(deps);
+    const all = await apis.projects.listProjects({ includeHidden: true });
+    peers = mergeOptOut
+      ? displayedGroup(all, project).filter((entry) => entry.id !== project.id)
+      : all.filter((entry) =>
+          entry.id !== project.id &&
+          entry.name === project.name &&
+          String(project.daemonHost ?? "").trim() &&
+          String(entry.daemonHost ?? "").trim() &&
+          String(entry.daemonHost).trim() !== String(project.daemonHost).trim());
+  }
   const result = await sendOrPreview(http, argv, deps, "PATCH", "/api/projects", body, {
     query: projectQuery(project.id),
   });
+  for (const peer of peers) {
+    await sendOrPreview(http, argv, deps, "PATCH", "/api/projects", { mergeOptOut }, {
+      query: projectQuery(peer.id),
+    });
+  }
   if (result.dryRun) return EXIT.OK;
   if (argv.json) {
     printJson(deps.stdout, result.data);
     return EXIT.OK;
   }
-  printPretty(deps.stdout, `Updated project ${displayName(result.data ?? project)}`);
+  const also = peers.length > 0 ? ` (merge opt-out also set on ${peers.length} same-name project(s))` : "";
+  printPretty(deps.stdout, `Updated project ${displayName(result.data ?? project)}${also}`);
   return EXIT.OK;
 }
 
@@ -464,20 +499,29 @@ async function handleRefresh(argv, deps) {
 async function handleDelete(argv, deps) {
   if (!argv.yes && !argv.dryRun) {
     throw argsError(
-      "Refusing to delete without --yes: this stops the project's running tasks and deletes its tasks and messages",
+      "Refusing to delete without --yes: this stops the project's running tasks and deletes its tasks and messages, " +
+        "including tasks filed under other projects; a cross-daemon merged project is deleted on every daemon",
     );
   }
-  const project = await resolveTarget(argv, deps);
+  const { project, members } = await resolveTargetGroup(argv, deps);
   const http = await buildHttp(deps);
-  const result = await sendOrPreview(http, argv, deps, "DELETE", "/api/projects", undefined, {
-    query: projectQuery(project.id),
-  });
-  if (result.dryRun) return EXIT.OK;
+  // Sequential like the web: each daemon may clean up worktrees first.
+  for (const member of members) {
+    await sendOrPreview(http, argv, deps, "DELETE", "/api/projects", undefined, {
+      query: projectQuery(member.id),
+    });
+  }
+  if (argv.dryRun) return EXIT.OK;
   if (argv.json) {
-    printJson(deps.stdout, { deleted: true, id: project.id });
+    printJson(
+      deps.stdout,
+      members.length > 1
+        ? { deleted: true, id: project.id, ids: members.map((member) => member.id) }
+        : { deleted: true, id: project.id },
+    );
     return EXIT.OK;
   }
-  printPretty(deps.stdout, `Deleted project ${displayName(project)}`);
+  printPretty(deps.stdout, `Deleted ${describeGroup(project, members)}`);
   return EXIT.OK;
 }
 
@@ -700,13 +744,67 @@ function canonicalRemote(value) {
 /** Mirror of `canMergeProjectsByFields` in web/src/lib/projects/grouping.ts. */
 function canMerge(a, b) {
   if (a.name !== b.name) return false;
-  if (a.mergeOptOut === true || b.mergeOptOut === true) return false;
+  // SDK `Project`s keep these fields under `raw`; raw API rows have them inline.
+  if (groupField(a, "mergeOptOut") === true || groupField(b, "mergeOptOut") === true) return false;
   const aHost = String(a.daemonHost ?? "").trim();
   const bHost = String(b.daemonHost ?? "").trim();
   if (!aHost || !bHost || aHost === bHost) return false;
-  const aUrl = canonicalRemote(a.gitRemoteUrl);
-  const bUrl = canonicalRemote(b.gitRemoteUrl);
+  const aUrl = canonicalRemote(groupField(a, "gitRemoteUrl"));
+  const bUrl = canonicalRemote(groupField(b, "gitRemoteUrl"));
   return !(aUrl && bUrl && aUrl !== bUrl);
+}
+
+function groupField(project, key) {
+  return project[key] ?? project.raw?.[key];
+}
+
+function isHiddenProject(project) {
+  return typeof project.hidden === "boolean" ? project.hidden : Boolean(project.hiddenAt ?? project.hidden_at);
+}
+
+/**
+ * The merged group the web project list shows `target` in: mirror of
+ * `computeProjectGroups` (web/src/features/projects/utils/project-groups.ts)
+ * over the visible projects, or over all of them when `target` is hidden
+ * (only listed once hidden projects are revealed).
+ */
+function displayedGroup(all, target) {
+  const hidden = isHiddenProject(target);
+  const list = all.filter((entry) => hidden || !isHiddenProject(entry) || entry.id === target.id);
+  const grouped = new Set();
+  for (let i = 0; i < list.length; i += 1) {
+    const anchor = list[i];
+    if (grouped.has(anchor.id)) continue;
+    const members = [anchor];
+    for (const candidate of list.slice(i + 1)) {
+      if (!grouped.has(candidate.id) && canMerge(anchor, candidate)) members.push(candidate);
+    }
+    for (const member of members) grouped.add(member.id);
+    if (members.some((member) => member.id === target.id)) return members;
+  }
+  return [target];
+}
+
+/** Mirror of `expandMergedProjectGroup`: every project merging with any seed, hidden included. */
+function expandGroup(seeds, all) {
+  const expanded = all.filter((candidate) =>
+    seeds.some((seed) => seed.id === candidate.id || canMerge(seed, candidate)),
+  );
+  const ids = new Set(expanded.map((entry) => entry.id));
+  return [...expanded, ...seeds.filter((seed) => !ids.has(seed.id))];
+}
+
+async function resolveTargetGroup(argv, deps) {
+  const project = await resolveTarget(argv, deps);
+  const apis = await buildApis(deps);
+  const all = await apis.projects.listProjects({ includeHidden: true });
+  return { project, all, members: displayedGroup(all, project) };
+}
+
+function describeGroup(project, members) {
+  return members.length > 1
+    ? `merged project ${project.name ?? project.id} on ${members.length} daemons`
+    : `project ${displayName(project)}`;
 }
 
 /**
@@ -724,7 +822,8 @@ async function loadLabelGroup(argv, deps) {
     err.statusCode = 404;
     throw err;
   }
-  const members = [seed, ...all.filter((entry) => entry.id !== seed.id && canMerge(seed, entry))];
+  const expanded = expandGroup(displayedGroup(all, seed), all);
+  const members = [seed, ...expanded.filter((entry) => entry.id !== seed.id)];
   const labels = [];
   const seen = new Set();
   for (const member of members) {
@@ -905,7 +1004,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         (cmd) => cmd
           .option("name", { type: "string", describe: "Project name (defaults to basename of workspace path)" })
           .option("workspace-path", { type: "string", describe: "Workspace path (defaults to cwd)" })
-          .option("daemon-host", { type: "string", describe: "Daemon hostname for binding" })
+          .option("daemon-host", { type: "string", describe: "Daemon hostname for binding (default: this machine's daemon name)" })
           .option("create-workspace", { type: "boolean", default: false, describe: "Create the workspace path on the daemon if it does not exist" })
           .option("default", { type: "boolean", default: false, describe: "Create the user's default project" })
           .option("client-request-id", { type: "string", describe: "Idempotency key" }),
@@ -925,7 +1024,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       )
       .command(
         "hide <idOrName>",
-        "Hide a project from default listings",
+        "Hide a project from default listings (on every daemon of a merged project)",
         (cmd) => cmd
           .positional("idOrName", { type: "string", demandOption: true })
           .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
@@ -935,7 +1034,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       )
       .command(
         "unhide <idOrName>",
-        "Unhide a previously hidden project",
+        "Unhide a previously hidden project (on every daemon of a merged project)",
         (cmd) => cmd
           .positional("idOrName", { type: "string", demandOption: true })
           .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" }),
@@ -952,7 +1051,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("name", { type: "string", describe: "New project name" })
           .option("merge-opt-out", {
             type: "string",
-            describe: "true to keep this project out of cross-daemon merged groups, false to allow merging",
+            describe: "true splits its cross-daemon merged group (every member), false merges it with same-name projects on other daemons",
           })
           .option("workspace-path", { type: "string", describe: "Bind an unbound project to this workspace path" })
           .option("bind-daemon-host", { type: "string", describe: "Daemon for --workspace-path (defaults to the project's daemon)" })
@@ -973,7 +1072,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
       )
       .command(
         "delete <idOrName>",
-        "Delete a project (stops its running tasks and deletes its tasks); requires --yes",
+        "Delete a project, on every daemon if merged (stops its running tasks and deletes its tasks); requires --yes",
         (cmd) => cmd
           .positional("idOrName", { type: "string", demandOption: true })
           .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" })

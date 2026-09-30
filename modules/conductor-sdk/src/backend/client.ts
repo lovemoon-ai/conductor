@@ -76,6 +76,13 @@ export class BackendApiError extends Error {
   }
 }
 
+/**
+ * Server payload per summary, so `asObject()` keeps REST-only fields (hidden,
+ * mergeOptOut, gitRemoteUrl, metadata). A WeakMap keeps it off the instance's
+ * own (serialized) properties.
+ */
+const projectSummaryPayloads = new WeakMap<ProjectSummary, Record<string, unknown>>();
+
 export class ProjectSummary {
   constructor(
     public readonly id: string,
@@ -95,7 +102,7 @@ export class ProjectSummary {
     if (!id) {
       throw new Error('Project payload missing id');
     }
-    return new ProjectSummary(
+    const summary = new ProjectSummary(
       id,
       payload.name ?? undefined,
       payload.daemonHost ?? payload.daemon_host ?? null,
@@ -107,10 +114,13 @@ export class ProjectSummary {
       payload.isDefault ?? payload.is_default ?? undefined,
       payload.lastCommitAt ?? payload.last_commit_at ?? null,
     );
+    projectSummaryPayloads.set(summary, payload);
+    return summary;
   }
 
   asObject(): Record<string, unknown> {
     return {
+      ...projectSummaryPayloads.get(this),
       id: this.id,
       name: this.name,
       daemonHost: this.daemonHost,
