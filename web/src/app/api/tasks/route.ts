@@ -513,14 +513,6 @@ export async function POST(request: NextRequest) {
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  // Same rule as the web pickers: a task filed into a hidden project would
-  // vanish from the task list.
-  if (project.hiddenAt) {
-    return NextResponse.json(
-      { error: "Project is hidden; unhide it before creating tasks in it" },
-      { status: 409 },
-    );
-  }
   if (parentTaskId) {
     let parentTask: { id: string } | null;
     try {

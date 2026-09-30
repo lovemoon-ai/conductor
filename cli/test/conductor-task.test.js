@@ -89,6 +89,33 @@ describe("conductor task create", () => {
     assert.equal(created.body.projectId, "proj-1");
   });
 
+  it("warns on stderr when the resolved project is hidden but still creates the task", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject, { id: "proj-hidden", name: "old", hidden: true, hiddenAt: "2026-09-01T00:00:00.000Z" }],
+    });
+
+    const code = await main(
+      ["create", "--project", "proj-hidden", "--title", "In hidden", "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+
+    assert.equal(code, 0, stderr.collect());
+    assert.equal(backend.calls.find((call) => call.method === "createAppTask")?.body.projectId, "proj-hidden");
+    assert.match(stderr.collect(), /project old is hidden; the task will not show in the web task list until you unhide it/);
+    assert.doesNotThrow(() => JSON.parse(stdout.collect().trim()));
+  });
+
+  it("does not warn for a visible project", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(["create", "--title", "Visible"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    assert.doesNotMatch(stderr.collect(), /hidden/);
+  });
+
   it("warns when the task was created but parent grouping failed", async () => {
     const stdout = makeStream();
     const stderr = makeStream();
