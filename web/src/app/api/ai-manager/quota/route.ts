@@ -1,4 +1,6 @@
 import { NextRequest } from "next/server";
+import { externalQuotaBackends } from "@/lib/agents/external-quota-backends";
+import { realtimeHub } from "@/lib/realtime/hub";
 import { authorize, callAgent } from "../_helpers";
 
 export async function GET(request: NextRequest) {
@@ -13,14 +15,22 @@ export async function GET(request: NextRequest) {
   if (tool) {
     args.tool = tool;
   }
-  const externalQuotaBackends = params.getAll("externalQuotaBackend")
+  const requestedExternal = params.getAll("externalQuotaBackend")
     .flatMap((value) => value.split(","))
     .flatMap((value) => {
       const trimmed = value.trim();
       return trimmed ? [trimmed] : [];
     });
-  if (externalQuotaBackends.length > 0) {
-    args.externalQuotaBackends = externalQuotaBackends;
+  // Clients that name none (the CLI) get the daemon's non-built-in backends,
+  // same as the web AI Manager page derives from `supportedBackends`.
+  const external = requestedExternal.length > 0
+    ? requestedExternal
+    : externalQuotaBackends(
+        realtimeHub.getAgentsForUser(ctx.userId).find((agent) => agent.host === ctx.agentHost)
+          ?.supportedBackends,
+      );
+  if (external.length > 0) {
+    args.externalQuotaBackends = external;
   }
 
   return callAgent(ctx, "quota", args, 30_000);

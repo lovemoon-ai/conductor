@@ -5,7 +5,7 @@ vi.mock("@/lib/auth/middleware", () => ({
   getActiveSubscriptionUser: vi.fn(),
 }));
 vi.mock("@/lib/realtime/hub", () => ({
-  realtimeHub: { hasAgentHost: vi.fn() },
+  realtimeHub: { hasAgentHost: vi.fn(), getAgentsForUser: vi.fn(() => []) },
 }));
 vi.mock("@/lib/realtime/ai-manager", () => ({
   requestAiManager: vi.fn(),
@@ -52,6 +52,42 @@ describe("GET /api/ai-manager/quota", () => {
         },
         timeoutMs: 30_000,
       }),
+    );
+  });
+
+  it("derives external backends from the daemon when the client names none (CLI)", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "a1", host: "m2", supportedBackends: ["codex", "Claude", "private-ext"], capabilities: [] },
+      { id: "a2", host: "other", supportedBackends: ["other-ext"], capabilities: [] },
+    ]);
+    const req = createMockRequest({
+      method: "GET",
+      url: "http://localhost:6152/api/ai-manager/quota?agentHost=m2",
+    });
+
+    await GET(req);
+
+    expect(realtimeHub.getAgentsForUser).toHaveBeenCalledWith("user-1");
+    expect(requestAiManager).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: { forceRefresh: false, externalQuotaBackends: ["private-ext"] },
+      }),
+    );
+  });
+
+  it("omits external backends when the daemon has only built-in ones", async () => {
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "a1", host: "m2", supportedBackends: ["codex", "kimi"], capabilities: [] },
+    ]);
+    const req = createMockRequest({
+      method: "GET",
+      url: "http://localhost:6152/api/ai-manager/quota?agentHost=m2",
+    });
+
+    await GET(req);
+
+    expect(requestAiManager).toHaveBeenCalledWith(
+      expect.objectContaining({ args: { forceRefresh: false } }),
     );
   });
 });

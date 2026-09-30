@@ -6,6 +6,7 @@ import { Header } from '@/components/layout/Header';
 import { useAgentsStore } from '@/features/agents';
 import { AiManagerPanel } from '@/features/ai-manager';
 import { useAiManagerStore } from '@/features/ai-manager';
+import { externalQuotaBackends } from '@/lib/agents/external-quota-backends';
 import { SETTINGS_ROOT_PATH, useSettingsNavStore } from '@/features/settings';
 import { RefreshIcon } from '@/features/tasks';
 
@@ -27,18 +28,6 @@ import { RefreshIcon } from '@/features/tasks';
 // mechanism the chat view uses, proven to survive `<Link>` navigation.
 
 const SCROLL_STORAGE_PREFIX = 'conductor-daemon-scroll:';
-// Backends whose quota the daemon reports directly under its own key; they
-// must not be routed through the external-provider quota path.
-const BUILT_IN_AI_BACKENDS = new Set(['codex', 'claude', 'kimi', 'copilot', 'dsh', 'deepseek-harness']);
-
-function externalQuotaBackends(backends: string[] | undefined): string[] {
-  return [...new Set(
-    (backends ?? []).flatMap((backend) => {
-      const normalized = backend.trim().toLowerCase();
-      return normalized && !BUILT_IN_AI_BACKENDS.has(normalized) ? [normalized] : [];
-    }),
-  )];
-}
 
 function scrollStorageKey(host: string): string {
   return `${SCROLL_STORAGE_PREFIX}${host}`;
