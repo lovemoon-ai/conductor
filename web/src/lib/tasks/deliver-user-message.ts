@@ -16,7 +16,7 @@ type AppendInput = Parameters<typeof appendUserMessageToTask>[0];
 type StoredMessage = Awaited<ReturnType<typeof appendUserMessageToTask>>["message"];
 
 // A persistent round whose session is gone is idle: the next message starts a new round.
-const ROUND_IDLE_STATUSES = new Set(["completed", "killed", "unknown"]);
+export const ROUND_IDLE_STATUSES = new Set(["completed", "killed", "unknown"]);
 // A message to these tasks is never read by a fire.
 const NOT_RUNNING_STATUSES = new Set(["completed", "killed", "killing"]);
 // Matches the restart route's refresh_session ack timeout.
