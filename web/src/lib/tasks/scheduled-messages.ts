@@ -1,9 +1,17 @@
 import { TaskIngressError } from "@/lib/channel/task-ingress-service";
-import { deliverUserMessage } from "@/lib/tasks/deliver-user-message";
+import { deliverUserMessage, ROUND_IDLE_STATUSES } from "@/lib/tasks/deliver-user-message";
 import { db } from "@/lib/db";
 import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
 import { isPersistentTask } from "@/shared/utils/persistent-task";
 import { isMissingSecondProjectIdColumnError } from "@/lib/tasks/pty-compat";
+
+// Delivery found no fire to take the message (the round could not start, or
+// the task stopped between the status check and the send).
+const TASK_NOT_RUNNING_ERROR_CODES = new Set([
+  "ROUND_START_FAILED",
+  "TASK_MISSING_ACTIVE_FIRE_OWNER",
+  "TASK_NOT_RUNNING",
+]);
 
 export type ScheduledMessageMode =
   | {
@@ -870,15 +878,19 @@ async function executeClaimedScheduledMessage(
   }
 
   const taskStatus = normalizeTaskStatus(scheduled.task.status);
+  const taskNotRunning = () =>
+    scheduled.stopWhenTaskNotRunning || scheduled.kind !== "interval"
+      ? completeScheduledMessage(scheduled.id, now, "task_not_running")
+      : skipScheduledMessage(scheduled, now, "task_not_running");
   // A persistent task whose session is gone is idle, not finished: the message
-  // starts its next round (deliverUserMessage), like any other sender's.
+  // starts its next round (deliverUserMessage), like any other sender's —
+  // unless the schedule was told to stop with the task.
   const startsPersistentRound =
-    taskStatus !== "running" && isPersistentTask({ metadata: parseJsonObject(scheduled.task.metadata) });
+    ROUND_IDLE_STATUSES.has(taskStatus) &&
+    !scheduled.stopWhenTaskNotRunning &&
+    isPersistentTask({ metadata: parseJsonObject(scheduled.task.metadata) });
   if (taskStatus !== "running" && !startsPersistentRound) {
-    if (scheduled.stopWhenTaskNotRunning || scheduled.kind !== "interval") {
-      return completeScheduledMessage(scheduled.id, now, "task_not_running");
-    }
-    return skipScheduledMessage(scheduled, now, "task_not_running");
+    return taskNotRunning();
   }
 
   if (scheduled.condition === "ai_idle" && !startsPersistentRound) {
@@ -909,6 +921,9 @@ async function executeClaimedScheduledMessage(
   } catch (error) {
     if (error instanceof TaskIngressError && error.code === "ROUND_SUMMARY_PENDING") {
       return skipScheduledMessage(scheduled, now, "round_summary_pending");
+    }
+    if (error instanceof TaskIngressError && TASK_NOT_RUNNING_ERROR_CODES.has(error.code)) {
+      return taskNotRunning();
     }
     const message = error instanceof Error ? error.message : String(error);
     return failScheduledMessage(scheduled, now, message);

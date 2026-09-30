@@ -126,6 +126,7 @@ describe("/api/tasks/[taskId]/messages", () => {
       taskId: "task-p",
       content: "next round",
       messageMetadata: null,
+      clientMessageId: null,
     });
     expect(appendUserMessageToTask).not.toHaveBeenCalled();
     expect(data).toMatchObject({ id: "msg-r3", content: "next round" });
@@ -155,7 +156,28 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(response.status).toBe(200);
     expect(startPersistentRound).toHaveBeenCalledWith(expect.objectContaining({
       messageMetadata: { clientRequestId: "req-1" },
+      clientMessageId: "req-1",
     }));
+  });
+
+  it.each([
+    ["a persistent task whose round the first attempt started", "init", endedPersistentTask.metadata],
+    ["a task that stopped after the first attempt", "killed", null],
+  ])("returns the stored message to a retry on %s instead of applying the send rules", async (_label, status, metadata) => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ ...endedPersistentTask, status, metadata } as any);
+    // Beyond the route's recent-metadata scan: only the clientMessageId column finds it.
+    vi.mocked(db.message.findMany).mockResolvedValue([]);
+    vi.mocked(db.message.findFirst).mockResolvedValue({
+      id: "msg-r3", taskId: "task-p", role: "user", content: "next", metadata: null, createdAt: new Date(),
+    } as any);
+
+    const response = await postMessage({ content: "next", role: "user", clientRequestId: "req-1" });
+
+    expect(response.status).toBe(200);
+    expect(await extractJson(response)).toMatchObject({ id: "msg-r3" });
+    expect(db.message.findFirst).toHaveBeenCalledWith({ where: { taskId: "task-p", clientMessageId: "req-1" } });
+    expect(startPersistentRound).not.toHaveBeenCalled();
+    expect(appendUserMessageToTask).not.toHaveBeenCalled();
   });
 
   describe("while the end-of-round summary is pending", () => {

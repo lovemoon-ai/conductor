@@ -406,6 +406,30 @@ describe("conductor task create / resume / list extensions", () => {
     assert.equal(calls[1].body.projectId, "proj-1");
   });
 
+  const cwdProject = { id: "proj-cwd", name: "cwd", workspacePath: "/tmp/cli-test", isDefault: false };
+
+  for (const [label, sessionsRoute, reason] of [
+    ["the daemon cannot list sessions (older daemon)",
+      { status: 409, body: { error: "daemon_capability_missing" } }, /could not list sessions on mac/],
+    ["the daemon is offline", { status: 404, body: { error: "daemon_offline" } }, /could not list sessions on mac/],
+    ["the session is not in the list",
+      { sessions: [{ backend: "codex", session_id: "other", project_id: "proj-2" }] }, /session s1 is not among the codex sessions listed on mac/],
+  ]) {
+    it(`resume falls back to the cwd project with a warning when ${label}`, async () => {
+      const { deps } = sdkDeps({ projects: [seedProject, otherProject, cwdProject] });
+      const { code, err, calls } = await runWithFetch(
+        main,
+        ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "s1"],
+        { "GET /api/agents/mac/sessions": sessionsRoute, "POST /api/tasks": { id: "t8" } },
+        deps,
+      );
+      assert.equal(code, 0, err);
+      assert.equal(calls.at(-1).body.projectId, "proj-cwd");
+      assert.match(err, reason);
+      assert.match(err, /using the project from the current directory/);
+    });
+  }
+
   it("resume --project skips the session lookup", async () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(

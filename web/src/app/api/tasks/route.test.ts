@@ -1000,15 +1000,31 @@ describe("/api/tasks", () => {
       expect(data.error).toBe("Project not found");
     });
 
-    it("should return 409 when the project is hidden", async () => {
+    it("creates the task in a hidden project (fire and AIs create there from its directory)", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId("proj-default");
       vi.mocked(db.project.findFirst).mockResolvedValue({
         id: "proj-1",
         name: "Hidden",
         userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/work/hidden",
         hiddenAt: new Date("2026-01-01"),
       } as any);
+      vi.mocked(db.task.create).mockResolvedValue({
+        id: "task-hidden",
+        projectId: "proj-1",
+        title: "New Task",
+        status: "pending",
+        metadata: null,
+        createdAt: new Date("2024-01-02"),
+        updatedAt: new Date("2024-01-02"),
+      } as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-daemon", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      ] as any);
+      vi.mocked(db.message.create).mockResolvedValue({ id: "msg-1", createdAt: new Date("2024-01-03") } as any);
 
       const token = createTestToken("user-1");
       const request = createMockRequest({
@@ -1019,9 +1035,9 @@ describe("/api/tasks", () => {
       const response = await POST(request);
       const data = await extractJson(response);
 
-      expect(response.status).toBe(409);
-      expect(data.error).toMatch(/unhide it/);
-      expect(db.task.create).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      expect(data.id).toBe("task-hidden");
+      expect(db.task.create).toHaveBeenCalled();
     });
 
     it("should return 409 with the linked task when the session is already resumed", async () => {

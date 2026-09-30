@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
 import {
@@ -72,6 +73,36 @@ const fail = (status: number, error: string, details?: Record<string, unknown>):
   error,
   ...(details ? { details } : {}),
 });
+
+// Long enough for the stop round trip; a crashed request must not wedge the task.
+const ROUND_START_CLAIM_TTL_MS = 2 * 60_000;
+
+/**
+ * Claims the next round before anything irreversible (stopping the previous
+ * fire): a concurrent start sees the claim and backs off, so its stop_task can
+ * never reach the daemon after our create_task. Returns the claim id, or null.
+ */
+async function claimRoundStart(taskId: string, round: number): Promise<string | null> {
+  const id = randomUUID();
+  const claimed = await updateTaskMetadata(db.task, taskId, (metadata) => {
+    const current = readPersistentTaskState(metadata);
+    if (!current?.enabled || current.round !== round) return null;
+    const claimAt = current.roundStarting ? Date.parse(current.roundStarting.at) : NaN;
+    if (Date.now() - claimAt < ROUND_START_CLAIM_TTL_MS) return null;
+    return withPersistentState(metadata, { roundStarting: { id, at: new Date().toISOString() } });
+  });
+  return claimed ? id : null;
+}
+
+async function releaseRoundStart(taskId: string, claimId: string): Promise<void> {
+  await updateTaskMetadata(db.task, taskId, (metadata) =>
+    readPersistentTaskState(metadata)?.roundStarting?.id === claimId
+      ? withPersistentState(metadata, { roundStarting: null })
+      : null,
+  ).catch((error) => {
+    console.warn(`[persistent-round] failed to release round-start claim on ${taskId}:`, error);
+  });
+}
 
 const ROUND_CHANGED_MESSAGE = "This task has moved to another round; review it before starting a new one.";
 const roundChanged = () =>
@@ -150,6 +181,8 @@ export async function startPersistentRound(input: {
   content: string;
   /** Stored on the round's first message (e.g. the sender's clientRequestId for retry dedupe). */
   messageMetadata?: Record<string, unknown> | null;
+  /** Stored in the message's clientMessageId column, so a retried send finds this message. */
+  clientMessageId?: string | null;
   backendType?: string | null;
   agentHost?: string | null;
   worktree?: PersistentRoundWorktreeMode;
@@ -270,25 +303,8 @@ export async function startPersistentRound(input: {
         : projectCwdLaunchConfig;
   }
 
-  if (POSSIBLY_LIVE_TASK_STATUSES.has(status)) {
-    const stopTargetHost = resolveTaskStopTargetHost({
-      taskId: task.id,
-      executionHost: task.executionHost,
-      agentHost: task.agentHost,
-    });
-    if (stopTargetHost) {
-      const stopped = await stopTaskBeforeRelaunch({
-        userId: input.userId,
-        taskId: task.id,
-        projectId: task.projectId,
-        stopTargetHost,
-        reason: "persistent_new_round",
-      });
-      if (!stopped.ok) {
-        return fail(409, stopped.error ?? "Failed to stop the current round");
-      }
-    }
-  }
+  const claimId = await claimRoundStart(task.id, state.round);
+  if (!claimId) return roundChanged();
 
   const round = state.round + 1;
   const dividerContent = `Round ${round} · ${backendType} on ${agentHost}`;
@@ -304,20 +320,41 @@ export async function startPersistentRound(input: {
   const messageAt = new Date(dividerAt.getTime() + 1);
   let transaction;
   try {
+    if (POSSIBLY_LIVE_TASK_STATUSES.has(status)) {
+      const stopTargetHost = resolveTaskStopTargetHost({
+        taskId: task.id,
+        executionHost: task.executionHost,
+        agentHost: task.agentHost,
+      });
+      if (stopTargetHost) {
+        const stopped = await stopTaskBeforeRelaunch({
+          userId: input.userId,
+          taskId: task.id,
+          projectId: task.projectId,
+          stopTargetHost,
+          reason: "persistent_new_round",
+        });
+        if (!stopped.ok) {
+          return fail(409, stopped.error ?? "Failed to stop the current round");
+        }
+      }
+    }
     transaction = await db.$transaction(async (tx) => {
       // Re-read after the stop: the summary may have landed meanwhile. The
-      // compare-and-swap on the raw metadata makes a concurrent round start
-      // (double submit, another device) fail instead of creating two rounds.
+      // claim plus the compare-and-swap on the raw metadata make a concurrent
+      // round start (double submit, another device) fail instead of creating
+      // two rounds.
       const current = await tx.task.findUnique({ where: { id: task.id }, select: { metadata: true } });
       const currentMetadata = parseJsonObject(current?.metadata);
       const currentState = readPersistentTaskState(currentMetadata);
-      if (!currentState?.enabled || currentState.round !== state.round) {
+      if (!currentState?.enabled || currentState.round !== state.round || currentState.roundStarting?.id !== claimId) {
         throw new RoundChangedError();
       }
       const metadata = withPersistentState(currentMetadata, {
         round,
         roundEndedAt: null,
         roundEndMessageId: null,
+        roundStarting: null,
       });
       const { count } = await tx.task.updateMany({
         where: { id: task.id, metadata: current?.metadata ?? null },
@@ -367,6 +404,7 @@ export async function startPersistentRound(input: {
           content,
           createdAt: messageAt,
           ...(input.messageMetadata ? { metadata: JSON.stringify(input.messageMetadata) } : {}),
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
         },
         select: { id: true, createdAt: true },
       });
@@ -379,6 +417,8 @@ export async function startPersistentRound(input: {
   } catch (error) {
     if (error instanceof RoundChangedError) return roundChanged();
     throw error;
+  } finally {
+    if (!transaction) await releaseRoundStart(task.id, claimId);
   }
   const { divider, userMessage, updated, metadata } = transaction;
 

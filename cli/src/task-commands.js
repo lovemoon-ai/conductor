@@ -669,7 +669,7 @@ export async function handleResume(argv, deps) {
   const http = await buildHttp(deps);
   const projectId = trimmed(argv.project)
     ? (await resolveProject(apis, { project: argv.project })).id
-    : await sessionProjectId(http, apis, host, backend, sessionId);
+    : await sessionProjectId(http, apis, deps, host, backend, sessionId);
   const body = {
     projectId,
     title: trimmed(argv.title) || `Resume ${backend} ${sessionId.slice(0, 8)}`,
@@ -700,11 +700,24 @@ export async function handleResume(argv, deps) {
 /**
  * The project the web resume panel files a session under: the project whose
  * workspace contains the session cwd (matched server-side), else the default.
+ * When the daemon cannot list the session, falls back to the project from the
+ * current directory / environment with a warning.
  */
-async function sessionProjectId(http, apis, host, backend, sessionId) {
-  const data = await http.get(apiPath("agents", host, "sessions"), { query: { backends: backend, limit: 200 } });
+async function sessionProjectId(http, apis, deps, host, backend, sessionId) {
+  const fromCwd = async (reason) => {
+    printPretty(deps.stderr, `Warning: ${reason}; using the project from the current directory. Pass --project to choose one.`);
+    return (await resolveProject(apis, { env: deps.env, cwd: deps.cwd })).id;
+  };
+  let data;
+  try {
+    // The route has no session-id filter; 200 is its maximum page.
+    data = await http.get(apiPath("agents", host, "sessions"), { query: { backends: backend, limit: 200 } });
+  } catch (error) {
+    return fromCwd(`could not list sessions on ${host} (${error?.message ?? error})`);
+  }
   const session = (data?.sessions ?? []).find((s) => s?.session_id === sessionId);
-  if (session?.project_id) return session.project_id;
+  if (!session) return fromCwd(`session ${sessionId} is not among the ${backend} sessions listed on ${host}`);
+  if (session.project_id) return session.project_id;
   const fallback = (await apis.projects.listProjects({ includeHidden: true })).find((p) => p.isDefault);
   if (!fallback) throw argsError("The session's directory matches no project and there is no default project; pass --project");
   return fallback.id;

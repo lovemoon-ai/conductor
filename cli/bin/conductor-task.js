@@ -363,6 +363,12 @@ async function handleCreate(argv, deps) {
     err.code = "ARGS";
     throw err;
   }
+  if (project.hidden) {
+    printPretty(
+      deps.stderr,
+      `Warning: project ${project.name || project.id} is hidden; the task will not show in the web task list until you unhide it.`,
+    );
+  }
   if (extra.hasExtendedCreateOptions(argv)) {
     // The SDK's createTask only forwards the basic fields; the extended options
     // (daemon, agent group, global backend, worktree, persistent) go straight to
