@@ -87,6 +87,13 @@ export async function PUT(
     if (!target) {
       return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
+    // Filing a task under a hidden project would make it vanish from the list.
+    if (target.hiddenAt) {
+      return NextResponse.json(
+        { error: "Project is hidden; unhide it before moving tasks into it" },
+        { status: 409 },
+      );
+    }
   }
 
   const updated = await db.task.update({

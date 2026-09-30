@@ -28,7 +28,13 @@ vi.mock("@/lib/db", () => ({
       create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
+    },
+    taskRuntimeState: {
       findUnique: vi.fn(),
+    },
+    agentOutbox: {
+      findFirst: vi.fn(),
     },
   },
 }));
@@ -90,6 +96,8 @@ const postMessage = (body: Record<string, unknown>) =>
 describe("/api/tasks/[taskId]/messages", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue(null);
+    vi.mocked(db.taskRuntimeState.findUnique).mockResolvedValue(null);
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -100,7 +108,7 @@ describe("/api/tasks/[taskId]/messages", () => {
   it("starts a new round when a user message reaches an ended persistent round", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
     vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });
-    vi.mocked(db.message.findUnique).mockResolvedValue({
+    vi.mocked(db.message.findUniqueOrThrow).mockResolvedValue({
       id: "msg-r3",
       taskId: "task-p",
       role: "user",
@@ -113,7 +121,12 @@ describe("/api/tasks/[taskId]/messages", () => {
     const data = await extractJson(response);
 
     expect(response.status).toBe(200);
-    expect(startPersistentRound).toHaveBeenCalledWith({ userId: "user-1", taskId: "task-p", content: "next round" });
+    expect(startPersistentRound).toHaveBeenCalledWith({
+      userId: "user-1",
+      taskId: "task-p",
+      content: "next round",
+      messageMetadata: null,
+    });
     expect(appendUserMessageToTask).not.toHaveBeenCalled();
     expect(data).toMatchObject({ id: "msg-r3", content: "next round" });
   });
@@ -127,6 +140,120 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(response.status).toBe(409);
     expect(await extractJson(response)).toEqual({ error: "Daemon mac-mini is offline" });
     expect(appendUserMessageToTask).not.toHaveBeenCalled();
+  });
+
+  it("records the clientRequestId on the new round's first message so a retry dedupes", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
+    vi.mocked(db.message.findMany).mockResolvedValue([]);
+    vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });
+    vi.mocked(db.message.findUniqueOrThrow).mockResolvedValue({
+      id: "msg-r3", taskId: "task-p", role: "user", content: "next", metadata: null, createdAt: new Date(),
+    } as any);
+
+    const response = await postMessage({ content: "next", role: "user", clientRequestId: "req-1" });
+
+    expect(response.status).toBe(200);
+    expect(startPersistentRound).toHaveBeenCalledWith(expect.objectContaining({
+      messageMetadata: { clientRequestId: "req-1" },
+    }));
+  });
+
+  describe("while the end-of-round summary is pending", () => {
+    const summaryPendingTask = {
+      ...endedPersistentTask,
+      status: "running",
+      metadata: JSON.stringify({
+        persistent: {
+          enabled: true,
+          round: 2,
+          roundEndedAt: "2026-09-30T00:00:00.000Z",
+          roundEndMessageId: "msg-end",
+        },
+      }),
+    };
+
+    it("rejects the message instead of cutting the summary off", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(summaryPendingTask as any);
+      vi.mocked(db.message.findMany).mockResolvedValue([]);
+
+      const response = await postMessage({ content: "next round", role: "user" });
+
+      expect(response.status).toBe(409);
+      expect(await extractJson(response)).toMatchObject({ error: "round_summary_pending" });
+      expect(startPersistentRound).not.toHaveBeenCalled();
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+    });
+
+    it("rejects the message while the summary reply is still streaming", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(summaryPendingTask as any);
+      vi.mocked(db.taskRuntimeState.findUnique).mockResolvedValue({ replyInProgress: true, replyTo: "msg-end" } as any);
+
+      const response = await postMessage({ content: "next round", role: "user" });
+
+      expect(response.status).toBe(409);
+      expect(startPersistentRound).not.toHaveBeenCalled();
+    });
+
+    it("starts the next round once the summary reply has landed", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(summaryPendingTask as any);
+      vi.mocked(db.taskRuntimeState.findUnique).mockResolvedValue(null);
+      vi.mocked(db.message.findMany).mockResolvedValue([
+        { metadata: JSON.stringify({ reply_to: "msg-end" }) },
+      ] as any);
+      vi.mocked(startPersistentRound).mockResolvedValue({ ok: false, status: 409, error: "Daemon mac-mini is offline" });
+
+      await postMessage({ content: "next round", role: "user" });
+
+      expect(startPersistentRound).toHaveBeenCalled();
+    });
+  });
+
+  it.each(["completed", "killed", "unknown"])(
+    "starts a new round when the persistent session is gone (status %s) without End round",
+    async (status) => {
+      vi.mocked(db.task.findFirst).mockResolvedValue({
+        ...endedPersistentTask,
+        status,
+        metadata: JSON.stringify({ persistent: { enabled: true, round: 2 } }),
+      } as any);
+      vi.mocked(startPersistentRound).mockResolvedValue({ ok: false, status: 409, error: "Daemon mac-mini is offline" });
+
+      await postMessage({ content: "next round", role: "user" });
+
+      expect(startPersistentRound).toHaveBeenCalled();
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["completed", "killed"])("rejects a user message to a %s non-persistent task", async (status) => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-p", projectId: "proj-1", taskType: "ai_task", status } as any);
+
+    const response = await postMessage({ content: "hello", role: "user" });
+
+    expect(response.status).toBe(409);
+    expect(await extractJson(response)).toEqual({
+      error: "task_not_running",
+      message: "Only running ai_task accepts new messages",
+    });
+    expect(appendUserMessageToTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects a user message while a session refresh is in progress", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-p", projectId: "proj-1", taskType: "ai_task", status: "running" } as any);
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue({ requestId: "req-refresh" } as any);
+
+    const response = await postMessage({ content: "hello", role: "user" });
+
+    expect(response.status).toBe(409);
+    expect(await extractJson(response)).toMatchObject({ error: "restart_pending" });
+    expect(appendUserMessageToTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects whitespace-only content", async () => {
+    const response = await postMessage({ content: "  \n ", role: "user" });
+
+    expect(response.status).toBe(400);
+    expect(db.task.findFirst).not.toHaveBeenCalled();
   });
 
   it("keeps non-user messages (the fire's own output) in the ended round", async () => {

@@ -7,6 +7,7 @@ import path from "node:path";
 import { main } from "../bin/conductor-task.js";
 import { FakeBackendApi, makeCliDeps } from "./helpers/fake-backend.js";
 import { runWithFetch } from "./helpers/fake-fetch.js";
+import { BackendApiError } from "../../modules/conductor-sdk/dist/index.js";
 
 const seedProject = { id: "proj-1", name: "alpha", workspacePath: "/tmp/alpha", isDefault: true };
 const otherProject = { id: "proj-2", name: "beta", workspacePath: "/tmp/beta", isDefault: false };
@@ -232,6 +233,16 @@ describe("conductor task persistent / rounds / worktree / terminal", () => {
     assert.deepEqual(start.calls[0].body, { content: "next step", backend_type: "claude", worktree: "new", expected_round: 3 });
   });
 
+  it("round start pins the task's current round by default, like the web composer", async () => {
+    const { code, err, calls } = await runWithFetch(main, ["round", "start", "t1", "next"], {
+      "GET /api/tasks/t1": { id: "t1", metadata: { persistent: { enabled: true, round: 4 } } },
+      "POST /api/tasks/t1/rounds": { id: "t1" },
+    });
+    assert.equal(code, 0, err);
+    assert.equal(calls[0].method, "GET");
+    assert.deepEqual(calls[1].body, { content: "next", expected_round: 4 });
+  });
+
   it("cleanup-worktree POSTs the worktree route", async () => {
     const { code, out } = await runWithFetch(main, ["cleanup-worktree", "t1"], {
       "POST /api/tasks/t1/worktree": { task: { id: "t1" }, cleaned_at: "x", removed_path: "/w/t1" },
@@ -359,19 +370,65 @@ describe("conductor task create / resume / list extensions", () => {
     assert.equal(calls.length, 0);
   });
 
-  it("resume creates a task bound to the existing session", async () => {
+  it("resume creates a task bound to the existing session, in the session's project", async () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(
       main,
       ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "abcdef123456", "--session-file", "/s.jsonl"],
-      { "POST /api/tasks": ({ body }) => ({ id: "t8", title: body.title }) },
+      {
+        "GET /api/agents/mac/sessions": { sessions: [{ backend: "codex", session_id: "abcdef123456", project_id: "proj-2" }] },
+        "POST /api/tasks": ({ body }) => ({ id: "t8", title: body.title }),
+      },
       deps,
     );
     assert.equal(code, 0, err);
-    assert.equal(calls[0].body.sessionId, "abcdef123456");
-    assert.equal(calls[0].body.sessionFilePath, "/s.jsonl");
-    assert.equal(calls[0].body.agentHost, "mac");
-    assert.equal(calls[0].body.title, "Resume codex abcdef12");
+    assert.deepEqual(calls[0].query, { backends: "codex", limit: "200" });
+    const post = calls[1].body;
+    assert.equal(post.projectId, "proj-2");
+    assert.equal(post.sessionId, "abcdef123456");
+    assert.equal(post.sessionFilePath, "/s.jsonl");
+    assert.equal(post.agentHost, "mac");
+    assert.equal(post.title, "Resume codex abcdef12");
+  });
+
+  it("resume falls back to the default project when the session cwd matches none", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, calls } = await runWithFetch(
+      main,
+      ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "s1"],
+      {
+        "GET /api/agents/mac/sessions": { sessions: [{ backend: "codex", session_id: "s1", project_id: null }] },
+        "POST /api/tasks": { id: "t8" },
+      },
+      deps,
+    );
+    assert.equal(code, 0, err);
+    assert.equal(calls[1].body.projectId, "proj-1");
+  });
+
+  it("resume --project skips the session lookup", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, calls } = await runWithFetch(
+      main,
+      ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "s1", "--project", "proj-2"],
+      { "POST /api/tasks": { id: "t8" } },
+      deps,
+    );
+    assert.equal(code, 0, err);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.projectId, "proj-2");
+  });
+
+  it("resume points at the linked task instead of creating a duplicate", async () => {
+    const { deps } = sdkDeps();
+    const { code, err, out } = await runWithFetch(
+      main,
+      ["resume", "--daemon-host", "mac", "--backend", "codex", "--session", "s1", "--project", "proj-1"],
+      { "POST /api/tasks": { status: 409, body: { error: "session_already_linked", task_id: "t-old" } } },
+      deps,
+    );
+    assert.equal(code, 0, err);
+    assert.match(out, /already linked to task t-old/);
   });
 
   it("list --project-ids merges projects and filters status client-side", async () => {
@@ -441,6 +498,48 @@ describe("conductor task send --attach / messages --follow / schedule update", (
     assert.equal(calls[1].body.content, "see this");
     assert.equal(calls[1].body.role, "user");
     assert.equal(calls[1].body.metadata.audit.actor, "cli");
+  });
+
+  it("send --attach retries while the task's fire owner has not bound yet", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-attach-"));
+    const file = path.join(dir, "shot.png");
+    fs.writeFileSync(file, "png-bytes");
+    let posts = 0;
+    const sleeps = [];
+    const { code, err } = await runWithFetch(main, ["send", "t1", "see this", "--attach", file], {
+      "POST /api/tasks/t1/attachments": { attachment: { id: "att-1", name: "shot.png" } },
+      "POST /api/tasks/t1/messages": ({ body }) => (++posts === 1
+        ? { status: 409, body: { code: "task_missing_active_fire_owner", error: "Task missing active fire owner" } }
+        : { id: "m1", ...body }),
+    }, { sleep: async (ms) => { sleeps.push(ms); } });
+    assert.equal(code, 0, err);
+    assert.equal(posts, 2);
+    assert.deepEqual(sleeps, [500]);
+  });
+
+  it("send retries while the task's fire owner has not bound yet, but not other conflicts", async () => {
+    const { backend, deps } = sdkDeps({ tasks: [{ id: "t1", projectId: "proj-1", title: "x", status: "running" }] });
+    const original = backend.postTaskMessage.bind(backend);
+    const failures = [
+      new BackendApiError("conflict", 409, { code: "task_missing_active_fire_owner" }),
+    ];
+    backend.postTaskMessage = async (taskId, body) => {
+      const failure = failures.shift();
+      if (failure) {
+        backend.calls.push({ method: "postTaskMessage", taskId, body });
+        throw failure;
+      }
+      return original(taskId, body);
+    };
+    const sleep = async () => {};
+    const ok = await runWithFetch(main, ["send", "t1", "hi"], {}, { ...deps, sleep });
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(backend.calls.filter((call) => call.method === "postTaskMessage").length, 2);
+
+    failures.push(new BackendApiError("conflict", 409, { error: "task_not_running" }));
+    const rejected = await runWithFetch(main, ["send", "t1", "hi"], {}, { ...deps, sleep });
+    assert.notEqual(rejected.code, 0);
+    assert.equal(backend.calls.filter((call) => call.method === "postTaskMessage").length, 3);
   });
 
   it("send --attach with a missing file is an args error", async () => {

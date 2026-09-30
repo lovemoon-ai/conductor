@@ -348,8 +348,18 @@ export async function handleRoundStart(argv, deps, readContent) {
   if (trimmed(argv.backend)) body.backend_type = trimmed(argv.backend);
   if (trimmed(argv.daemonHost)) body.agent_host = trimmed(argv.daemonHost);
   if (argv.worktree) body.worktree = argv.worktree;
-  if (argv.expectedRound !== undefined) body.expected_round = Number(argv.expectedRound);
   const http = await buildHttp(deps);
+  if (argv.expectedRound !== undefined) {
+    body.expected_round = Number(argv.expectedRound);
+  } else if (argv.dryRun) {
+    body.expected_round = "<current round>";
+  } else {
+    // Like the web composer: pin the round we saw so a concurrent start fails
+    // instead of silently ending a round someone else just started.
+    const task = await http.get(taskPath(argv.id));
+    const round = task?.metadata?.persistent?.round;
+    body.expected_round = Number.isInteger(round) && round > 0 ? round : 1;
+  }
   const { dryRun, data } = await sendOrPreview(http, argv, deps, "POST", taskPath(argv.id, "rounds"), body, {
     timeoutMs: TASK_MUTATION_TIMEOUT_MS,
   });
@@ -421,6 +431,26 @@ export async function uploadAttachments(http, taskId, files, cwd) {
   return ids;
 }
 
+const FIRE_OWNER_RETRY_WINDOW_MS = 10_000;
+
+/**
+ * Retries the transient startup race (the task's fire has not bound yet, so
+ * nothing was persisted) for up to 10s, like the web composer.
+ */
+export async function retryWhileFireOwnerMissing(send, deps = {}) {
+  const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadline = Date.now() + FIRE_OWNER_RETRY_WINDOW_MS;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      const notReady = error?.statusCode === 409 && error?.details?.code === "task_missing_active_fire_owner";
+      if (!notReady || Date.now() >= deadline) throw error;
+      await sleep(Math.min(1_500, 500 * attempt));
+    }
+  }
+}
+
 export async function handleSendWithAttachments(argv, deps, content, metadata) {
   const files = [].concat(argv.attach || []).filter(Boolean);
   const http = await buildHttp(deps);
@@ -433,7 +463,7 @@ export async function handleSendWithAttachments(argv, deps, content, metadata) {
     return EXIT.OK;
   }
   const attachmentIds = await uploadAttachments(http, argv.id, files, deps.cwd);
-  const data = await http.post(taskPath(argv.id, "messages"), { ...body, attachmentIds });
+  const data = await retryWhileFireOwnerMissing(() => http.post(taskPath(argv.id, "messages"), { ...body, attachmentIds }), deps);
   return print(deps, argv, data, `Sent message ${data?.id ? `${data.id} ` : ""}with ${attachmentIds.length} attachment(s) to task ${argv.id}`);
 }
 
@@ -632,13 +662,16 @@ export async function handleExtendedCreate(argv, deps, projectId, title) {
 /** Resume an existing CLI session (listed by `conductor daemon sessions <host>`) as a new app task. */
 export async function handleResume(argv, deps) {
   const apis = await buildApis(deps);
-  const project = await resolveProject(apis, { env: deps.env, cwd: deps.cwd, project: argv.project });
   const sessionId = trimmed(argv.session);
   const host = trimmed(argv.daemonHost);
   const backend = trimmed(argv.backend);
   if (!sessionId || !host || !backend) throw argsError("--session, --daemon-host and --backend are required");
+  const http = await buildHttp(deps);
+  const projectId = trimmed(argv.project)
+    ? (await resolveProject(apis, { project: argv.project })).id
+    : await sessionProjectId(http, apis, host, backend, sessionId);
   const body = {
-    projectId: project.id,
+    projectId,
     title: trimmed(argv.title) || `Resume ${backend} ${sessionId.slice(0, 8)}`,
     taskType: "ai_task",
     backendType: backend,
@@ -648,10 +681,33 @@ export async function handleResume(argv, deps) {
     ...(argv.prompt !== undefined ? { initialContent: String(argv.prompt) } : {}),
     metadata: buildAuditMetadata(deps.env),
   };
-  const http = await buildHttp(deps);
-  const { dryRun, data } = await sendOrPreview(http, argv, deps, "POST", apiPath("tasks"), body);
-  if (dryRun) return EXIT.OK;
-  return printCreated(deps, argv, data);
+  let result;
+  try {
+    result = await sendOrPreview(http, argv, deps, "POST", apiPath("tasks"), body);
+  } catch (error) {
+    const linkedId = error?.statusCode === 409 && error?.details?.error === "session_already_linked"
+      ? error.details.task_id
+      : null;
+    if (!linkedId) throw error;
+    // The web resume panel opens the linked task instead of creating another.
+    return print(deps, argv, { id: linkedId, already_linked: true },
+      `Session ${sessionId} is already linked to task ${linkedId}; open it with \`conductor task show ${linkedId}\``);
+  }
+  if (result.dryRun) return EXIT.OK;
+  return printCreated(deps, argv, result.data);
+}
+
+/**
+ * The project the web resume panel files a session under: the project whose
+ * workspace contains the session cwd (matched server-side), else the default.
+ */
+async function sessionProjectId(http, apis, host, backend, sessionId) {
+  const data = await http.get(apiPath("agents", host, "sessions"), { query: { backends: backend, limit: 200 } });
+  const session = (data?.sessions ?? []).find((s) => s?.session_id === sessionId);
+  if (session?.project_id) return session.project_id;
+  const fallback = (await apis.projects.listProjects({ includeHidden: true })).find((p) => p.isDefault);
+  if (!fallback) throw argsError("The session's directory matches no project and there is no default project; pass --project");
+  return fallback.id;
 }
 
 // ---- list across projects -------------------------------------------------

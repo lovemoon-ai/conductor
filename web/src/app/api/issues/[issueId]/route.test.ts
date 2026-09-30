@@ -22,6 +22,7 @@ vi.mock('@/lib/db', () => ({
       findMany: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
+      count: vi.fn(),
     },
     project: {
       findMany: vi.fn(),
@@ -1791,6 +1792,116 @@ describe('/api/issues/[issueId]', () => {
       expect(response.status).toBe(403);
       expect(data.error).toMatch(/current user/i);
       expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('non-web writers (CLI/SDK)', () => {
+    const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({ method: 'PATCH', body }), {
+      params: Promise.resolve({ issueId: 'issue-1' }),
+    });
+    const spawnedTask = (id: string) => ({
+      task: buildTask({ id, status: 'init', agentHost: null, executionHost: null, backendType: null }),
+      initialMessage: null,
+      initialMessageContent: 'Hook issue board into the app shell',
+    });
+
+    it('shallow-merges a metadata patch instead of wiping stored keys', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        metadata: JSON.stringify({ backendType: 'codex', daemonHost: 'daemon-a', clientRequestId: 'k1', qa: { evidence: 'ok' } }),
+      }) as any);
+
+      const response = await patch({ title: 'Renamed', metadata: { audit: { actor: 'cli' } } });
+
+      expect(response.status).toBe(200);
+      const update = vi.mocked(db.issue.update).mock.calls[0][0] as any;
+      expect(JSON.parse(update.data.metadata)).toEqual({
+        backendType: 'codex',
+        daemonHost: 'daemon-a',
+        clientRequestId: 'k1',
+        qa: { evidence: 'ok' },
+        audit: { actor: 'cli' },
+      });
+    });
+
+    it('still clears metadata on an explicit null', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        metadata: JSON.stringify({ backendType: 'codex' }),
+      }) as any);
+
+      expect((await patch({ metadata: null })).status).toBe(200);
+      expect((vi.mocked(db.issue.update).mock.calls[0][0] as any).data.metadata).toBeNull();
+    });
+
+    it('reuses the remembered backend when a start sends only audit metadata', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        metadata: JSON.stringify({ backendType: 'claude' }),
+      }) as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue(spawnedTask('task-new') as any);
+
+      expect((await patch({ status: 'doing', metadata: { audit: { actor: 'cli' } } })).status).toBe(200);
+      expect(createAiTaskArtifacts).toHaveBeenCalledWith(
+        expect.objectContaining({ requestedBackendType: 'claude' }),
+        expect.any(Object),
+      );
+    });
+
+    it('starts a task for a doing issue that has none', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+      vi.mocked(db.task.count).mockResolvedValue(0 as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue(spawnedTask('task-new') as any);
+
+      const response = await patch({ status: 'doing' });
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(createAiTaskArtifacts).toHaveBeenCalledTimes(1);
+      expect(data.spawnedTask).toEqual(expect.objectContaining({ id: 'task-new' }));
+    });
+
+    it('does not start a second task when one appeared concurrently', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+      vi.mocked(db.task.count).mockResolvedValue(1 as any);
+
+      expect((await patch({ status: 'doing' })).status).toBe(200);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('does not start a task for a doing issue on unrelated edits', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+
+      expect((await patch({ title: 'Renamed' })).status).toBe(200);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('refuses to restart a linked task on a different backend or daemon', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex', 'claude'] },
+      ] as any);
+      for (const [metadata, message] of [
+        [{ backendType: 'claude' }, /backend codex; it cannot be restarted on claude/],
+        [{ daemonHost: 'daemon-z' }, /daemon daemon-a; it cannot be restarted on daemon-z/],
+      ] as const) {
+        vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'done' }) as any);
+        mockIssueTasks({ activeTasks: [], linkedTasks: [buildTask({ status: 'killed' })] });
+        const response = await patch({ status: 'doing', metadata });
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(message);
+      }
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    });
+
+    it('restarts a linked task when the requested backend matches it', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex'] },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'done' }) as any);
+      mockIssueTasks({ activeTasks: [], linkedTasks: [buildTask({ status: 'killed' })] });
+
+      expect((await patch({ status: 'doing', metadata: { backendType: 'codex' } })).status).toBe(200);
+      expect(db.agentOutbox.create).toHaveBeenCalled();
     });
   });
 

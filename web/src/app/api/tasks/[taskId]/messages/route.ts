@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
-import {
-  TaskIngressError,
-  appendUserMessageToTask,
-} from "@/lib/channel/task-ingress-service";
+import { TaskIngressError } from "@/lib/channel/task-ingress-service";
 import { db } from "@/lib/db";
 import { buildMessageResponse } from "@/shared/utils/message-attachments";
 import {
   isMissingAnyNewSchemaError,
 } from "@/lib/tasks/pty-compat";
 import { stripTopLevelAuditKeys } from "@/lib/audit/metadata";
-import { startPersistentRound } from "@/lib/tasks/persistent-round";
-import { parseJsonObject } from "@/lib/tasks/task-config";
-import { readPersistentTaskState } from "@/shared/utils/persistent-task";
+import { deliverUserMessage } from "@/lib/tasks/deliver-user-message";
 
 const parseStoredMetadata = (value: unknown): Record<string, unknown> | null => {
   if (!value) return null;
@@ -162,15 +157,15 @@ export async function POST(
     request.json(),
   ]);
 
-  if (!body?.content) {
+  if (!String(body?.content ?? "").trim()) {
     return NextResponse.json({ error: "content required" }, { status: 400 });
   }
 
-  let task: { id: string; projectId: string; taskType?: string | null; metadata?: string | null } | null;
+  let task: { id: string; projectId: string; taskType?: string | null } | null;
   try {
     task = await db.task.findFirst({
       where: { id: taskId, project: { userId: user.id } },
-      select: { id: true, projectId: true, taskType: true, metadata: true },
+      select: { id: true, projectId: true, taskType: true },
     });
   } catch (error) {
     if (!isMissingAnyNewSchemaError(error)) throw error;
@@ -225,31 +220,9 @@ export async function POST(
     ? (body.attachmentIds ?? body.attachment_ids).filter((value: unknown): value is string => typeof value === "string")
     : [];
 
-  // A user message to a persistent task whose round was ended starts the next
-  // round, exactly like sending from the web composer (RFC 0039).
-  const persistentState = readPersistentTaskState(parseJsonObject(task.metadata));
-  if (
-    persistentState?.enabled &&
-    persistentState.roundEndedAt &&
-    String(body.role ?? "sdk").trim().toLowerCase() === "user"
-  ) {
-    if (attachmentIds.length > 0) {
-      return NextResponse.json(
-        { error: "Start the new round with a text message, then attach files." },
-        { status: 409 },
-      );
-    }
-    const result = await startPersistentRound({ userId: user.id, taskId, content: String(body.content) });
-    if (!result.ok) {
-      return NextResponse.json(result.details ?? { error: result.error }, { status: result.status });
-    }
-    const roundMessage = await db.message.findUnique({ where: { id: result.messageId! } });
-    return NextResponse.json(buildMessageResponse(roundMessage!));
-  }
-
   let message;
   try {
-    ({ message } = await appendUserMessageToTask({
+    message = await deliverUserMessage({
       userId: user.id,
       taskId,
       content: body.content,
@@ -257,7 +230,7 @@ export async function POST(
       metadata: mergedMetadata,
       clientMessageId: clientRequestId,
       attachmentIds,
-    }));
+    });
   } catch (error) {
     if (error instanceof TaskIngressError) {
       return NextResponse.json(error.details ?? { error: error.message }, { status: error.status });

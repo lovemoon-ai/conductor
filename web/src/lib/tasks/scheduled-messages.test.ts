@@ -25,12 +25,13 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-vi.mock("@/lib/channel/task-ingress-service", () => ({
-  appendUserMessageToTask: vi.fn(),
+vi.mock("@/lib/tasks/deliver-user-message", () => ({
+  deliverUserMessage: vi.fn(),
 }));
 
 const { db } = await import("@/lib/db");
-const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-service");
+const { deliverUserMessage } = await import("@/lib/tasks/deliver-user-message");
+const { TaskIngressError } = await import("@/lib/channel/task-ingress-service");
 const {
   cancelScheduledMessageForTask,
   countActiveScheduledMessagesForProjects,
@@ -92,7 +93,7 @@ describe("scheduled messages", () => {
     vi.mocked(db.scheduledMessage.update).mockResolvedValue({} as any);
     vi.mocked(db.message.findFirst).mockResolvedValue({ id: "msg-1" } as any);
     vi.mocked(db.message.findMany).mockResolvedValue([]);
-    vi.mocked(appendUserMessageToTask).mockResolvedValue({} as any);
+    vi.mocked(deliverUserMessage).mockResolvedValue({} as any);
   });
 
   it("creates a delayed scheduled message for an ai task", async () => {
@@ -217,7 +218,7 @@ describe("scheduled messages", () => {
     });
 
     expect(stats).toMatchObject({ scanned: 1, claimed: 1, skipped: 1 });
-    expect(appendUserMessageToTask).not.toHaveBeenCalled();
+    expect(deliverUserMessage).not.toHaveBeenCalled();
     expect(db.scheduledMessage.update).toHaveBeenCalledWith({
       where: { id: "sched-1" },
       data: expect.objectContaining({
@@ -229,7 +230,7 @@ describe("scheduled messages", () => {
     });
   });
 
-  it("sends a due interval message through task ingress when the task is running", async () => {
+  it("sends a due interval message through the user-message rules when the task is running", async () => {
     const due = makeScheduledRow();
     vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
     vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({
@@ -248,7 +249,7 @@ describe("scheduled messages", () => {
     });
 
     expect(stats).toMatchObject({ scanned: 1, claimed: 1, sent: 1 });
-    expect(appendUserMessageToTask).toHaveBeenCalledWith({
+    expect(deliverUserMessage).toHaveBeenCalledWith({
       userId: "user-1",
       taskId: "task-1",
       role: "user",
@@ -270,6 +271,61 @@ describe("scheduled messages", () => {
         lastError: null,
       }),
     });
+  });
+
+  it("skips (not fails) a run while a persistent round's summary is pending", async () => {
+    const due = makeScheduledRow();
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({
+      ...due,
+      task: { id: "task-1", projectId: "proj-1", status: "running", taskType: "ai_task", runtimeState: null },
+    } as any);
+    vi.mocked(deliverUserMessage).mockRejectedValueOnce(
+      new TaskIngressError("ROUND_SUMMARY_PENDING", 409, "summary pending"),
+    );
+
+    const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(stats).toMatchObject({ claimed: 1, skipped: 1, failed: 0 });
+    expect(db.scheduledMessage.update).toHaveBeenCalledWith({
+      where: { id: "sched-1" },
+      data: expect.objectContaining({ status: "active", skipCount: 1, lastError: "round_summary_pending" }),
+    });
+  });
+
+  it("delivers to a stopped persistent task so the message starts its next round", async () => {
+    const due = makeScheduledRow();
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({
+      ...due,
+      condition: "ai_idle",
+      task: {
+        id: "task-1",
+        projectId: "proj-1",
+        status: "completed",
+        taskType: "ai_task",
+        metadata: JSON.stringify({ persistent: { enabled: true, round: 1 } }),
+        runtimeState: null,
+      },
+    } as any);
+
+    const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(stats).toMatchObject({ claimed: 1, sent: 1 });
+    expect(deliverUserMessage).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-1", role: "user" }));
+  });
+
+  it("still stops a schedule on a stopped non-persistent task", async () => {
+    const due = makeScheduledRow();
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({
+      ...due,
+      task: { id: "task-1", projectId: "proj-1", status: "completed", taskType: "ai_task", metadata: null, runtimeState: null },
+    } as any);
+
+    await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(deliverUserMessage).not.toHaveBeenCalled();
   });
 
   it("reclaims stale sending rows before scanning due schedules", async () => {

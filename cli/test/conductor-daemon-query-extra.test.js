@@ -292,6 +292,16 @@ describe("conductor daemon share", () => {
     assert.match(err, /at most 3 people/);
   });
 
+  it("create on a borrowed daemon surfaces the server's refusal", async () => {
+    const { code, err } = await run(["share", "create", "shared-alice-mbp"], {
+      "POST /api/daemon-shares": () => ({
+        status: 400, body: { error: "You cannot lend on a daemon lent to you" },
+      }),
+    });
+    assert.equal(code, 2);
+    assert.match(err, /cannot lend on a daemon lent to you/);
+  });
+
   it("create --dry-run sends nothing", async () => {
     const { code, calls } = await run(["share", "create", "macmini", "--dry-run"], {});
     assert.equal(code, 0);

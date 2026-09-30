@@ -56,6 +56,8 @@ export class FakeBackendApi {
       hidden: record.hidden ?? false,
       hiddenAt: record.hiddenAt ?? null,
       metadata: record.metadata ?? null,
+      gitRemoteUrl: record.gitRemoteUrl ?? null,
+      mergeOptOut: record.mergeOptOut ?? false,
     });
     return summary;
   }
@@ -150,7 +152,8 @@ export class FakeBackendApi {
       result = result.filter((issue) => issue.projectId === params.projectId);
     }
     if (params.status) {
-      result = result.filter((issue) => issue.status === params.status);
+      const statuses = String(params.status).split(",");
+      result = result.filter((issue) => statuses.includes(issue.status));
     }
     return result.map((issue) => ({ ...issue }));
   }
@@ -189,7 +192,11 @@ export class FakeBackendApi {
     if (body.description !== undefined) issue.description = body.description;
     if (body.status !== undefined) issue.status = body.status;
     if (body.priority !== undefined) issue.priority = body.priority;
-    if (body.metadata !== undefined) issue.metadata = body.metadata;
+    if (body.projectId !== undefined) issue.projectId = body.projectId;
+    // Like the server: a metadata patch shallow-merges; `null` clears.
+    if (body.metadata !== undefined) {
+      issue.metadata = body.metadata === null ? null : { ...(issue.metadata ?? {}), ...body.metadata };
+    }
     return { issue: { ...issue }, activeTask: null };
   }
 

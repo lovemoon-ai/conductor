@@ -448,3 +448,84 @@ describe("conductor project labels", () => {
     assert.equal(n.code, 4);
   });
 });
+
+describe("conductor project — cross-daemon merged groups act like the web", () => {
+  // q1/q2 merge (visible), q3 is a hidden member, q4 opted out of merging.
+  const GROUP = [
+    { id: "q1", name: "repo", daemonHost: "m1", workspacePath: "/w/r" },
+    { id: "q2", name: "repo", daemonHost: "m2", workspacePath: "/w/r" },
+    { id: "q3", name: "repo", daemonHost: "m3", workspacePath: "/w/r", hidden: true },
+    { id: "q4", name: "repo", daemonHost: "m4", workspacePath: "/w/r", mergeOptOut: true },
+  ];
+  const runGroup = async (args, routes = {}) => {
+    const backend = new FakeBackendApi({ projects: GROUP });
+    const r = await runWithFetch(main, args, routes, makeCliDeps(backend));
+    return { ...r, backend };
+  };
+  const hiddenPatches = (backend) =>
+    backend.calls.filter((c) => c.method === "patchProjectByQuery").map((c) => [c.projectId, c.body.hidden]);
+
+  it("hide hides every visible member of the merged group", async () => {
+    const r = await runGroup(["hide", "repo", "--daemon-host", "m1"]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(hiddenPatches(r.backend), [["q1", true], ["q2", true]]);
+    assert.match(r.out, /Hid merged project repo on 2 daemons/);
+  });
+
+  it("unhide of a hidden member restores the whole group", async () => {
+    const r = await runGroup(["unhide", "q3"]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(hiddenPatches(r.backend), [["q1", false], ["q2", false], ["q3", false]]);
+  });
+
+  it("delete --yes deletes the project on every daemon of the group", async () => {
+    const r = await runGroup(["delete", "q2", "--yes"], {
+      "DELETE /api/projects": () => ({ status: 204, body: undefined }),
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(r.calls.map((c) => [c.method, c.query.projectId]), [["DELETE", "q1"], ["DELETE", "q2"]]);
+    assert.match(r.out, /Deleted merged project repo on 2 daemons/);
+  });
+
+  it("delete without --yes warns about merged daemons and tasks filed elsewhere", async () => {
+    const r = await runGroup(["delete", "q1"]);
+    assert.equal(r.code, 2);
+    assert.match(r.err, /filed under other projects/);
+    assert.match(r.err, /every daemon/);
+  });
+
+  it("--merge-opt-out true splits every member", async () => {
+    const r = await runGroup(["update", "q1", "--merge-opt-out", "true"], {
+      "PATCH /api/projects": (call) => ({ id: call.query.projectId, name: "repo" }),
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(r.calls.map((c) => [c.query.projectId, c.body]), [
+      ["q1", { mergeOptOut: true }],
+      ["q2", { mergeOptOut: true }],
+    ]);
+  });
+
+  it("--merge-opt-out false clears the opt-out on every same-name peer", async () => {
+    const r = await runGroup(["update", "q4", "--merge-opt-out", "false"], {
+      "PATCH /api/projects": (call) => ({ id: call.query.projectId, name: "repo" }),
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(r.calls.map((c) => c.query.projectId), ["q4", "q1", "q2", "q3"]);
+    assert.ok(r.calls.every((c) => c.body.mergeOptOut === false));
+  });
+
+  it("labels use the whole displayed group, not just the target's direct peers", async () => {
+    // p5 and p6 have different remotes so they never merge pairwise, but both
+    // sit in p4's group on the web.
+    const raw = () => [
+      { id: "p4", name: "repo", daemonHost: "m1", metadata: { taskLabels: [{ id: "l1", name: "bug" }] } },
+      { id: "p5", name: "repo", daemonHost: "m2", gitRemoteUrl: "github.com/o/a", metadata: { taskLabels: [{ id: "l2", name: "ui" }] } },
+      { id: "p6", name: "repo", daemonHost: "m3", gitRemoteUrl: "github.com/o/b", metadata: { taskLabels: [{ id: "l3", name: "x" }] } },
+    ];
+    const r = await run(["labels", "list", "--project", "p5", "--json"], { "GET /api/projects": raw }, [
+      { id: "p5", name: "repo", daemonHost: "m2" },
+    ]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(JSON.parse(r.out).map((l) => l.id), ["l2", "l1", "l3"]);
+  });
+});

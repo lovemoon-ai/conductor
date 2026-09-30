@@ -202,6 +202,18 @@ describe('ProjectsApi', () => {
     });
     expect(sent.workspacePath).toBe('/tmp/foo');
     expect(sent.daemonHost).toBe('host-a');
+    expect(sent.createWorkspaceIfMissing).toBeUndefined();
+  });
+
+  test('createProject passes createWorkspaceIfMissing through', async () => {
+    const { client, api } = makeApi();
+    await api.createProject({
+      name: 'Fresh',
+      workspacePath: '/tmp/fresh',
+      daemonHost: 'host-a',
+      createWorkspaceIfMissing: true,
+    });
+    expect(client.createProjectCalls[0].createWorkspaceIfMissing).toBe(true);
   });
 
   test('setProjectHidden patches hidden only, never metadata', async () => {

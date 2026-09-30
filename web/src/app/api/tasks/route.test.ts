@@ -1000,6 +1000,56 @@ describe("/api/tasks", () => {
       expect(data.error).toBe("Project not found");
     });
 
+    it("should return 409 when the project is hidden", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        name: "Hidden",
+        userId: "user-1",
+        hiddenAt: new Date("2026-01-01"),
+      } as any);
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: { project_id: "proj-1", title: "New Task" },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data.error).toMatch(/unhide it/);
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("should return 409 with the linked task when the session is already resumed", async () => {
+      const mockUser = { id: "user-1", email: "test@example.com", phone: null };
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue(mockUser);
+      setDefaultProjectId("proj-1");
+      vi.mocked(db.project.findFirst).mockResolvedValue({ id: "proj-1", name: "P", userId: "user-1" } as any);
+      mockPrismaQuery(db.task.findFirst).mockImplementation(async (args: any) =>
+        args?.where?.sessionId === "sess-1" ? ({ id: "task-linked" } as any) : null,
+      );
+
+      const token = createTestToken("user-1");
+      const request = createMockRequest({
+        method: "POST",
+        token,
+        body: { project_id: "proj-1", title: "Resume", backend_type: "codex", session_id: "sess-1" },
+      });
+      const response = await POST(request);
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(409);
+      expect(data).toEqual({ error: "session_already_linked", task_id: "task-linked" });
+      expect(db.task.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+        where: { sessionId: "sess-1", project: { userId: "user-1" } },
+      }));
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
     it("should reject when project daemon conflicts with requested agent_host", async () => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = {

@@ -159,8 +159,9 @@ async function handleBackendsSet(argv, deps) {
 
 async function handleBackendsAdd(argv, deps) {
   const http = await buildHttp(deps);
-  const host = String(argv.host);
-  const backend = String(argv.backend);
+  // Same normalization the server stores entries with (user-preferences.ts).
+  const host = String(argv.host).trim();
+  const backend = String(argv.backend).trim().toLowerCase();
   const current = readBackends(await http.get(PREFS("global-ai-backends")));
   if (current.some((entry) => entry.host === host && entry.backend === backend)) {
     if (argv.json) printJson(deps.stdout, { backends: current });
@@ -172,8 +173,9 @@ async function handleBackendsAdd(argv, deps) {
 
 async function handleBackendsRemove(argv, deps) {
   const http = await buildHttp(deps);
-  const host = String(argv.host);
-  const backend = String(argv.backend);
+  // Same normalization the server stores entries with (user-preferences.ts).
+  const host = String(argv.host).trim();
+  const backend = String(argv.backend).trim().toLowerCase();
   const current = readBackends(await http.get(PREFS("global-ai-backends")));
   const next = current.filter((entry) => !(entry.host === host && entry.backend === backend));
   if (next.length === current.length) {

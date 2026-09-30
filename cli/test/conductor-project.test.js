@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Writable } from "node:stream";
 
+import { BackendApiError } from "../../modules/conductor-sdk/dist/index.js";
 import { main } from "../bin/conductor-project.js";
 import { FakeBackendApi, makeCliDeps } from "./helpers/fake-backend.js";
 
@@ -180,6 +184,47 @@ describe("conductor project create", () => {
     const data = JSON.parse(stdout.collect().trim());
     assert.equal(data.request.body.createWorkspaceIfMissing, true);
     assert.equal(data.request.body.workspacePath, "/tmp/fresh");
+  });
+
+  it("defaults daemonHost to this machine's daemon name and forwards --create-workspace", async () => {
+    // Without daemonHost the server 409s ("Binding fields require confirmed
+    // binding"), so the CLI binds the local workspace to the local daemon.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-project-create-"));
+    const configFile = path.join(dir, "config.yaml");
+    fs.writeFileSync(
+      configFile,
+      "agent_token: t\nbackend_url: https://backend.example\ndaemon_name: my-mac\n",
+    );
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi();
+    const code = await main(
+      ["create", "--workspace-path", "/tmp/fresh", "--create-workspace", "--config-file", configFile, "--json"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.equal(code, 0, stderr.collect());
+    const call = backend.calls.find((c) => c.method === "createProject");
+    assert.equal(call.body.daemonHost, "my-mac");
+    assert.equal(call.body.workspacePath, "/tmp/fresh");
+    assert.equal(call.body.createWorkspaceIfMissing, true);
+  });
+
+  it("surfaces the server's daemon_offline message with a hint", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi();
+    backend.createProject = async () => {
+      throw new BackendApiError("Backend responded with 409", 409, {
+        error: "Daemon host-x is offline. Reconnect it before creating this project.",
+        code: "daemon_offline",
+      });
+    };
+    const code = await main(
+      ["create", "--workspace-path", "/tmp/x", "--daemon-host", "host-x"],
+      { stdout, stderr, ...makeCliDeps(backend) },
+    );
+    assert.notEqual(code, 0);
+    assert.match(stderr.collect(), /Daemon host-x is offline\. Reconnect it before creating this project\. Start it with `conductor daemon`/);
   });
 
   it("translates daemon-not-reachable errors into actionable hints", async () => {

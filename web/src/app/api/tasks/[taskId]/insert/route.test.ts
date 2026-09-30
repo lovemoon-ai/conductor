@@ -13,8 +13,20 @@ vi.mock("@/lib/db", () => ({
     },
     message: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
+    },
+    taskRuntimeState: {
+      findUnique: vi.fn(),
+    },
+    agentOutbox: {
+      findFirst: vi.fn(),
     },
   },
+}));
+
+vi.mock("@/lib/tasks/persistent-round", () => ({
+  startPersistentRound: vi.fn(),
 }));
 
 vi.mock("@/lib/realtime/hub", () => ({
@@ -50,6 +62,7 @@ const { getActiveSubscriptionUser } = await import("@/lib/auth/middleware");
 const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-service");
+const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
 
 const runningTask = {
   id: "task-1",
@@ -65,6 +78,9 @@ const runningTask = {
 describe("/api/tasks/[taskId]/insert", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.agentOutbox.findFirst).mockResolvedValue(null);
+    vi.mocked(db.taskRuntimeState.findUnique).mockResolvedValue(null);
+    vi.mocked(db.message.findMany).mockResolvedValue([]);
     vi.mocked(getActiveSubscriptionUser).mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -241,5 +257,53 @@ describe("/api/tasks/[taskId]/insert", () => {
       message: "Only running ai_task supports message insertion",
     });
     expect(appendUserMessageToTask).not.toHaveBeenCalled();
+  });
+
+  describe("on a persistent task", () => {
+    const persistentTask = (status: string, persistent: Record<string, unknown>) => ({
+      ...runningTask,
+      status,
+      metadata: JSON.stringify({ persistent: { enabled: true, round: 2, ...persistent } }),
+    });
+    const insert = () =>
+      POST(
+        createMockRequest({
+          method: "POST",
+          url: "http://localhost:6152/api/tasks/task-1/insert",
+          body: { content: "next" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+    it("never interrupts the end-of-round summary reply", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        persistentTask("running", { roundEndedAt: "2026-09-30T00:00:00.000Z", roundEndMessageId: "msg-end" }) as any,
+      );
+
+      const response = await insert();
+
+      expect(response.status).toBe(409);
+      expect(await extractJson(response)).toMatchObject({ error: "round_summary_pending" });
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+      expect(startPersistentRound).not.toHaveBeenCalled();
+      expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["running", { roundEndedAt: "2026-09-30T00:00:00.000Z" }],
+      ["completed", {}],
+    ])("starts a new round like a send when the round is idle (%s)", async (status, persistent) => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(persistentTask(status, persistent) as any);
+      vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });
+      vi.mocked(db.message.findUniqueOrThrow).mockResolvedValue({ id: "msg-r3", content: "next", role: "user" } as any);
+
+      const response = await insert();
+
+      expect(response.status).toBe(200);
+      expect(await extractJson(response)).toMatchObject({ delivered: true, interrupted: false, round_started: true, message_id: "msg-r3" });
+      expect(startPersistentRound).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-1", content: "next" }));
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+      expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+    });
   });
 });

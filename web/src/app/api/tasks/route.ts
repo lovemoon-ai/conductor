@@ -513,6 +513,14 @@ export async function POST(request: NextRequest) {
     where: { id: projectId, userId: user.id },
   });
   if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  // Same rule as the web pickers: a task filed into a hidden project would
+  // vanish from the task list.
+  if (project.hiddenAt) {
+    return NextResponse.json(
+      { error: "Project is hidden; unhide it before creating tasks in it" },
+      { status: 409 },
+    );
+  }
   if (parentTaskId) {
     let parentTask: { id: string } | null;
     try {
@@ -643,6 +651,21 @@ export async function POST(request: NextRequest) {
   const requestedSessionId = normalizeOptionalString(
     readBodyField(normalizedBody, "session_id", "sessionId")
   );
+  if (requestedSessionId) {
+    // A session resumes into one task: the web resume panel opens the linked
+    // task instead (same match as GET /api/agents/[host]/sessions).
+    const linkedTask = await db.task.findFirst({
+      where: { sessionId: requestedSessionId, project: { userId: user.id } },
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    if (linkedTask) {
+      return NextResponse.json(
+        { error: "session_already_linked", task_id: linkedTask.id },
+        { status: 409 },
+      );
+    }
+  }
   const requestedSessionFilePath = normalizeOptionalString(
     readBodyField(normalizedBody, "session_file_path", "sessionFilePath")
   );
