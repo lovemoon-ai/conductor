@@ -359,9 +359,10 @@ describe('TasksApi', () => {
     const sent = client.postTaskMessageCalls[0];
     expect(sent.id).toBe('t1');
     expect(sent.body.content).toBe('hello there');
+    // Top-level: the server only dedupes on body.clientRequestId.
+    expect(sent.body.clientRequestId).toBe('req-1');
     expect(sent.body.metadata).toMatchObject({
       source: 'cli',
-      clientRequestId: 'req-1',
       audit: {
         actor: 'sdk',
         sdkVersion: '0.0.0-test',

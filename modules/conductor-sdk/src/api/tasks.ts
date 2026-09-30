@@ -402,14 +402,15 @@ export class TasksApi {
     if (typeof content !== 'string' || content.length === 0) {
       throw new Error('content is required');
     }
-    const userMetadata = options.clientRequestId
-      ? { clientRequestId: options.clientRequestId, ...(options.metadata ?? {}) }
-      : options.metadata;
-    const metadata = buildAuditMetadata(userMetadata, this.options);
+    const metadata = buildAuditMetadata(options.metadata, this.options);
     const body: Record<string, unknown> = {
       content,
       metadata,
     };
+    // The server dedupes on the top-level key and stamps it onto the message metadata.
+    if (options.clientRequestId) {
+      body.clientRequestId = options.clientRequestId;
+    }
     if (options.role) {
       body.role = options.role;
     }

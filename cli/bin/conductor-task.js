@@ -503,10 +503,10 @@ async function handleSend(argv, deps) {
   // SDK signature is `sendTaskMessage(taskId, content, options?)`. Earlier we
   // were passing the body object as the second arg, which caused the SDK's
   // `typeof content === 'string'` guard to throw at runtime (review B1).
-  const result = await apis.tasks.sendTaskMessage(argv.id, content, {
+  const result = await extra.retryWhileFireOwnerMissing(() => apis.tasks.sendTaskMessage(argv.id, content, {
     role: body.role,
     metadata: body.metadata,
-  });
+  }), deps);
   if (argv.json) {
     printJson(deps.stdout, result ?? { sent: true });
     return EXIT.OK;
