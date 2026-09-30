@@ -1,7 +1,8 @@
 import { TaskIngressError } from "@/lib/channel/task-ingress-service";
 import { deliverUserMessage } from "@/lib/tasks/deliver-user-message";
 import { db } from "@/lib/db";
-import { normalizeTaskStatus } from "@/lib/tasks/task-config";
+import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
+import { isPersistentTask } from "@/shared/utils/persistent-task";
 import { isMissingSecondProjectIdColumnError } from "@/lib/tasks/pty-compat";
 
 export type ScheduledMessageMode =
@@ -81,6 +82,7 @@ type ClaimedScheduledMessage = NonNullable<
     projectId: string;
     status: string;
     taskType?: string | null;
+    metadata?: string | null;
     runtimeState?: {
       replyInProgress: boolean;
       updatedAt: Date;
@@ -842,6 +844,7 @@ async function executeClaimedScheduledMessage(
           projectId: true,
           status: true,
           taskType: true,
+          metadata: true,
           runtimeState: {
             select: {
               replyInProgress: true,
@@ -867,14 +870,18 @@ async function executeClaimedScheduledMessage(
   }
 
   const taskStatus = normalizeTaskStatus(scheduled.task.status);
-  if (taskStatus !== "running") {
+  // A persistent task whose session is gone is idle, not finished: the message
+  // starts its next round (deliverUserMessage), like any other sender's.
+  const startsPersistentRound =
+    taskStatus !== "running" && isPersistentTask({ metadata: parseJsonObject(scheduled.task.metadata) });
+  if (taskStatus !== "running" && !startsPersistentRound) {
     if (scheduled.stopWhenTaskNotRunning || scheduled.kind !== "interval") {
       return completeScheduledMessage(scheduled.id, now, "task_not_running");
     }
     return skipScheduledMessage(scheduled, now, "task_not_running");
   }
 
-  if (scheduled.condition === "ai_idle") {
+  if (scheduled.condition === "ai_idle" && !startsPersistentRound) {
     if (!scheduled.task.runtimeState) {
       return skipScheduledMessage(scheduled, now, "runtime_state_unavailable");
     }
