@@ -49,6 +49,8 @@ const { summarizeDailyReportWithGlm } = await import("./glm-summarizer");
 const {
   computeNextRunAt,
   generateDailyReport,
+  getDailyReport,
+  listDailyReportRuns,
   processDueDailyReports,
   reconcileDailyReportSchedules,
   updateDailyReportSetting,
@@ -455,5 +457,43 @@ describe("daily reports", () => {
         lastError: null,
       },
     });
+  });
+
+  it("drops projects archived after a report was saved from get and list", async () => {
+    const stats = (tasksTouched: number, messages: number) => ({
+      tasksTouched, tasks_touched: tasksTouched, messages, completed: tasksTouched, running: 0, killed: 0,
+    });
+    const savedRow = {
+      id: "report-1",
+      userId: "user-1",
+      reportDate: "2026-07-01",
+      timezone: "Asia/Shanghai",
+      status: "generated",
+      summaryMarkdown: "",
+      payloadJson: JSON.stringify({
+        reportDate: "2026-07-01",
+        totals: { projects: 2, tasks: 3, messages: 5, completed: 3, running: 0, killed: 0 },
+        projects: [
+          { projectId: "p-visible", stats: stats(1, 2) },
+          { projectId: "p-archived", stats: stats(2, 3) },
+        ],
+      }),
+      deliveryChannels: JSON.stringify(["in_app"]),
+      sentAt: null,
+      lastError: null,
+      createdAt: date("2026-07-01T10:00:00.000Z"),
+      updatedAt: date("2026-07-01T10:00:00.000Z"),
+    };
+    mockProjectLookups(["p-archived"], []);
+    vi.mocked(db.dailyReportRun.findUnique).mockResolvedValue(savedRow as any);
+    vi.mocked(db.dailyReportRun.findMany).mockResolvedValue([savedRow] as any);
+
+    const report = await getDailyReport({ userId: "user-1", reportDate: "2026-07-01" });
+    const [listed] = await listDailyReportRuns({ userId: "user-1" });
+
+    for (const payload of [report.payload, listed.payload]) {
+      expect(payload.projects.map((project) => project.projectId)).toEqual(["p-visible"]);
+      expect(payload.totals).toEqual({ projects: 1, tasks: 1, messages: 2, completed: 1, running: 0, killed: 0 });
+    }
   });
 });

@@ -31,6 +31,24 @@ describe('BackendApiClient', () => {
     expect(projects[0].name).toBe('Demo');
   });
 
+  test('ProjectSummary.asObject keeps REST-only fields without serializing them', () => {
+    const summary = ProjectSummary.fromJSON({
+      id: 'p1',
+      name: 'Demo',
+      hidden: true,
+      mergeOptOut: true,
+      gitRemoteUrl: 'github.com/o/r',
+    });
+    expect(summary.asObject()).toMatchObject({
+      id: 'p1',
+      name: 'Demo',
+      hidden: true,
+      mergeOptOut: true,
+      gitRemoteUrl: 'github.com/o/r',
+    });
+    expect(JSON.parse(JSON.stringify(summary)).hidden).toBeUndefined();
+  });
+
   test('listProjects handles HTTP errors', async () => {
     const fetchImpl: FetchFn = async () => new Response('boom', { status: 500 });
     const client = new BackendApiClient(makeConfig(), { fetchImpl });

@@ -56,6 +56,8 @@ export class FakeBackendApi {
       hidden: record.hidden ?? false,
       hiddenAt: record.hiddenAt ?? null,
       metadata: record.metadata ?? null,
+      gitRemoteUrl: record.gitRemoteUrl ?? null,
+      mergeOptOut: record.mergeOptOut ?? false,
     });
     return summary;
   }

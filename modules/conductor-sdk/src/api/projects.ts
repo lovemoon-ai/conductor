@@ -129,6 +129,8 @@ export interface CreateProjectInput {
   name?: string;
   workspacePath?: string;
   daemonHost?: string;
+  /** Ask the daemon to mkdir `workspacePath` when it does not exist yet. */
+  createWorkspaceIfMissing?: boolean;
   isDefault?: boolean;
   clientRequestId?: string;
   metadata?: Record<string, unknown>;
@@ -215,6 +217,9 @@ export class ProjectsApi {
       }
       if (input.daemonHost) {
         params.daemonHost = input.daemonHost;
+      }
+      if (input.createWorkspaceIfMissing) {
+        params.createWorkspaceIfMissing = true;
       }
     }
     params.metadata = metadata;

@@ -4,6 +4,7 @@ import { getActiveSubscriptionUser } from '@/lib/auth/middleware';
 import { db } from '@/lib/db';
 import { realtimeHub } from '@/lib/realtime/hub';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
+import { findSharedGuestHosts } from '@/lib/tasks/global-backend';
 import {
   DaemonShareCapExceededError,
   MAX_SHARES_PER_DAEMON,
@@ -91,6 +92,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: `Daemon ${daemonHost} is offline` },
       { status: 409 },
+    );
+  }
+  // A guest daemon connects as the grantee, so it passes the check above; but
+  // it is someone else's machine and only its owner may lend it.
+  if ((await findSharedGuestHosts(user.id, [daemonHost])).has(daemonHost)) {
+    return NextResponse.json(
+      { error: 'You cannot lend on a daemon lent to you' },
+      { status: 400 },
     );
   }
 

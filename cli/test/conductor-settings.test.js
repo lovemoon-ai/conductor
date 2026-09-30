@@ -96,6 +96,19 @@ describe("conductor settings global-backends", () => {
     assert.deepEqual(calls[1].body, { backends: [] });
   });
 
+  it("remove and add match the server's normalization (trimmed host, lowercase backend)", async () => {
+    const routes = {
+      [`GET ${P}/global-ai-backends`]: current,
+      [`PUT ${P}/global-ai-backends`]: (call) => call.body,
+    };
+    const rm = await runWithFetch(main, ["global-backends", "remove", " macmini ", "Claude"], routes);
+    assert.equal(rm.code, 0, rm.err);
+    assert.deepEqual(rm.calls[1].body, { backends: [] });
+    const add = await runWithFetch(main, ["global-backends", "add", "macmini", "CLAUDE"], routes);
+    assert.equal(add.code, 0, add.err);
+    assert.deepEqual(add.calls.map((c) => c.method), ["GET"]);
+  });
+
   it("remove of an unknown pair exits 4 without writing", async () => {
     const { code, calls } = await runWithFetch(main, ["global-backends", "remove", "x", "y"], {
       [`GET ${P}/global-ai-backends`]: current,
