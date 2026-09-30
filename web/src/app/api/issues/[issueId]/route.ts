@@ -361,6 +361,15 @@ export async function PATCH(
   }
   const agentGroup = agentsParse?.agents ?? null;
   const existingMetadata = parseIssueMetadata(existing.metadata);
+  // What the client itself asked for, before merging in stored keys.
+  const requestedMetadata = input.metadata ?? null;
+  // Shallow-merge a metadata patch over the stored object so a writer that
+  // only knows a few keys (CLI/SDK audit, backendType) can't wipe the rest —
+  // backendType, daemonHost, qa.evidence, clientRequestId. `null` still clears.
+  // The web start dialog already sends the full merged object: same result.
+  if (input.metadata) {
+    input.metadata = { ...(existingMetadata ?? {}), ...input.metadata };
+  }
   const nextMetadata = input.metadata !== undefined ? input.metadata : existingMetadata;
   const requestedBackendType = normalizeBackendType(nextMetadata?.backendType);
   // The doing dialog passes the user-selected daemon through metadata so the
@@ -525,12 +534,15 @@ export async function PATCH(
     : nextStatus !== currentStatus || projectChanged
       ? await getNextIssuePosition(nextProjectId, nextStatus)
       : existing.position;
-  const shouldEnterDoing = currentStatus !== 'doing' && nextStatus === 'doing';
 
   let activeTask: Parameters<typeof serializeTaskResponse>[0] | null =
     activeTaskByIssueId.get(existing.id) ?? null;
   let linkedTask: Parameters<typeof serializeTaskResponse>[0] | null =
     linkedTaskByIssueId.get(existing.id) ?? activeTask;
+  // A doing issue with no task at all (e.g. its task was deleted) is stuck:
+  // only entering doing spawns one. An explicit `status: doing` starts it.
+  const isTasklessDoing = currentStatus === 'doing' && input.status === 'doing' && !linkedTask;
+  const shouldEnterDoing = (currentStatus !== 'doing' && nextStatus === 'doing') || isTasklessDoing;
   const shouldManageLocalTask = nextOwnerUserId === user.id;
   const shouldRestartLinkedTask = shouldManageLocalTask && shouldEnterDoing && !activeTask && Boolean(linkedTask);
   const shouldSpawnTask = shouldManageLocalTask && shouldEnterDoing && !activeTask && !linkedTask;
@@ -913,6 +925,24 @@ export async function PATCH(
       return NextResponse.json({ error: restartPlanResult.error }, { status: restartPlanResult.status });
     }
     restartPlan = restartPlanResult.plan;
+    // A restart keeps the linked task's backend and daemon; refuse an explicit
+    // different choice (the web never sends one here) instead of ignoring it.
+    const requestedRestartBackend = normalizeBackendType(requestedMetadata?.backendType);
+    if (requestedRestartBackend && requestedRestartBackend !== restartPlan.sourceBackend) {
+      return NextResponse.json(
+        { error: `This issue already has a linked task on backend ${restartPlan.sourceBackend}; it cannot be restarted on ${requestedRestartBackend}` },
+        { status: 409 },
+      );
+    }
+    // For a global-backend task the remembered daemon is the code's daemon.
+    const restartDaemon = daemonHint ?? restartPlan.restartAgentHost;
+    const requestedRestartDaemon = normalizeOptionalString(requestedMetadata?.daemonHost);
+    if (requestedRestartDaemon && requestedRestartDaemon !== restartDaemon) {
+      return NextResponse.json(
+        { error: `This issue already has a linked task on daemon ${restartDaemon}; it cannot be restarted on ${requestedRestartDaemon}` },
+        { status: 409 },
+      );
+    }
   }
 
   if (shouldKillActiveTask && activeTask) {
@@ -1087,7 +1117,11 @@ export async function PATCH(
         },
       });
 
-      if (claimed.count === 0) {
+      // A taskless doing issue is already `doing`, so the status claim can't
+      // serialize two concurrent starts; a task appearing meanwhile does.
+      const lostTasklessRace = isTasklessDoing
+        && (await tx.task.count({ where: { issueId: existing.id } })) > 0;
+      if (claimed.count === 0 || lostTasklessRace) {
         const updatedIssue = await tx.issue.update(effectiveIssueUpdateArgs);
         return {
           createdTask: null,

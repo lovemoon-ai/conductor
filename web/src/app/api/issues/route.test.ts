@@ -275,6 +275,33 @@ describe('/api/issues', () => {
     expect(response.status).toBe(400);
   });
 
+  it('filters by a comma-separated status list, mapping legacy aliases to stored values', async () => {
+    vi.mocked(db.issue.findMany).mockResolvedValue([] as any);
+
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_ids=project-1,project-2&status=backlog,doing',
+    }));
+
+    expect(response.status).toBe(200);
+    expect(db.issue.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        projectId: { in: ['project-1', 'project-2'] },
+        status: { in: ['todo', 'backlog', 'doing', 'review'] },
+      }),
+    }));
+  });
+
+  it('rejects an unknown status filter', async () => {
+    const response = await GET(createMockRequest({
+      method: 'GET',
+      url: 'http://localhost:6152/api/issues?project_id=project-1&status=todo,blocked',
+    }));
+    expect(response.status).toBe(400);
+    expect((await extractJson(response)).error).toMatch(/todo, doing, done/);
+    expect(db.issue.findMany).not.toHaveBeenCalled();
+  });
+
   it('lists issues from all user projects when project_id is missing', async () => {
     vi.mocked(db.issue.findMany).mockResolvedValue([
       {
@@ -517,6 +544,17 @@ describe('/api/issues', () => {
         position: 0,
       }),
     }));
+  });
+
+  it('rejects creating an issue directly in doing (it would never get a task)', async () => {
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      body: { projectId: 'project-1', title: 'Straight to doing', status: 'doing' },
+    }));
+
+    expect(response.status).toBe(400);
+    expect((await extractJson(response)).error).toMatch(/create it as todo, then start it/);
+    expect(db.issue.create).not.toHaveBeenCalled();
   });
 
   it('rejects creation with an actionable 409 when a post-original issues column is missing', async () => {

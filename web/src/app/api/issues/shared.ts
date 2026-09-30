@@ -267,6 +267,16 @@ const issuePrioritySchema = z.enum(ISSUE_PRIORITIES);
 const issueTypeSchema = z.enum(ISSUE_TYPES);
 const issueMetadataSchema = z.record(z.string(), z.unknown());
 
+/** `GET /api/issues?status=todo,doing` — comma-separated, legacy aliases (backlog, review) accepted. */
+export const issueStatusFilterSchema = z
+  .string()
+  .transform((value) => value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => coerceIssueStatus(entry) ?? entry))
+  .pipe(z.array(issueStatusSchema).min(1));
+
 export const issueCreateSchema = z.object({
   projectId: z.string().min(1),
   ownerUserId: z.string().min(1).optional(),

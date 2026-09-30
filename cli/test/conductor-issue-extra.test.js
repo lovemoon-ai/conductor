@@ -5,7 +5,7 @@ import { main } from "../bin/conductor-issue.js";
 import { runWithFetch } from "./helpers/fake-fetch.js";
 
 const ISSUES = [
-  { id: "i1", projectId: "p1", title: "One", status: "backlog", priority: "P1" },
+  { id: "i1", projectId: "p1", title: "One", status: "todo", priority: "P1" },
   { id: "i2", projectId: "p2", projectName: "beta", title: "Two", status: "doing", priority: "P2" },
   { id: "i3", projectId: "p2", title: "Three", status: "done" },
 ];
@@ -71,15 +71,15 @@ describe("conductor issue list across projects", () => {
     assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i1", "i2", "i3"]);
   });
 
-  it("--project-ids sends project_ids (deduped) and filters status/limit client-side", async () => {
+  it("--project-ids sends project_ids (deduped) + status to the server, limits client-side", async () => {
     const r = await runWithFetch(
       main,
-      ["list", "--project-ids", "p1, p2,p1", "--status", "backlog,doing", "--limit", "1", "--json"],
-      { "GET /api/issues": () => ISSUES },
+      ["list", "--project-ids", "p1, p2,p1", "--status", "doing,done", "--limit", "1", "--json"],
+      { "GET /api/issues": (call) => ISSUES.filter((i) => call.query.status.split(",").includes(i.status)) },
     );
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(r.calls[0].query, { project_ids: "p1,p2" });
-    assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i1"]);
+    assert.deepEqual(r.calls[0].query, { project_ids: "p1,p2", status: "doing,done" });
+    assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i2"]);
   });
 
   it("--json uses the same normalized shape as single-project list", async () => {
@@ -107,7 +107,7 @@ describe("conductor issue list across projects", () => {
     const r = await runWithFetch(main, ["list", "--all-projects"], { "GET /api/issues": () => ISSUES });
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /ID\s+PROJECT\s+STATUS\s+PRIO\s+TITLE/);
-    assert.match(r.out, /i1\s+p1\s+backlog\s+P1\s+One/);
+    assert.match(r.out, /i1\s+p1\s+todo\s+P1\s+One/);
     assert.match(r.out, /i2\s+beta\s+doing/);
   });
 

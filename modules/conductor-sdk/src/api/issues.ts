@@ -92,6 +92,8 @@ export interface CreateIssueInput {
 }
 
 export interface UpdateIssueInput {
+  /** Re-parent the issue (e.g. onto a merged-group sibling when starting it). */
+  projectId?: string;
   title?: string;
   description?: string;
   priority?: string;
@@ -123,9 +125,8 @@ export class IssuesApi {
     if (!input.projectId) {
       throw new Error('projectId is required');
     }
-    // The server `/api/issues` route accepts a single `status` query string;
-    // it doesn't (yet) parse comma-separated lists, so we filter on the
-    // client side for the multi-status case to match RFC 0025 §3 wording.
+    // The server filters on a comma-separated `status` (and maps legacy
+    // aliases such as `backlog` → `todo`), so pass the list straight through.
     const statusFilter = Array.isArray(input.status)
       ? input.status.map((value) => String(value).trim()).filter(Boolean)
       : input.status
@@ -133,13 +134,9 @@ export class IssuesApi {
         : [];
     const issues = await this.client.listIssues({
       projectId: input.projectId,
-      status: statusFilter.length === 1 ? statusFilter[0] : undefined,
+      status: statusFilter.length > 0 ? statusFilter.join(',') : undefined,
     });
     let normalized = issues.map((entry) => normalizeIssue(entry));
-    if (statusFilter.length > 1) {
-      const statusSet = new Set(statusFilter);
-      normalized = normalized.filter((issue) => statusSet.has(issue.status));
-    }
     if (typeof input.limit === 'number' && Number.isFinite(input.limit)) {
       normalized = normalized.slice(0, Math.max(0, Math.floor(input.limit)));
     }
@@ -193,6 +190,9 @@ export class IssuesApi {
       throw new Error('issueId is required');
     }
     const params: Record<string, unknown> = {};
+    if (patch.projectId !== undefined) {
+      params.projectId = patch.projectId;
+    }
     if (patch.title !== undefined) {
       params.title = patch.title;
     }
@@ -234,8 +234,8 @@ export class IssuesApi {
       });
     }
     // Pull the existing metadata so we can merge `qa.evidence` without
-    // clobbering unrelated keys. The PATCH body fully replaces metadata, so
-    // we have to round-trip the current state (matches RFC 0025 §3 wording
+    // clobbering sibling `qa.*` keys. The PATCH route only shallow-merges
+    // metadata, so we have to round-trip the current state (matches RFC 0025 §3 wording
     // for `done --evidence`).
     const existing = await this.getIssue(issueId);
     const existingMetadata =

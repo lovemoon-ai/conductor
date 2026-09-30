@@ -27,7 +27,8 @@ class FakeApiClient {
       result = result.filter((issue) => issue.projectId === params.projectId);
     }
     if (params.status) {
-      result = result.filter((issue) => issue.status === params.status);
+      const statuses = String(params.status).split(',');
+      result = result.filter((issue) => statuses.includes(issue.status));
     }
     return result.map((issue) => ({ ...issue }));
   }
@@ -104,7 +105,7 @@ describe('IssuesApi', () => {
     expect(client.listCalls[0]).toMatchObject({ projectId: 'p1', status: 'doing' });
   });
 
-  test('listIssues with multi-status filters client-side', async () => {
+  test('listIssues sends a multi-status filter to the server comma-separated', async () => {
     const { client, api } = makeApi([
       { id: 'i1', projectId: 'p1', title: 'A', status: 'todo' },
       { id: 'i2', projectId: 'p1', title: 'B', status: 'doing' },
@@ -112,8 +113,8 @@ describe('IssuesApi', () => {
     ]);
     const issues = await api.listIssues({ projectId: 'p1', status: ['todo', 'doing'] });
     expect(issues.map((issue) => issue.id).sort()).toEqual(['i1', 'i2']);
-    // Multi-status doesn't push the filter to the server.
-    expect(client.listCalls[0].status).toBeUndefined();
+    // The server does the filtering (and maps aliases like backlog → todo).
+    expect(client.listCalls[0].status).toBe('todo,doing');
   });
 
   test('listIssues respects limit', async () => {
@@ -206,6 +207,18 @@ describe('IssuesApi', () => {
     expect(client.patchCalls[0].body.metadata.audit).toMatchObject({
       actor: 'sdk',
       sdkVersion: '0.0.0-test',
+    });
+  });
+
+  test('updateIssue forwards projectId (merged-group sibling move on start)', async () => {
+    const { client, api } = makeApi([
+      { id: 'i1', projectId: 'p1', title: 'A', status: 'todo' },
+    ]);
+    await api.updateIssue('i1', { status: 'doing', projectId: 'p2', metadata: { daemonHost: 'ubuntu' } });
+    expect(client.patchCalls[0].body).toMatchObject({
+      projectId: 'p2',
+      status: 'doing',
+      metadata: { daemonHost: 'ubuntu' },
     });
   });
 

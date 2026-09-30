@@ -131,14 +131,15 @@ Error: Project 42620d1b-... is on daemon '4090', not 'm1'
 ## 7. `conductor issue`
 
 ```bash
-conductor issue list [--status <s>] [--limit N]
+conductor issue list [--status todo,doing,done] [--limit N]
 conductor issue show <id>
 conductor issue create --title <t>
                       [--description <d> | --description-file FILE | --description-stdin]
-                      [--priority P1|P2|P3] [--status backlog|doing|done]
+                      [--priority P0|P1|P2] [--status todo|done]
                       [--client-request-id <key>]
 conductor issue update <id> [--title ...] [--description ...] [--priority ...] [--status ...]
-conductor issue start <id>             # 等价 update --status doing
+conductor issue start <id> [--backend <b> | --global-backend <b>@<host>]
+                           [--daemon <host>] [--project <id>]   # 等价 update --status doing
 conductor issue done  <id> [--evidence <text>|@FILE]
 ```
 
@@ -147,7 +148,9 @@ conductor issue done  <id> [--evidence <text>|@FILE]
 - `--description` / `--description-file` / `--description-stdin` 三选一。
 - `--client-request-id <key>`：**幂等键**。同 `(userId, projectId, clientRequestId)` 重复 POST 直接返回旧记录（200），不创建副本，也不重发 WebSocket 广播。AI 批量建 issue 时强烈建议传，例：`--client-request-id "chat-2026-05-09-issue-3"`。
 - `update`：多字段 patch 走 `PATCH /api/issues/{id}`；只有当带 `--evidence` 时走 `updateIssueStatus` 流程（SDK 先 GET 现状、merge 后再 PATCH，避免清空已有 metadata）。
-- `start` / `done` 是 `update --status doing/done` 的 alias。
+- `start` / `done` 是 `update --status doing/done` 的 alias。不能直接 `create --status doing`（不会起 task）：先 create 再 start。
+- `start --daemon <host>`：与 web「Move to doing」弹窗一致，选 task 运行的 daemon；跨 daemon 合并组里会自动切到该 daemon 上的同名项目（或用 `--project <id>` 指定）。已有关联 task 时是原地重启，换 backend/daemon 会被 409 拒绝。
+- metadata 由服务端浅合并，CLI 写入不会清掉已有的 `backendType` / `daemonHost` / `qa.evidence` 等键。
 - `done --evidence "<text>"` 或 `--evidence @qa-report.md`，证据写入 `metadata.qa.evidence`。
 - 状态联动（服务端行为）：
   - PATCH 到 `doing` 自动起 task
