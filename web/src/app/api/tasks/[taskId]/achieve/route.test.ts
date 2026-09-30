@@ -221,6 +221,14 @@ describe("POST /api/tasks/[taskId]/achieve", () => {
     }
   });
 
+  it("rejects packing a PTY task, which could never be un-packed", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ ...achievableTask, taskType: "pty_task" } as any);
+    const res = await callAchieve();
+    expect(res.status).toBe(409);
+    expect((await extractJson(res)).error).toBe("Only ai_task can be packed");
+    expect(teardownTaskRuntime).not.toHaveBeenCalled();
+  });
+
   it("returns 404 for an unknown task", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(null);
     const res = await callAchieve("missing");

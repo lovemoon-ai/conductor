@@ -111,6 +111,20 @@ describe("PUT /api/tasks/[taskId]/second-project", () => {
     );
   });
 
+  it("rejects moving a task into a hidden project", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({ ...baseTaskRow } as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: TARGET_PROJECT_ID,
+      userId: "user-1",
+      hiddenAt: new Date("2026-01-03T00:00:00.000Z"),
+    } as any);
+
+    const response = await callPut({ second_project_id: TARGET_PROJECT_ID });
+    expect(response.status).toBe(409);
+    expect((await extractJson(response)).error).toMatch(/unhide it/);
+    expect(vi.mocked(db.task.update)).not.toHaveBeenCalled();
+  });
+
   it("moves a task back to default when second_project_id is null", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       ...baseTaskRow,
