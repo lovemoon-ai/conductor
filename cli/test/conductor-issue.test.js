@@ -198,6 +198,8 @@ describe("conductor issue update path picks the right SDK call", () => {
     assert.ok(patch);
     assert.equal(patch.body.status, "doing");
     assert.equal(patch.body.metadata.audit.actor, "cli");
+    // A pure status request: the server only (re)starts a taskless doing issue without `position`.
+    assert.equal(patch.body.position, undefined);
   });
 
   it("start --global-backend sends globalBackend and its backend type", async () => {
@@ -328,6 +330,21 @@ describe("conductor issue start target daemon", () => {
     assert.equal(code, 0, stderr.collect());
     assert.equal(backend.calls.find((c) => c.method === "patchIssue").body.projectId, "proj-ubu");
   });
+
+  it("--daemon on another member's shared project leaves the check to the server", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    // The issue's project belongs to a collaborator, so it is not in our project list.
+    const backend = new FakeBackendApi({
+      projects: mergedProjects,
+      issues: [{ id: "issue-d5", projectId: "proj-theirs", title: "T", status: "todo", priority: "P1" }],
+    });
+    const code = await main(["start", "issue-d5", "--daemon", "ubuntu"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    const patch = backend.calls.find((c) => c.method === "patchIssue");
+    assert.equal(patch.body.projectId, undefined);
+    assert.equal(patch.body.metadata.daemonHost, "ubuntu");
+  });
 });
 
 describe("conductor issue choices match the server", () => {
@@ -387,6 +404,23 @@ describe("conductor issue list --status", () => {
     const code = await main(["list", "--status", "doing", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
     assert.equal(code, 0, stderr.collect());
     assert.equal(backend.calls.find((c) => c.method === "listIssues").params.status, "doing");
+    assert.deepEqual(JSON.parse(stdout.collect().trim()).map((i) => i.id), ["i2"]);
+  });
+
+  it("still filters when an older server ignores status", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      issues: [
+        { id: "i1", projectId: "proj-1", title: "A", status: "todo", priority: "P1" },
+        { id: "i2", projectId: "proj-1", title: "B", status: "doing", priority: "P1" },
+      ],
+    });
+    const listIssues = backend.listIssues.bind(backend);
+    backend.listIssues = (params) => listIssues({ ...params, status: undefined });
+    const code = await main(["list", "--status", "doing", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
     assert.deepEqual(JSON.parse(stdout.collect().trim()).map((i) => i.id), ["i2"]);
   });
 });

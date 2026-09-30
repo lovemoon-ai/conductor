@@ -117,6 +117,27 @@ describe('IssuesApi', () => {
     expect(client.listCalls[0].status).toBe('todo,doing');
   });
 
+  test('listIssues filters client-side when an older server ignores status', async () => {
+    const { client, api } = makeApi([
+      { id: 'i1', projectId: 'p1', title: 'A', status: 'todo' },
+      { id: 'i2', projectId: 'p1', title: 'B', status: 'doing' },
+      { id: 'i3', projectId: 'p1', title: 'C', status: 'done' },
+    ]);
+    client.listIssues = async (params: any) => {
+      client.listCalls.push(params);
+      return client.issues.map((issue) => ({ ...issue }));
+    };
+    const issues = await api.listIssues({ projectId: 'p1', status: ['backlog', 'review'] });
+    expect(client.listCalls[0].status).toBe('backlog,review');
+    expect(issues.map((issue) => issue.id)).toEqual(['i1', 'i2']);
+  });
+
+  test('updateIssueStatus sends no board position (a pure status request)', async () => {
+    const { client, api } = makeApi([{ id: 'i1', projectId: 'p1', title: 'A', status: 'doing' }]);
+    await api.updateIssueStatus('i1', 'doing');
+    expect(client.patchCalls[0].body).not.toHaveProperty('position');
+  });
+
   test('listIssues respects limit', async () => {
     const { api } = makeApi([
       { id: 'i1', projectId: 'p1', title: 'A', status: 'todo' },
