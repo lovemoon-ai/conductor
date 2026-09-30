@@ -18,6 +18,14 @@ One server helper, `deliverUserMessage` in
 summary is pending. IM users get the rejection text as a reply instead of a
 webhook 500.
 
+The scheduler only lets a not-running persistent task through to start a round
+when its status is round-idle (`ROUND_IDLE_STATUSES`: completed/killed/unknown)
+and the schedule does not have `stopWhenTaskNotRunning`. `init` and `killing`
+keep the old not-running handling. If the round cannot start or no fire takes
+the message (`ROUND_START_FAILED`, `TASK_MISSING_ACTIVE_FIRE_OWNER`,
+`TASK_NOT_RUNNING`), the run is treated as `task_not_running`: an interval
+skips and a one-shot completes. It is not counted as a failure.
+
 ## How to avoid next time
 Put a product rule in one function and route every entry point through it. Grep
 for direct calls to the low-level primitive.

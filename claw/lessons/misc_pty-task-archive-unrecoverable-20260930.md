@@ -10,7 +10,7 @@
 
 ## Fix
 
-The achieve route now returns 409 "Only ai_task can be packed" for non-AI tasks, matching `unachieve`.
+The achieve route now returns 409 "Only ai_task can be packed" for non-AI tasks, matching `unachieve`. The web's batch archive (select → Archive) archives only the AI tasks in the selection. It lists the terminal tasks as skipped, so one PTY task in a select-all no longer blocks the action. The button stays disabled only when every selected task is a terminal.
 
 ## How to avoid
 

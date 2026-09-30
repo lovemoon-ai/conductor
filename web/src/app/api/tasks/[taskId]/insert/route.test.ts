@@ -305,5 +305,40 @@ describe("/api/tasks/[taskId]/insert", () => {
       expect(appendUserMessageToTask).not.toHaveBeenCalled();
       expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
     });
+
+    const insertWithId = () =>
+      POST(
+        createMockRequest({
+          method: "POST",
+          url: "http://localhost:6152/api/tasks/task-1/insert",
+          body: { content: "next", client_message_id: "cm-1" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+    it("stores its client_message_id on the round's first message", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(persistentTask("completed", {}) as any);
+      vi.mocked(db.message.findFirst).mockResolvedValue(null);
+      vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });
+      vi.mocked(db.message.findUniqueOrThrow).mockResolvedValue({ id: "msg-r3", content: "next", role: "user" } as any);
+
+      expect((await insertWithId()).status).toBe(200);
+      expect(startPersistentRound).toHaveBeenCalledWith(expect.objectContaining({ clientMessageId: "cm-1" }));
+    });
+
+    it("returns the stored message on a retry after the round started, instead of task_not_running", async () => {
+      // The first attempt started round 3; the task is now `init`.
+      vi.mocked(db.task.findFirst).mockResolvedValue(persistentTask("init", { round: 3 }) as any);
+      vi.mocked(db.message.findFirst).mockResolvedValue({ id: "msg-r3", content: "next", role: "user" } as any);
+
+      const response = await insertWithId();
+
+      expect(response.status).toBe(200);
+      expect(await extractJson(response)).toMatchObject({ delivered: true, message_id: "msg-r3" });
+      expect(db.message.findFirst).toHaveBeenCalledWith({ where: { taskId: "task-1", clientMessageId: "cm-1" } });
+      expect(startPersistentRound).not.toHaveBeenCalled();
+      expect(appendUserMessageToTask).not.toHaveBeenCalled();
+      expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+    });
   });
 });

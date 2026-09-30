@@ -11,7 +11,11 @@ import { resolveFireTaskRouting } from "@/lib/tasks/fire-routing";
 import { normalizeTaskStatus, normalizeOptionalString } from "@/lib/tasks/task-config";
 import { buildMessageResponse } from "@/shared/utils/message-attachments";
 import { stripTopLevelAuditKeys } from "@/lib/audit/metadata";
-import { assertNoSessionRefreshPending, startRoundIfPersistentIdle } from "@/lib/tasks/deliver-user-message";
+import {
+  assertNoSessionRefreshPending,
+  findRetriedMessage,
+  startRoundIfPersistentIdle,
+} from "@/lib/tasks/deliver-user-message";
 
 const INSERT_ACK_TIMEOUT_MS = 2500;
 
@@ -86,6 +90,18 @@ export async function POST(
       { status: 409 },
     );
   }
+  // A retry of an insert that already went through (possibly starting a
+  // round, so the task is no longer running) returns the stored message.
+  const retried = await findRetriedMessage(taskId, clientMessageId);
+  if (retried) {
+    return NextResponse.json({
+      delivered: true,
+      interrupted: false,
+      task_id: taskId,
+      message_id: retried.id,
+      message: buildMessageResponse(retried),
+    });
+  }
   // A persistent task never interrupts its end-of-round summary; an idle
   // round is started by the inserted message, like a normal send.
   try {
@@ -94,6 +110,7 @@ export async function POST(
       task,
       content,
       metadata: callerMetadata,
+      clientMessageId,
     });
     if (roundMessage) {
       return NextResponse.json({

@@ -24,3 +24,10 @@ The CLI can now do what the web app can:
 
 Fix: `conductor project hide/unhide` (and the SDK's `setProjectHidden`) no longer erase
 the project's metadata (task labels, memos, binding data).
+
+On a cross-daemon merged project, `project hide/unhide`, `delete` and
+`update --merge-opt-out` act on every daemon, like the web. `hide/unhide --json`
+still prints the target project, plus `ids` for every project changed.
+`delete --daemon-host <h>` deletes only that copy; a group delete stops at the
+first failure and says which ids were deleted. `update --merge-opt-out` lists the
+same-name projects it also split or re-merged.

@@ -10,7 +10,7 @@
 
 ## Fix
 
-Without `--project`, the CLI now reads `GET /api/agents/<host>/sessions?backends=<backend>` and uses the session's `project_id`. It falls back to the default project, as the web does. `--project` still overrides.
+Without `--project`, the CLI now reads `GET /api/agents/<host>/sessions?backends=<backend>&limit=200` and uses the session's `project_id`. The route has no session-id filter, and 200 is its maximum page. When the session is listed without a `project_id`, the CLI uses the default project, as the web does. Sometimes the list is unavailable: an older daemon returns 409 and an offline daemon returns 404. Sometimes the session is not in the list. In those cases the CLI falls back to the old cwd/`CONDUCTOR_PROJECT_ID` resolution and prints a warning. It does not silently pick the default project. `--project` still overrides.
 
 ## How to avoid
 

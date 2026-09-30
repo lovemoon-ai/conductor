@@ -25,7 +25,8 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-vi.mock("@/lib/tasks/deliver-user-message", () => ({
+vi.mock("@/lib/tasks/deliver-user-message", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tasks/deliver-user-message")>()),
   deliverUserMessage: vi.fn(),
 }));
 
@@ -293,26 +294,78 @@ describe("scheduled messages", () => {
     });
   });
 
+  const persistentTask = (status: string) => ({
+    id: "task-1",
+    projectId: "proj-1",
+    status,
+    taskType: "ai_task",
+    metadata: JSON.stringify({ persistent: { enabled: true, round: 1 } }),
+    runtimeState: null,
+  });
+
   it("delivers to a stopped persistent task so the message starts its next round", async () => {
-    const due = makeScheduledRow();
+    const due = makeScheduledRow({ stopWhenTaskNotRunning: false });
     vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
     vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({
       ...due,
       condition: "ai_idle",
-      task: {
-        id: "task-1",
-        projectId: "proj-1",
-        status: "completed",
-        taskType: "ai_task",
-        metadata: JSON.stringify({ persistent: { enabled: true, round: 1 } }),
-        runtimeState: null,
-      },
+      task: persistentTask("completed"),
     } as any);
 
     const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
 
     expect(stats).toMatchObject({ claimed: 1, sent: 1 });
     expect(deliverUserMessage).toHaveBeenCalledWith(expect.objectContaining({ taskId: "task-1", role: "user" }));
+  });
+
+  it.each(["init", "killing"])("skips a persistent task in %s like any not-running task", async (status) => {
+    const due = makeScheduledRow({ stopWhenTaskNotRunning: false });
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({ ...due, task: persistentTask(status) } as any);
+
+    const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(stats).toMatchObject({ claimed: 1, skipped: 1, failed: 0 });
+    expect(deliverUserMessage).not.toHaveBeenCalled();
+    expect(db.scheduledMessage.update).toHaveBeenCalledWith({
+      where: { id: "sched-1" },
+      data: expect.objectContaining({ status: "active", lastError: "task_not_running" }),
+    });
+  });
+
+  it("does not revive a stopped persistent task when the schedule stops with the task", async () => {
+    const due = makeScheduledRow({ stopWhenTaskNotRunning: true });
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({ ...due, task: persistentTask("killed") } as any);
+
+    const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(stats).toMatchObject({ claimed: 1, completed: 1 });
+    expect(deliverUserMessage).not.toHaveBeenCalled();
+    expect(db.scheduledMessage.update).toHaveBeenCalledWith({
+      where: { id: "sched-1" },
+      data: expect.objectContaining({ status: "completed", lastError: "task_not_running" }),
+    });
+  });
+
+  it.each([
+    ["interval", "active", "skipped"],
+    ["once_delay", "completed", "completed"],
+  ])("treats a failed round start (daemon offline) as task_not_running for a %s schedule", async (kind, status, stat) => {
+    const due = makeScheduledRow({ kind, stopWhenTaskNotRunning: false });
+    vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
+    vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({ ...due, task: persistentTask("completed") } as any);
+    vi.mocked(deliverUserMessage).mockRejectedValueOnce(
+      new TaskIngressError("ROUND_START_FAILED", 409, "Daemon mac is offline"),
+    );
+
+    const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
+
+    expect(stats).toMatchObject({ claimed: 1, [stat]: 1, failed: 0 });
+    expect(db.scheduledMessage.update).toHaveBeenCalledWith({
+      where: { id: "sched-1" },
+      data: expect.objectContaining({ status, lastError: "task_not_running" }),
+    });
   });
 
   it("still stops a schedule on a stopped non-persistent task", async () => {

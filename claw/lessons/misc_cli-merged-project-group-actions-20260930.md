@@ -12,8 +12,9 @@
 
 ## Fix
 - The CLI now copies the web's grouping logic: `computeProjectGroups` over visible projects (all projects when the target is hidden), plus `expandMergedProjectGroup` for labels.
-  - hide/unhide/delete act on every group member.
-  - `--merge-opt-out true` opts out every member; `false` clears the flag on every same-name project on another daemon.
+  - hide/unhide/delete act on every group member. `hide/unhide --json` prints the target project plus `ids` of every member changed.
+  - `delete --daemon-host <h>` deletes only that copy. A group delete has no rollback, so it stops at the first failure and reports the deleted and remaining ids.
+  - `--merge-opt-out true` opts out every member; `false` clears the flag on every same-name project on another daemon. The output lists those peers.
   - The `delete` confirmation message now says that tasks filed under other projects are also deleted.
 - `ProjectSummary` now keeps the server payload in a WeakMap, so `asObject()` keeps the REST-only fields.
 

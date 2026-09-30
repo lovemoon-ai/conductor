@@ -452,12 +452,14 @@ function TaskListComponent({
   const selectionMode = selectedCount > 0 || batchProgress !== null;
   const hasToolbarContent = viewMode === 'list' && selectionMode;
   const allSelected = allTaskIds.length > 0 && selectedCount === allTaskIds.length;
-  const selectedTasksAreArchivable = useMemo(
-    () => [...selectedTaskIdSet].every(
+  // Only AI tasks can be archived; terminal tasks in the selection are skipped.
+  const archivableSelectedTaskIds = useMemo(
+    () => [...selectedTaskIdSet].filter(
       (taskId) => (visibleTaskById.get(taskId)?.taskType ?? 'ai_task') === 'ai_task',
     ),
     [selectedTaskIdSet, visibleTaskById],
   );
+  const selectedTasksAreArchivable = archivableSelectedTaskIds.length > 0;
   const selectionActionBusy = isArchivingSelected || isDeletingSelected;
 
   useEffect(() => (
@@ -733,12 +735,16 @@ function TaskListComponent({
     ) {
       return;
     }
-    const taskIds = [...selectedTaskIdSet];
+    const taskIds = archivableSelectedTaskIds;
+    const skippedCount = selectedTaskIdSet.size - taskIds.length;
+    const skippedNote = skippedCount > 0
+      ? ` ${skippedCount} terminal ${skippedCount === 1 ? 'task' : 'tasks'} will be skipped (only AI tasks can be archived).`
+      : '';
     const taskNoun = taskIds.length === 1 ? 'task' : 'tasks';
     const accepted = await confirm({
       title: `Archive ${taskIds.length} selected ${taskNoun}?`,
       description:
-        'Their live sessions will be closed, but their chat histories will remain searchable in Settings → Achieved tasks.',
+        `Their live sessions will be closed, but their chat histories will remain searchable in Settings → Achieved tasks.${skippedNote}`,
       confirmLabel: 'Archive',
     });
     if (!accepted) {
@@ -780,7 +786,9 @@ function TaskListComponent({
 
       pushToast({
         title: `${taskIds.length} ${taskNoun} archived`,
-        description: 'Their chat histories are available in Settings → Achieved tasks.',
+        description: `Their chat histories are available in Settings → Achieved tasks.${
+          skippedCount > 0 ? ` ${skippedCount} terminal ${skippedCount === 1 ? 'task was' : 'tasks were'} skipped.` : ''
+        }`,
         variant: 'success',
       });
     } finally {

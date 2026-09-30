@@ -448,7 +448,7 @@ describe('TaskList', () => {
     }
   });
 
-  it('disables batch archive when the selection includes a PTY task', () => {
+  it('archives the AI tasks of a mixed selection and skips the PTY task', async () => {
     tasksState = {
       ...tasksState,
       currentProjectFilter: null,
@@ -464,12 +464,45 @@ describe('TaskList', () => {
       ],
     };
 
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+
+    try {
+      render(<TaskList viewMode="list" projectFilter={null} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task One' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Select Task Two' }));
+
+      const archiveButton = screen.getByRole('button', { name: 'Archive 2 selected tasks' });
+      expect(archiveButton).toBeEnabled();
+      fireEvent.click(archiveButton);
+
+      await waitFor(() => {
+        expect(achieveTaskMock).toHaveBeenCalledTimes(1);
+      });
+      expect(achieveTaskMock).toHaveBeenCalledWith('task-1');
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining(
+        '1 terminal task will be skipped (only AI tasks can be archived)',
+      ));
+    } finally {
+      confirmSpy.mockRestore();
+      alertSpy.mockRestore();
+    }
+  });
+
+  it('disables batch archive when only PTY tasks are selected', () => {
+    tasksState = {
+      ...tasksState,
+      currentProjectFilter: null,
+      tasks: [
+        { id: 'task-1', title: 'Task One', projectId: 'project-1', status: 'running', taskType: 'pty_task' },
+      ],
+    };
+
     render(<TaskList viewMode="list" projectFilter={null} />);
     fireEvent.click(screen.getByRole('button', { name: 'Select Task One' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Select Task Two' }));
 
     expect(screen.getByRole('button', {
-      name: 'Archive 2 selected tasks',
+      name: 'Archive 1 selected task',
     })).toBeDisabled();
   });
 

@@ -10,10 +10,11 @@ creates `todo`, so the create route never had to enforce that.
 
 ## Fix
 `POST /api/issues` rejects `status: doing` with a 400 ("create it as todo, then
-start it"), and the CLI offers only `todo|done` on create. An explicit
-`status: doing` PATCH on a doing issue that has no task now spawns one. A
-task-count check inside the transaction stops two concurrent starts from both
-spawning a task.
+start it"), and the CLI offers only `todo|done` on create. A pure
+`status: doing` PATCH (no `position`, as `issue start` sends) on a doing issue
+that has no task now spawns one; a board reorder sends `position` too and does
+not. A task-count check inside the transaction stops two concurrent starts from
+both spawning a task.
 
 ## How to avoid next time
 State machines whose transitions carry side effects must be enforced by the
