@@ -381,10 +381,14 @@ describe("persistent task rounds API", () => {
         taskId: "task-1",
         content: "go",
         messageMetadata: { clientRequestId: "req-1" },
+        clientMessageId: "req-1",
       });
       expect(result.ok).toBe(true);
       const firstMessage = vi.mocked(db.message.create).mock.calls[1][0].data as any;
       expect(JSON.parse(firstMessage.metadata)).toEqual({ clientRequestId: "req-1" });
+      // The column a retry looks the message up by; the divider never carries it.
+      expect(firstMessage.clientMessageId).toBe("req-1");
+      expect((vi.mocked(db.message.create).mock.calls[0][0].data as any).clientMessageId).toBeUndefined();
     });
 
     it("stops a task whose status is unknown", async () => {

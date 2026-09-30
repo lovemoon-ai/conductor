@@ -181,6 +181,8 @@ export async function startPersistentRound(input: {
   content: string;
   /** Stored on the round's first message (e.g. the sender's clientRequestId for retry dedupe). */
   messageMetadata?: Record<string, unknown> | null;
+  /** Stored in the message's clientMessageId column, so a retried send finds this message. */
+  clientMessageId?: string | null;
   backendType?: string | null;
   agentHost?: string | null;
   worktree?: PersistentRoundWorktreeMode;
@@ -402,6 +404,7 @@ export async function startPersistentRound(input: {
           content,
           createdAt: messageAt,
           ...(input.messageMetadata ? { metadata: JSON.stringify(input.messageMetadata) } : {}),
+          ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
         },
         select: { id: true, createdAt: true },
       });

@@ -4,7 +4,7 @@ import {
 } from "@/lib/channel/task-ingress-service";
 import { db } from "@/lib/db";
 import { startPersistentRound } from "@/lib/tasks/persistent-round";
-import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
+import { normalizeOptionalString, normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
 import { readPersistentTaskState } from "@/shared/utils/persistent-task";
 
 /**
@@ -66,6 +66,7 @@ export async function startRoundIfPersistentIdle(input: {
   task: { id: string; status?: string | null; metadata?: string | null };
   content: string;
   metadata?: Record<string, unknown> | null;
+  clientMessageId?: string | null;
   attachmentIds?: string[];
 }): Promise<StoredMessage | null> {
   const state = readPersistentTaskState(parseJsonObject(input.task.metadata));
@@ -92,11 +93,22 @@ export async function startRoundIfPersistentIdle(input: {
     taskId: input.task.id,
     content: input.content,
     messageMetadata: input.metadata,
+    clientMessageId: normalizeOptionalString(input.clientMessageId),
   });
   if (!result.ok) {
     throw new TaskIngressError("ROUND_START_FAILED", result.status, result.error, result.details ?? { error: result.error });
   }
   return db.message.findUniqueOrThrow({ where: { id: result.messageId! } });
+}
+
+/**
+ * The message an earlier attempt of this send already stored. A retry must get
+ * it back before the round / not-running rules run: the first attempt may have
+ * started a round, and the task's state no longer matches what it saw.
+ */
+export async function findRetriedMessage(taskId: string, clientMessageId?: string | null): Promise<StoredMessage | null> {
+  const id = normalizeOptionalString(clientMessageId);
+  return id ? db.message.findFirst({ where: { taskId, clientMessageId: id } }) : null;
 }
 
 /** appendUserMessageToTask plus the send rules above; non-user messages pass straight through. */
@@ -108,6 +120,8 @@ export async function deliverUserMessage(input: AppendInput): Promise<StoredMess
     });
     // Missing and archived tasks get their errors from appendUserMessageToTask.
     if (task && !task.achievedAt) {
+      const retried = await findRetriedMessage(task.id, input.clientMessageId);
+      if (retried) return retried;
       const roundMessage = await startRoundIfPersistentIdle({ ...input, task });
       if (roundMessage) return roundMessage;
       if (NOT_RUNNING_STATUSES.has(normalizeTaskStatus(task.status))) {
