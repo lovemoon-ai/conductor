@@ -1767,6 +1767,42 @@ describe("/api/tasks/[taskId]", () => {
     expect(enqueueAndAttemptAgentCommand).not.toHaveBeenCalled();
   });
 
+  it("does not rewrite metadata on a title-only PATCH, so a concurrent round-start claim survives", async () => {
+    const token = createTestToken("user-1");
+    const existingTask = {
+      id: "task-rename",
+      projectId: "proj-1",
+      title: "Old title",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "daemon-a",
+      executionHost: "daemon-a",
+      backendType: "codex",
+      sessionId: "session-rename",
+      sessionFilePath: null,
+      launchConfig: null,
+      metadata: JSON.stringify({ persistent: { enabled: true, round: 2 } }),
+      createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2024-01-01T00:00:00.000Z"),
+      ptySession: null,
+    };
+    vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
+      ...existingTask,
+      ...Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)),
+    }) as any);
+
+    const response = await PATCH(
+      createMockRequest({ method: "PATCH", token, body: { title: "New title" } }),
+      { params: Promise.resolve({ taskId: "task-rename" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ title: "New title", metadata: undefined }) }),
+    );
+  });
+
   it("keeps an already killing task in killing without queuing a duplicate stop_task", async () => {
     const token = createTestToken("user-1");
     // Must be RECENT: a repeat stop only re-affirms the in-flight kill while it
@@ -1796,9 +1832,10 @@ describe("/api/tasks/[taskId]", () => {
       ptySession: null,
     };
     vi.mocked(db.task.findFirst).mockResolvedValue(existingTask as any);
+    // Like Prisma, an `undefined` field is left as stored.
     mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
       ...existingTask,
-      ...data,
+      ...Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)),
       updatedAt: new Date("2024-01-01T00:02:00.000Z"),
     }) as any);
 
@@ -1819,7 +1856,8 @@ describe("/api/tasks/[taskId]", () => {
         data: expect.objectContaining({
           status: "killing",
           executionHost: "daemon-a",
-          metadata: JSON.stringify(existingMetadata),
+          // Unchanged metadata is not rewritten (it could wipe a concurrent writer's keys).
+          metadata: undefined,
         }),
       }),
     );
