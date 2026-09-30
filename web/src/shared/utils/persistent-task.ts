@@ -14,6 +14,8 @@ export interface PersistentTaskState {
   enabled: boolean;
   instructions: string;
   summary: string;
+  /** End the round automatically after an hour without a user reply. Default on. */
+  autoEndRound: boolean;
   round: number;
   roundEndedAt: string | null;
   roundEndMessageId: string | null;
@@ -42,6 +44,7 @@ export const readPersistentTaskState = (metadata: unknown): PersistentTaskState 
     enabled: raw.enabled === true,
     instructions: readString(raw.instructions),
     summary: readString(raw.summary),
+    autoEndRound: raw.autoEndRound !== false,
     round,
     roundEndedAt: readOptionalString(raw.roundEndedAt),
     roundEndMessageId: readOptionalString(raw.roundEndMessageId),

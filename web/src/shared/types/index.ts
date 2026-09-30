@@ -460,6 +460,7 @@ export interface RestartTaskInput {
 /** RFC 0039: settings of a persistent task. */
 export interface PersistentTaskSettingsInput {
   enabled?: boolean;
+  autoEndRound?: boolean;
   instructions?: string;
   summary?: string;
 }

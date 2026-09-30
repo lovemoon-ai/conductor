@@ -34,6 +34,7 @@ describe('persistent task metadata', () => {
       enabled: true,
       instructions: '',
       summary: '',
+      autoEndRound: true,
       round: 1,
       roundEndedAt: null,
       roundEndMessageId: null,

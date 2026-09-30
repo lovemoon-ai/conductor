@@ -217,6 +217,10 @@ describe("conductor task persistent / rounds / worktree / terminal", () => {
       "PATCH /api/tasks/t1/persistent": { id: "t1" },
     });
     assert.deepEqual(calls[0].body, { enabled: true, instructions: "keep going" });
+    const off = await runWithFetch(main, ["persistent", "t1", "--no-auto-end-round"], {
+      "PATCH /api/tasks/t1/persistent": { id: "t1" },
+    });
+    assert.deepEqual(off.calls[0].body, { autoEndRound: false });
     const empty = await runWithFetch(main, ["persistent", "t1"], {});
     assert.equal(empty.code, 2);
   });

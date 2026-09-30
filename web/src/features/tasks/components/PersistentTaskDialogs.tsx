@@ -27,12 +27,13 @@ export function PersistentTaskSettingsDialog({ task, open, onClose }: Persistent
   const updateTaskPersistent = useTasksStore((state) => state.updateTaskPersistent);
   const { pushToast } = useToast();
   const [enabled, setEnabled] = useState(false);
+  const [autoEndRound, setAutoEndRound] = useState(true);
   const [instructions, setInstructions] = useState('');
   const [summary, setSummary] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Fields the user edited: the refresh below must not overwrite them, and Save
   // sends only these so an untouched summary cannot clobber a newer AI summary.
-  const touched = useRef(new Set<'enabled' | 'instructions' | 'summary'>());
+  const touched = useRef(new Set<'enabled' | 'autoEndRound' | 'instructions' | 'summary'>());
 
   useEffect(() => {
     if (!open) return;
@@ -40,6 +41,7 @@ export function PersistentTaskSettingsDialog({ task, open, onClose }: Persistent
     const apply = (source: Task) => {
       const state = readPersistentTaskState(source.metadata);
       if (!touched.current.has('enabled')) setEnabled(state?.enabled ?? false);
+      if (!touched.current.has('autoEndRound')) setAutoEndRound(state?.autoEndRound ?? true);
       if (!touched.current.has('instructions')) setInstructions(state?.instructions ?? '');
       if (!touched.current.has('summary')) setSummary(state?.summary ?? '');
     };
@@ -60,6 +62,7 @@ export function PersistentTaskSettingsDialog({ task, open, onClose }: Persistent
     const edited = touched.current;
     const input = {
       ...(edited.has('enabled') ? { enabled } : {}),
+      ...(edited.has('autoEndRound') ? { autoEndRound } : {}),
       ...(edited.has('instructions') ? { instructions } : {}),
       ...(edited.has('summary') ? { summary } : {}),
     };
@@ -103,6 +106,20 @@ export function PersistentTaskSettingsDialog({ task, open, onClose }: Persistent
               Work in rounds: each round starts a fresh AI session that only receives the instructions and summary below.
             </p>
           </div>
+        </label>
+
+        <label className="flex cursor-pointer items-center gap-3">
+          <input
+            type="checkbox"
+            checked={autoEndRound}
+            onChange={(event) => {
+              touched.current.add('autoEndRound');
+              setAutoEndRound(event.target.checked);
+            }}
+            disabled={isSubmitting}
+            className="size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)]"
+          />
+          <span className="text-sm font-medium text-ink">Auto-end round after 1h idle</span>
         </label>
 
         <div className="space-y-2">

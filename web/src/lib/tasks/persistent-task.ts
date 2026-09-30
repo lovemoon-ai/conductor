@@ -20,6 +20,7 @@ export const MAX_PERSISTENT_TEXT_LENGTH = 8_000;
 
 export type PersistentTaskSettingsInput = {
   enabled?: boolean;
+  autoEndRound?: boolean;
   instructions?: string;
   summary?: string;
 };
@@ -87,9 +88,11 @@ export const readPersistentSettingsInput = (
   body: Record<string, unknown>,
 ): PersistentTaskSettingsInput | { error: string } => {
   const settings: PersistentTaskSettingsInput = {};
-  if (body.enabled !== undefined) {
-    if (typeof body.enabled !== "boolean") return { error: "enabled must be a boolean" };
-    settings.enabled = body.enabled;
+  for (const key of ["enabled", "autoEndRound"] as const) {
+    const value = body[key];
+    if (value === undefined) continue;
+    if (typeof value !== "boolean") return { error: `${key} must be a boolean` };
+    settings[key] = value;
   }
   for (const key of ["instructions", "summary"] as const) {
     const value = body[key];
@@ -101,7 +104,7 @@ export const readPersistentSettingsInput = (
     settings[key] = value;
   }
   if (Object.keys(settings).length === 0) {
-    return { error: "Provide at least one of enabled, instructions, summary" };
+    return { error: "Provide at least one of enabled, autoEndRound, instructions, summary" };
   }
   return settings;
 };
