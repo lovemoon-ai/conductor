@@ -95,6 +95,14 @@ function parseStatusList(value) {
     .filter(Boolean);
 }
 
+// Legacy statuses the server serves as their canonical value
+// (web/src/lib/issues/config.ts LEGACY_ISSUE_STATUS_ALIASES).
+const LEGACY_ISSUE_STATUS_ALIASES = { backlog: "todo", review: "doing" };
+function canonicalIssueStatus(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return LEGACY_ISSUE_STATUS_ALIASES[normalized] ?? normalized;
+}
+
 function parseIdList(value) {
   if (value === undefined || value === null) return [];
   const values = Array.isArray(value) ? value : [value];
@@ -108,7 +116,8 @@ function parseIdList(value) {
  * Cross-project listing straight off GET /api/issues: no `project_id` lists
  * every project the user can access (own + collaborations); `project_ids`
  * lists exactly those projects (what the merged cross-daemon view uses). The
- * server filters `status`; the route has no limit param, so that is applied here.
+ * server filters `status` (older servers ignore it, so it is re-applied here);
+ * the route has no limit param, so that is applied here.
  */
 async function handleListAcross(argv, deps) {
   const projectIds = parseIdList(argv.projectIds);
@@ -128,6 +137,10 @@ async function handleListAcross(argv, deps) {
     query: Object.keys(query).length > 0 ? query : undefined,
   });
   let issues = Array.isArray(raw) ? raw : [];
+  if (statuses && statuses.length > 0) {
+    const wanted = new Set(statuses.map(canonicalIssueStatus));
+    issues = issues.filter((issue) => wanted.has(canonicalIssueStatus(issue.status)));
+  }
   if (argv.limit !== undefined) issues = issues.slice(0, argv.limit);
   if (argv.json) {
     // Same shape as the single-project `list --json` (the SDK-normalized form).
@@ -275,7 +288,17 @@ async function resolveStartProjectId(apis, argv, daemonHost) {
   }
   if (!daemonHost) return undefined;
   const issue = await apis.issues.getIssue(argv.id);
-  const current = await apis.projects.getProject(issue.projectId);
+  let current;
+  try {
+    current = await apis.projects.getProject(issue.projectId);
+  } catch (err) {
+    // Another member's shared project is not readable here: skip the sibling
+    // pick and let the server explain what it allows.
+    const status = err?.statusCode ?? err?.status;
+    const notFound = err?.name === "ProjectNotResolvedError" && err.reason === "not_found";
+    if (notFound || status === 404 || status === 403) return undefined;
+    throw err;
+  }
   if (!current.daemonHost || current.daemonHost === daemonHost) return undefined;
   const siblings = (await apis.projects.listProjects()).filter(
     (project) => project.name === current.name && project.daemonHost === daemonHost,

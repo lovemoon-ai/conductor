@@ -472,6 +472,16 @@ describe("conductor project — cross-daemon merged groups act like the web", ()
     assert.match(r.out, /Hid merged project repo on 2 daemons/);
   });
 
+  it("hide --json keeps the target object shape and lists the group in ids", async () => {
+    const r = await runGroup(["hide", "repo", "--daemon-host", "m2", "--json"]);
+    assert.equal(r.code, 0, r.err);
+    const out = JSON.parse(r.out);
+    assert.equal(Array.isArray(out), false);
+    assert.equal(out.id, "q2");
+    assert.equal(out.hidden, true);
+    assert.deepEqual(out.ids, ["q1", "q2"]);
+  });
+
   it("unhide of a hidden member restores the whole group", async () => {
     const r = await runGroup(["unhide", "q3"]);
     assert.equal(r.code, 0, r.err);
@@ -485,6 +495,27 @@ describe("conductor project — cross-daemon merged groups act like the web", ()
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(r.calls.map((c) => [c.method, c.query.projectId]), [["DELETE", "q1"], ["DELETE", "q2"]]);
     assert.match(r.out, /Deleted merged project repo on 2 daemons/);
+  });
+
+  it("delete --daemon-host deletes only that copy", async () => {
+    const r = await runGroup(["delete", "repo", "--daemon-host", "m2", "--yes", "--json"], {
+      "DELETE /api/projects": () => ({ status: 204, body: undefined }),
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(r.calls.map((c) => [c.method, c.query.projectId]), [["DELETE", "q2"]]);
+    assert.deepEqual(JSON.parse(r.out), { deleted: true, id: "q2" });
+  });
+
+  it("delete of a group stops at the first failure and reports what is left", async () => {
+    const r = await runGroup(["delete", "q1", "--yes"], {
+      "DELETE /api/projects": (call) => (call.query.projectId === "q2"
+        ? { status: 409, body: { error: "Daemon m2 is offline" } }
+        : { status: 204, body: undefined }),
+    });
+    assert.notEqual(r.code, 0);
+    assert.deepEqual(r.calls.map((c) => c.query.projectId), ["q1", "q2"]);
+    assert.match(r.err, /Deleted: q1; not deleted: q2\. Failed on q2 /);
+    assert.match(r.err, /Daemon m2 is offline/);
   });
 
   it("delete without --yes warns about merged daemons and tasks filed elsewhere", async () => {
@@ -512,6 +543,11 @@ describe("conductor project — cross-daemon merged groups act like the web", ()
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(r.calls.map((c) => c.query.projectId), ["q4", "q1", "q2", "q3"]);
     assert.ok(r.calls.every((c) => c.body.mergeOptOut === false));
+    assert.match(r.out, /Also re-merged 3 same-name project\(s\):\n  repo \(q1\) on m1\n  repo \(q2\) on m2\n  repo \(q3\) on m3/);
+    const json = await runGroup(["update", "q4", "--merge-opt-out", "false", "--json"], {
+      "PATCH /api/projects": (call) => ({ id: call.query.projectId, name: "repo" }),
+    });
+    assert.deepEqual(JSON.parse(json.out), { id: "q4", name: "repo", ids: ["q4", "q1", "q2", "q3"] });
   });
 
   it("labels use the whole displayed group, not just the target's direct peers", async () => {

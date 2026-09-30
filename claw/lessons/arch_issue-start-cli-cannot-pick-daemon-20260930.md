@@ -13,8 +13,12 @@ The CLI had no option for what the dialog sends: the chosen sibling project's
 ## Fix
 `issue start --daemon <host> [--project <id>]` sends the same request as the
 dialog. With only `--daemon`, the CLI picks the same-named project on that
-daemon. The SDK forwards `projectId`, and the server still checks that the
-target is a sibling.
+daemon; if the issue's project is another member's shared project (not
+readable by the CLI), it skips that pick and lets the server answer. The SDK
+forwards `projectId`, and the server still checks that the target is a sibling.
+Only a `metadata.daemonHost` sent in the request is binding; one remembered
+from an earlier run is used when online and compatible, else the server
+auto-picks, so `issue start` without `--daemon` does not fail on an offline one.
 
 ## How to avoid next time
 When a web dialog adds a choice, add the CLI flag and SDK field in the same

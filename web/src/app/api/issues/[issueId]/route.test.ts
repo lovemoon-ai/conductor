@@ -1876,6 +1876,57 @@ describe('/api/issues/[issueId]', () => {
       expect(createAiTaskArtifacts).not.toHaveBeenCalled();
     });
 
+    it('does not start a task when the board reorders a taskless doing issue', async () => {
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({ status: 'doing' }) as any);
+      vi.mocked(db.task.count).mockResolvedValue(0 as any);
+
+      expect((await patch({ status: 'doing', position: 3 })).status).toBe(200);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
+    it('treats a remembered metadata.daemonHost as a preference, not a requirement', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+        { id: 'agent-2', host: 'daemon-b', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(createAiTaskArtifacts).mockResolvedValue(spawnedTask('task-new') as any);
+      for (const [stored, body, expectedHost] of [
+        // Remembered daemon offline: auto-pick instead of "Daemon … is offline".
+        ['daemon-ghost', { status: 'doing', metadata: { audit: { actor: 'cli' } } }, 'daemon-a'],
+        ['daemon-ghost', { status: 'doing' }, 'daemon-a'],
+        // Remembered daemon online: still preferred over the auto-pick.
+        ['daemon-b', { status: 'doing', metadata: { audit: { actor: 'cli' } } }, 'daemon-b'],
+      ] as const) {
+        vi.mocked(createAiTaskArtifacts).mockClear();
+        vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+          metadata: JSON.stringify({ backendType: 'claude', daemonHost: stored }),
+        }) as any);
+
+        expect((await patch(body)).status).toBe(200);
+        expect((vi.mocked(createAiTaskArtifacts).mock.calls[0][0] as any).agentHost).toBe(expectedHost);
+      }
+    });
+
+    it('still refuses an offline daemonHost sent in the request (web dialog pick)', async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude'] },
+      ] as any);
+      vi.mocked(db.issue.findFirst).mockResolvedValue(buildExistingIssue({
+        metadata: JSON.stringify({ backendType: 'claude', daemonHost: 'daemon-a' }),
+      }) as any);
+
+      // The dialog sends the stored metadata merged with the chosen daemon.
+      const response = await patch({
+        status: 'doing',
+        position: 2,
+        metadata: { backendType: 'claude', daemonHost: 'daemon-ghost' },
+      });
+
+      expect(response.status).toBe(409);
+      expect((await extractJson(response)).error).toMatch(/daemon-ghost is offline/);
+      expect(createAiTaskArtifacts).not.toHaveBeenCalled();
+    });
+
     it('refuses to restart a linked task on a different backend or daemon', async () => {
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         { id: 'agent-1', host: 'daemon-a', supportedBackends: ['codex', 'claude'] },

@@ -171,6 +171,8 @@ const resolveIssueSpawnAgentHost = (args: {
    * fallback — otherwise the picker the user sees is cosmetic.
    */
   requestedDaemonHost: string | null;
+  /** Daemon remembered from an earlier run: used on an unbound project when online and compatible. */
+  preferredDaemonHost?: string | null;
 }): IssueSpawnAgentHostResult => {
   if (args.projectDaemonHost) {
     if (args.requestedDaemonHost && args.requestedDaemonHost !== args.projectDaemonHost) {
@@ -232,6 +234,15 @@ const resolveIssueSpawnAgentHost = (args: {
     return {
       ok: true,
       agentHost: args.requestedDaemonHost,
+    };
+  }
+  const preferredAgent = args.preferredDaemonHost
+    ? args.connectedAgents.find((agent) => agent.host === args.preferredDaemonHost) ?? null
+    : null;
+  if (preferredAgent && supportsRequestedBackend(preferredAgent.supportedBackends, args.requestedBackendType)) {
+    return {
+      ok: true,
+      agentHost: preferredAgent.host,
     };
   }
 
@@ -376,8 +387,13 @@ export async function PATCH(
   // server can (a) honor it on unbound projects where projectDaemonHost is
   // null, and (b) detect a conflict with a project-bound daemon. We only read
   // it; the value persisted back to metadata is rewritten below with the
-  // actually-resolved agentHost so a fake client value never sticks.
-  const requestedDaemonHost = typeof nextMetadata?.daemonHost === 'string'
+  // actually-resolved agentHost so a fake client value never sticks. Only a
+  // daemonHost sent in this request is binding; one remembered from an earlier
+  // run is a preference (`issue start` without --daemon must not 409 on it).
+  const requestedDaemonHost = typeof requestedMetadata?.daemonHost === 'string'
+    ? (normalizeOptionalString(requestedMetadata.daemonHost) ?? null)
+    : null;
+  const preferredDaemonHost = typeof nextMetadata?.daemonHost === 'string'
     ? (normalizeOptionalString(nextMetadata.daemonHost) ?? null)
     : null;
   const currentStatus = normalizeIssueStatus(existing.status);
@@ -540,8 +556,10 @@ export async function PATCH(
   let linkedTask: Parameters<typeof serializeTaskResponse>[0] | null =
     linkedTaskByIssueId.get(existing.id) ?? activeTask;
   // A doing issue with no task at all (e.g. its task was deleted) is stuck:
-  // only entering doing spawns one. An explicit `status: doing` starts it.
-  const isTasklessDoing = currentStatus === 'doing' && input.status === 'doing' && !linkedTask;
+  // only entering doing spawns one. A pure `status: doing` request (CLI/SDK
+  // `issue start`) starts it; a board reorder also sends `position` and must not.
+  const isTasklessDoing = currentStatus === 'doing' && input.status === 'doing'
+    && input.position === undefined && !linkedTask;
   const shouldEnterDoing = (currentStatus !== 'doing' && nextStatus === 'doing') || isTasklessDoing;
   const shouldManageLocalTask = nextOwnerUserId === user.id;
   const shouldRestartLinkedTask = shouldManageLocalTask && shouldEnterDoing && !activeTask && Boolean(linkedTask);
@@ -693,6 +711,7 @@ export async function PATCH(
           projectDaemonHost,
           requestedBackendType: issueBackendType,
           requestedDaemonHost,
+          preferredDaemonHost,
         });
     if (!resolvedAgentHost.ok) {
       return NextResponse.json(

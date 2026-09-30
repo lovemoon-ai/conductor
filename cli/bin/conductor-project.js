@@ -14,7 +14,7 @@
  *   update <id|name> [--name <n>] [--merge-opt-out true|false]
  *          [--workspace-path <p> [--bind-daemon-host <h>]] [--json-body '{...}']
  *   refresh <id|name>                 (re-validate binding with the daemon)
- *   delete <id|name> --yes
+ *   delete <id|name> --yes            (merged: every daemon unless --daemon-host picks one)
  *   reorder <id|name>...              (listed first, the rest keep their order)
  *   agents [<id|name>]                (agents registered in .conductor/settings.yaml)
  *   collab invite [<id|name>]
@@ -346,7 +346,9 @@ async function handleSetHidden(argv, deps, hidden) {
     updated.push(await apis.projects.setProjectHidden(member.id, hidden));
   }
   if (argv.json) {
-    printJson(deps.stdout, members.length > 1 ? updated.map(projectAsObject) : projectAsObject(updated[0]));
+    // The target's object, as before merged groups; `ids` lists every member changed.
+    const target = projectAsObject(updated[members.findIndex((member) => member.id === project.id)] ?? updated[0]);
+    printJson(deps.stdout, members.length > 1 ? { ...target, ids: members.map((member) => member.id) } : target);
     return EXIT.OK;
   }
   const what = members.length > 1
@@ -470,11 +472,17 @@ async function handleUpdate(argv, deps) {
   }
   if (result.dryRun) return EXIT.OK;
   if (argv.json) {
-    printJson(deps.stdout, result.data);
+    printJson(
+      deps.stdout,
+      peers.length > 0 ? { ...result.data, ids: [project.id, ...peers.map((peer) => peer.id)] } : result.data,
+    );
     return EXIT.OK;
   }
-  const also = peers.length > 0 ? ` (merge opt-out also set on ${peers.length} same-name project(s))` : "";
-  printPretty(deps.stdout, `Updated project ${displayName(result.data ?? project)}${also}`);
+  printPretty(deps.stdout, `Updated project ${displayName(result.data ?? project)}`);
+  if (peers.length > 0) {
+    printPretty(deps.stdout, `${mergeOptOut ? "Also split" : "Also re-merged"} ${peers.length} same-name project(s):`);
+    for (const peer of peers) printPretty(deps.stdout, `  ${displayName(peer)} on ${peer.daemonHost}`);
+  }
   return EXIT.OK;
 }
 
@@ -500,16 +508,29 @@ async function handleDelete(argv, deps) {
   if (!argv.yes && !argv.dryRun) {
     throw argsError(
       "Refusing to delete without --yes: this stops the project's running tasks and deletes its tasks and messages, " +
-        "including tasks filed under other projects; a cross-daemon merged project is deleted on every daemon",
+        "including tasks filed under other projects; a cross-daemon merged project is deleted on every daemon " +
+        "unless --daemon-host picks one",
     );
   }
-  const { project, members } = await resolveTargetGroup(argv, deps);
+  const { project, members: group } = await resolveTargetGroup(argv, deps);
+  // --daemon-host targets that one copy; otherwise the whole group, like the web.
+  const members = argv.daemonHost ? [project] : group;
   const http = await buildHttp(deps);
-  // Sequential like the web: each daemon may clean up worktrees first.
-  for (const member of members) {
-    await sendOrPreview(http, argv, deps, "DELETE", "/api/projects", undefined, {
-      query: projectQuery(member.id),
-    });
+  // Sequential like the web: each daemon may clean up worktrees first. There is
+  // no rollback, so stop at the first failure and say what is left.
+  for (const [index, member] of members.entries()) {
+    try {
+      await sendOrPreview(http, argv, deps, "DELETE", "/api/projects", undefined, {
+        query: projectQuery(member.id),
+      });
+    } catch (err) {
+      if (members.length > 1) {
+        const ids = (list) => list.map((entry) => entry.id).join(", ") || "none";
+        err.message = `Deleted: ${ids(members.slice(0, index))}; not deleted: ${ids(members.slice(index))}. ` +
+          `Failed on ${member.id} (${err.message})`;
+      }
+      throw err;
+    }
   }
   if (argv.dryRun) return EXIT.OK;
   if (argv.json) {
@@ -1075,7 +1096,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "Delete a project, on every daemon if merged (stops its running tasks and deletes its tasks); requires --yes",
         (cmd) => cmd
           .positional("idOrName", { type: "string", demandOption: true })
-          .option("daemon-host", { type: "string", describe: "Disambiguate same-name projects across daemons" })
+          .option("daemon-host", { type: "string", describe: "Delete only the copy on this daemon, not the whole merged group" })
           .option("yes", { type: "boolean", default: false, describe: "Confirm the deletion" }),
         async (argv) => {
           exitCode = await handleDelete(argv, { ...handlerDeps, configFile: argv.configFile });

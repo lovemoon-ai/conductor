@@ -41,6 +41,14 @@ const normalizeIssue = (payload: Record<string, any>): Issue => {
   };
 };
 
+// Legacy statuses the server serves as their canonical value
+// (web/src/lib/issues/config.ts LEGACY_ISSUE_STATUS_ALIASES).
+const LEGACY_ISSUE_STATUS_ALIASES: Record<string, string> = { backlog: 'todo', review: 'doing' };
+const canonicalIssueStatus = (value: unknown): string => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return LEGACY_ISSUE_STATUS_ALIASES[normalized] ?? normalized;
+};
+
 const extractIssue = (payload: Record<string, any>): Record<string, any> => {
   // The PATCH /issues/[issueId] route returns `{ issue, activeTask, ... }`.
   // Other routes return the issue itself. Normalize both shapes here so
@@ -126,7 +134,8 @@ export class IssuesApi {
       throw new Error('projectId is required');
     }
     // The server filters on a comma-separated `status` (and maps legacy
-    // aliases such as `backlog` → `todo`), so pass the list straight through.
+    // aliases such as `backlog` → `todo`); servers that predate that ignore
+    // it, so the result is filtered here too.
     const statusFilter = Array.isArray(input.status)
       ? input.status.map((value) => String(value).trim()).filter(Boolean)
       : input.status
@@ -137,6 +146,10 @@ export class IssuesApi {
       status: statusFilter.length > 0 ? statusFilter.join(',') : undefined,
     });
     let normalized = issues.map((entry) => normalizeIssue(entry));
+    if (statusFilter.length > 0) {
+      const wanted = new Set(statusFilter.map(canonicalIssueStatus));
+      normalized = normalized.filter((issue) => wanted.has(canonicalIssueStatus(issue.status)));
+    }
     if (typeof input.limit === 'number' && Number.isFinite(input.limit)) {
       normalized = normalized.slice(0, Math.max(0, Math.floor(input.limit)));
     }

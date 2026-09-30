@@ -12,9 +12,11 @@ and only filtered client-side for two or more, and the CLI advertised
 ## Fix
 The route validates a comma-separated `status` with Zod, maps legacy aliases
 (`backlog`→`todo`, `review`→`doing`) and filters the stored values in SQL. The
-SDK and `--all-projects/--project-ids` pass the list through; CLI help and
-choices use `todo|doing|done`.
+SDK and `--all-projects/--project-ids` pass the list through and, since an older
+server ignores it, filter the result again with the same alias map; CLI help
+and choices use `todo|doing|done`.
 
 ## How to avoid next time
 When a client sends a query param, have a route test proving the server honors
-it; don't let a client-side filter hide a server that ignores it.
+it, and a client test against a server that ignores it: a new CLI/SDK still
+talks to old servers.

@@ -82,6 +82,15 @@ describe("conductor issue list across projects", () => {
     assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i2"]);
   });
 
+  it("--status still filters when an older server ignores it (aliases mapped)", async () => {
+    const r = await runWithFetch(main, ["list", "--all-projects", "--status", "backlog,review", "--json"], {
+      "GET /api/issues": () => ISSUES,
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.calls[0].query.status, "backlog,review");
+    assert.deepEqual(JSON.parse(r.out).map((i) => i.id), ["i1", "i2"]);
+  });
+
   it("--json uses the same normalized shape as single-project list", async () => {
     const r = await runWithFetch(main, ["list", "--all-projects", "--json"], {
       "GET /api/issues": () => [

@@ -8,6 +8,7 @@
 
 ## Fix
 - The filter moved to `lib/daily-reports/visible-projects.ts`. `getDailyReport` (for saved rows) and `listDailyReportRuns` now apply it with the user's current hidden project IDs, so every client gets the same result. The web page still applies the filter too, so a project hidden while the page is open drops out immediately.
+- When a project is dropped, `summaryMarkdown` (shown by the web and by the CLI without `--json`) is rendered again from the remaining projects. An AI summary cannot be trimmed reliably, so it is replaced by that rule summary (`summarizer.status: fallback`).
 
 ## How to avoid
 - If the rule reads current state (hide state), apply it when the data is read, not only when it is written.
