@@ -17,6 +17,7 @@ import {
 import { SHOW_PERSISTENT_TASKS_METADATA_KEY, shouldShowPersistentTasks } from '@/shared/utils/persistent-task';
 import { ProjectTaskLabelsSection } from './ProjectTaskLabelsSection';
 import { useProjectsStore } from '../store';
+import { copyToClipboard } from '@/lib/clipboard';
 import {
   buildMetadataWithTaskGraphEnabled,
   EXCLUDE_FROM_ALL_TASKS_METADATA_KEY,
@@ -397,6 +398,13 @@ export function ProjectDetailsDialog({
     }
   };
 
+  const handleCopyMemo = async (content: string) => {
+    const copied = await copyToClipboard(content);
+    pushToast(copied
+      ? { title: 'Memo copied', variant: 'success' }
+      : { title: 'Failed to copy memo', variant: 'error' });
+  };
+
   return (
     <Dialog
       open={open}
@@ -618,15 +626,25 @@ export function ProjectDetailsDialog({
                             </span>
                           ) : null}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteMemo(projectId, memo.id)}
-                          disabled={isMutating}
-                          className="text-xs text-muted transition-colors hover:text-[var(--error)] disabled:opacity-50"
-                          aria-label="Delete memo"
-                        >
-                          Delete
-                        </button>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyMemo(memo.content)}
+                            className="text-xs text-muted transition-colors hover:text-ink"
+                            aria-label="Copy memo"
+                          >
+                            Copy
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteMemo(projectId, memo.id)}
+                            disabled={isMutating}
+                            className="text-xs text-muted transition-colors hover:text-[var(--error)] disabled:opacity-50"
+                            aria-label="Delete memo"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink">
                         {memo.content}

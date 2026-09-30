@@ -12,6 +12,9 @@ const updateProjectMock = vi.fn();
 const fetchProjectsMock = vi.fn();
 const pushToastMock = vi.fn();
 const confirmMock = vi.fn();
+const copyToClipboardMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/lib/clipboard', () => ({ copyToClipboard: copyToClipboardMock }));
 
 // Hoisted store state so the mocked `useProjectsStore` hook and the static
 // `useProjectsStore.getState` / `setState` accessors share the same data —
@@ -524,6 +527,26 @@ describe('ProjectDetailsDialog', () => {
     const [, payload] = updateProjectMock.mock.calls[0];
     expect(payload.metadata.memos).toHaveLength(1);
     expect(payload.metadata.memos[0].id).toBe('m1');
+  });
+
+  it('copies a memo to the clipboard', async () => {
+    copyToClipboardMock.mockResolvedValueOnce(true);
+    const project = {
+      ...baseProject,
+      metadata: {
+        memos: [{ id: 'm1', content: 'copy me', createdAt: '2026-05-01T08:00:00.000Z' }],
+      },
+    } as any;
+    resetStoreProjects([project]);
+
+    render(<ProjectDetailsDialog open project={project} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('Copy memo'));
+
+    await waitFor(() => expect(copyToClipboardMock).toHaveBeenCalledWith('copy me'));
+    await waitFor(() => expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Memo copied', variant: 'success' }),
+    ));
+    expect(updateProjectMock).not.toHaveBeenCalled();
   });
 
   it('does not patch metadata when delete is cancelled', async () => {
