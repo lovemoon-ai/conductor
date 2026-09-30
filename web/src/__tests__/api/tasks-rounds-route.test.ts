@@ -50,6 +50,7 @@ vi.mock("@/lib/db", () => ({
     },
     message: {
       create: vi.fn(),
+      findFirst: vi.fn(),
     },
     agentOutbox: {
       updateMany: vi.fn(),
@@ -180,10 +181,18 @@ describe("persistent task rounds API", () => {
       return { count: 1 } as any;
     });
     let messageSeq = 0;
-    vi.mocked(db.message.create).mockImplementation((async ({ data }: any) => ({
-      id: `msg-${++messageSeq}`,
-      createdAt: data.createdAt,
-    })) as any);
+    const createdMessages: Array<{ id: string; taskId: string; clientMessageId?: string }> = [];
+    vi.mocked(db.message.create).mockImplementation((async ({ data }: any) => {
+      const message = { id: `msg-${++messageSeq}`, taskId: data.taskId, clientMessageId: data.clientMessageId };
+      createdMessages.push(message);
+      return { id: message.id, createdAt: data.createdAt };
+    }) as any);
+    // Honours { taskId, clientMessageId } and { clientMessageId, taskId: { not } } lookups.
+    vi.mocked(db.message.findFirst).mockImplementation((async ({ where }: any) =>
+      createdMessages.find((message) =>
+        message.clientMessageId === where.clientMessageId &&
+        (typeof where.taskId === "string" ? message.taskId === where.taskId : message.taskId !== where.taskId?.not),
+      ) ?? null) as any);
     vi.mocked(db.agentOutbox.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(db.$transaction).mockImplementation(async (callback: any) => callback(db));
     vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: true });
@@ -446,6 +455,79 @@ describe("persistent task rounds API", () => {
       expect(stopTaskBeforeRelaunch).toHaveBeenCalledTimes(1);
       expect(finalizeAiTaskCreation).toHaveBeenCalledTimes(1);
       expect(storedPersistent()).toMatchObject({ round: 3, roundStarting: null });
+    });
+
+    it("gives a retry of the same send the first attempt's message instead of round_changed", async () => {
+      const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+      let releaseStop!: () => void;
+      vi.mocked(stopTaskBeforeRelaunch).mockImplementation(
+        () => new Promise((resolve) => { releaseStop = () => resolve({ ok: true }); }),
+      );
+      const send = () => startPersistentRound({ userId: "user-1", taskId: "task-1", content: "go", clientMessageId: "req-1" });
+      const first = send();
+      await vi.waitFor(() => expect(stopTaskBeforeRelaunch).toHaveBeenCalled());
+      const retry = send();
+      // The retry waits on the first attempt's claim rather than failing.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      releaseStop();
+      const [firstResult, retryResult] = await Promise.all([first, retry]);
+
+      expect(firstResult).toMatchObject({ ok: true });
+      expect(retryResult).toMatchObject({ ok: true, messageId: (firstResult as { messageId: string }).messageId });
+      expect(stopTaskBeforeRelaunch).toHaveBeenCalledTimes(1);
+      expect(finalizeAiTaskCreation).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets a retry start the round itself when the first attempt gave up", async () => {
+      const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+      let failStop!: () => void;
+      vi.mocked(stopTaskBeforeRelaunch).mockImplementationOnce(
+        () => new Promise((resolve) => { failStop = () => resolve({ ok: false, error: "Timed out" }); }),
+      );
+      const send = () => startPersistentRound({ userId: "user-1", taskId: "task-1", content: "go", clientMessageId: "req-1" });
+      const first = send();
+      await vi.waitFor(() => expect(stopTaskBeforeRelaunch).toHaveBeenCalled());
+      const retry = send();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      failStop();
+
+      expect(await first).toMatchObject({ ok: false, status: 409 });
+      expect(await retry).toMatchObject({ ok: true });
+      expect(finalizeAiTaskCreation).toHaveBeenCalledTimes(1);
+      expect(storedPersistent()).toMatchObject({ round: 3, roundStarting: null });
+    });
+
+    it("refuses a client request id another task already used, before stopping anything", async () => {
+      const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+      vi.mocked(db.message.findFirst).mockResolvedValueOnce({ id: "other-task-msg" } as any);
+      const result = await startPersistentRound({ userId: "user-1", taskId: "task-1", content: "go", clientMessageId: "req-1" });
+
+      expect(result).toMatchObject({ ok: false, status: 409, details: { error: "client_request_id_in_use" } });
+      expect(stopTaskBeforeRelaunch).not.toHaveBeenCalled();
+      expect(storedPersistent().round).toBe(2);
+      expect(storedPersistent().roundStarting ?? null).toBeNull();
+    });
+
+    it("maps a unique-id race at insert time to a 409 and releases the claim", async () => {
+      const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+      // Roll back like a real transaction when the callback throws.
+      vi.mocked(db.$transaction).mockImplementationOnce(async (callback: any) => {
+        const snapshot = stored;
+        try {
+          return await callback(db);
+        } catch (error) {
+          stored = snapshot;
+          throw error;
+        }
+      });
+      vi.mocked(db.message.create)
+        .mockResolvedValueOnce({ id: "divider", createdAt: new Date() } as any)
+        .mockRejectedValueOnce(Object.assign(new Error("Unique constraint failed"), { code: "P2002" }));
+      const result = await startPersistentRound({ userId: "user-1", taskId: "task-1", content: "go", clientMessageId: "req-1" });
+
+      expect(result).toMatchObject({ ok: false, status: 409, details: { error: "client_request_id_in_use" } });
+      expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+      expect(storedPersistent()).toMatchObject({ round: 2, roundStarting: null });
     });
 
     it("ignores an expired round-start claim left by a crashed request", async () => {

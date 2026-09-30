@@ -21,10 +21,12 @@ webhook 500.
 The scheduler only lets a not-running persistent task through to start a round
 when its status is round-idle (`ROUND_IDLE_STATUSES`: completed/killed/unknown)
 and the schedule does not have `stopWhenTaskNotRunning`. `init` and `killing`
-keep the old not-running handling. If the round cannot start or no fire takes
-the message (`ROUND_START_FAILED`, `TASK_MISSING_ACTIVE_FIRE_OWNER`,
-`TASK_NOT_RUNNING`), the run is treated as `task_not_running`: an interval
-skips and a one-shot completes. It is not counted as a failure.
+keep the old not-running handling. If no fire takes the message
+(`TASK_MISSING_ACTIVE_FIRE_OWNER`, `TASK_NOT_RUNNING`), the run is treated as
+`task_not_running`: an interval skips and a one-shot completes. A failed round
+start (`ROUND_START_FAILED`) is a real error and goes through
+`failScheduledMessage` with its message — see
+`stable_scheduled-round-start-failure-recorded-as-not-running-20260930.md`.
 
 ## How to avoid next time
 Put a product rule in one function and route every entry point through it. Grep

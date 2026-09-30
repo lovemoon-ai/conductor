@@ -350,8 +350,8 @@ describe("scheduled messages", () => {
 
   it.each([
     ["interval", "active", "skipped"],
-    ["once_delay", "completed", "completed"],
-  ])("treats a failed round start (daemon offline) as task_not_running for a %s schedule", async (kind, status, stat) => {
+    ["once_delay", "failed", "failed"],
+  ])("records the real error when a round start fails (daemon offline) for a %s schedule", async (kind, status, stat) => {
     const due = makeScheduledRow({ kind, stopWhenTaskNotRunning: false });
     vi.mocked(db.scheduledMessage.findMany).mockResolvedValue([due] as any);
     vi.mocked(db.scheduledMessage.findUnique).mockResolvedValue({ ...due, task: persistentTask("completed") } as any);
@@ -361,10 +361,10 @@ describe("scheduled messages", () => {
 
     const stats = await processDueScheduledMessages({ now: date("2026-06-07T10:00:00.000Z") });
 
-    expect(stats).toMatchObject({ claimed: 1, [stat]: 1, failed: 0 });
+    expect(stats).toMatchObject({ claimed: 1, [stat]: 1 });
     expect(db.scheduledMessage.update).toHaveBeenCalledWith({
       where: { id: "sched-1" },
-      data: expect.objectContaining({ status, lastError: "task_not_running" }),
+      data: expect.objectContaining({ status, failureCount: 1, lastError: "Daemon mac is offline" }),
     });
   });
 

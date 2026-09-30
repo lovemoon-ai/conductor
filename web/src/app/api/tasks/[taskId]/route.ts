@@ -218,7 +218,7 @@ const buildLegacyAiTaskWriteData = (task: {
   backendType: string | null;
   sessionId: string | null;
   sessionFilePath: string | null;
-  metadata: string | null;
+  metadata: string | null | undefined;
 }) => ({
   projectId: task.projectId,
   title: task.title,
@@ -743,6 +743,10 @@ export async function PATCH(
             ...stickyMetadataFields,
           })
         : existing.metadata;
+  // Unchanged metadata is not written back: rewriting the snapshot read above
+  // would wipe keys other writers set meanwhile (e.g. a persistent round-start
+  // claim taken while this PATCH was in flight).
+  const metadataWrite = nextMetadata === existing.metadata ? undefined : nextMetadata;
   const baseAiTaskUpdateData = {
     projectId: nextProjectId,
     title: normalizedBody.title ?? existing.title,
@@ -758,7 +762,7 @@ export async function PATCH(
       sessionFilePathInput !== undefined
         ? normalizeOptionalString(sessionFilePathInput)
         : existing.sessionFilePath,
-    metadata: nextMetadata,
+    metadata: metadataWrite,
   };
   const legacyAiTaskUpdateData = buildLegacyAiTaskWriteData({
     projectId: baseAiTaskUpdateData.projectId,

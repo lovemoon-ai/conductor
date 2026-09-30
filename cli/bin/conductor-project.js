@@ -342,8 +342,19 @@ async function handleSetHidden(argv, deps, hidden) {
     return EXIT.OK;
   }
   const updated = [];
-  for (const member of members) {
-    updated.push(await apis.projects.setProjectHidden(member.id, hidden));
+  for (const [index, member] of members.entries()) {
+    try {
+      updated.push(await apis.projects.setProjectHidden(member.id, hidden));
+    } catch (err) {
+      // Like delete: say which copies changed before the failure.
+      if (members.length > 1) {
+        const ids = (list) => list.map((entry) => entry.id).join(", ") || "none";
+        const verb = hidden ? "hidden" : "unhidden";
+        err.message = `${verb[0].toUpperCase()}${verb.slice(1)}: ${ids(members.slice(0, index))}; ` +
+          `not ${verb}: ${ids(members.slice(index))}. Failed on ${member.id} (${err.message})`;
+      }
+      throw err;
+    }
   }
   if (argv.json) {
     // The target's object, as before merged groups; `ids` lists every member changed.

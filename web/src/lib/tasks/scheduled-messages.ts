@@ -5,10 +5,10 @@ import { normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
 import { isPersistentTask } from "@/shared/utils/persistent-task";
 import { isMissingSecondProjectIdColumnError } from "@/lib/tasks/pty-compat";
 
-// Delivery found no fire to take the message (the round could not start, or
-// the task stopped between the status check and the send).
+// Delivery found no fire to take the message (the task stopped between the
+// status check and the send). A failed round start is a real error (daemon
+// offline, CLI too old, …) and is recorded as such, not as task_not_running.
 const TASK_NOT_RUNNING_ERROR_CODES = new Set([
-  "ROUND_START_FAILED",
   "TASK_MISSING_ACTIVE_FIRE_OWNER",
   "TASK_NOT_RUNNING",
 ]);
