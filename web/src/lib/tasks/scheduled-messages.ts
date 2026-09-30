@@ -1,4 +1,5 @@
-import { appendUserMessageToTask } from "@/lib/channel/task-ingress-service";
+import { TaskIngressError } from "@/lib/channel/task-ingress-service";
+import { deliverUserMessage } from "@/lib/tasks/deliver-user-message";
 import { db } from "@/lib/db";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
 import { isMissingSecondProjectIdColumnError } from "@/lib/tasks/pty-compat";
@@ -885,7 +886,7 @@ async function executeClaimedScheduledMessage(
   try {
     const scheduledRun = scheduled.runCount + 1;
     const clientRequestId = buildScheduledRunClientRequestId(scheduled.id, scheduledRun);
-    await appendUserMessageToTask({
+    await deliverUserMessage({
       userId: scheduled.userId,
       taskId: scheduled.taskId,
       role: "user",
@@ -899,6 +900,9 @@ async function executeClaimedScheduledMessage(
       },
     });
   } catch (error) {
+    if (error instanceof TaskIngressError && error.code === "ROUND_SUMMARY_PENDING") {
+      return skipScheduledMessage(scheduled, now, "round_summary_pending");
+    }
     const message = error instanceof Error ? error.message : String(error);
     return failScheduledMessage(scheduled, now, message);
   }

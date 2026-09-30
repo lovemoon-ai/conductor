@@ -4,7 +4,8 @@ import { ensureDefaultProject } from '@/lib/auth/service';
 import { enqueueAndAttemptAgentCommand } from '@/lib/realtime/agent-outbox';
 import { realtimeHub } from '@/lib/realtime/hub';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
-import { appendUserMessageToTask, createTaskForUser } from '@/lib/channel/task-ingress-service';
+import { createTaskForUser, TaskIngressError } from '@/lib/channel/task-ingress-service';
+import { deliverUserMessage } from '@/lib/tasks/deliver-user-message';
 import {
   buildKilledPatch,
   withKilledReasonFallback,
@@ -430,12 +431,17 @@ export async function handleNormalizedInboundEvent(event: NormalizedInboundEvent
     });
   }
 
-  await appendUserMessageToTask({
-    userId: context.account.userId,
-    taskId: context.conversation.taskId,
-    content: text,
-    role: 'user',
-    metadata: { channel: { provider: event.provider, externalChatId: event.externalChatId, origin: 'im' } },
-  });
+  try {
+    await deliverUserMessage({
+      userId: context.account.userId,
+      taskId: context.conversation.taskId,
+      content: text,
+      role: 'user',
+      metadata: { channel: { provider: event.provider, externalChatId: event.externalChatId, origin: 'im' } },
+    });
+  } catch (error) {
+    if (!(error instanceof TaskIngressError)) throw error;
+    return { outputs: [{ text: String(error.details?.message ?? error.message) }] };
+  }
   return { outputs: [] };
 }

@@ -22,7 +22,7 @@ const {
   mockTaskUpdate,
   mockEnqueueAndAttemptAgentCommand,
   mockCreateTaskForUser,
-  mockAppendUserMessageToTask,
+  mockDeliverUserMessage,
   mockGetAgentsForUser,
   mockGetFeishuProviderConfigForUser,
 } = vi.hoisted(() => ({
@@ -47,7 +47,7 @@ const {
   mockTaskUpdate: vi.fn(),
   mockEnqueueAndAttemptAgentCommand: vi.fn(),
   mockCreateTaskForUser: vi.fn(),
-  mockAppendUserMessageToTask: vi.fn(),
+  mockDeliverUserMessage: vi.fn(),
   mockGetAgentsForUser: vi.fn(),
   mockGetFeishuProviderConfigForUser: vi.fn(),
 }));
@@ -107,7 +107,15 @@ vi.mock('@/lib/realtime/hub', () => ({
 
 vi.mock('./task-ingress-service', () => ({
   createTaskForUser: mockCreateTaskForUser,
-  appendUserMessageToTask: mockAppendUserMessageToTask,
+  TaskIngressError: class TaskIngressError extends Error {
+    constructor(public code: string, public status: number, message: string, public details?: Record<string, unknown>) {
+      super(message);
+    }
+  },
+}));
+
+vi.mock('@/lib/tasks/deliver-user-message', () => ({
+  deliverUserMessage: mockDeliverUserMessage,
 }));
 
 vi.mock('./provider-config', () => ({
@@ -120,6 +128,7 @@ const {
   handleNormalizedInboundEvent,
   enqueueChannelMessage,
 } = await import('./service');
+const { TaskIngressError } = await import('./task-ingress-service');
 
 describe('channel core service', () => {
   beforeEach(() => {
@@ -161,7 +170,7 @@ describe('channel core service', () => {
         sessionId: null,
       },
     });
-    mockAppendUserMessageToTask.mockResolvedValue({ task: { id: 'task-1', projectId: 'proj-1' }, message: { id: 'msg-1' } });
+    mockDeliverUserMessage.mockResolvedValue({ id: 'msg-1' });
     mockGetAgentsForUser.mockReturnValue([
       { id: 'agent-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'] },
       { id: 'agent-2', host: 'daemon-b', supportedBackends: ['codex'] },
@@ -238,6 +247,35 @@ describe('channel core service', () => {
     expect(result.outputs[0].text).toContain('daemon-a');
     expect(result.outputs[0].text).toContain('claude');
     expect(result.outputs[0].text).toContain('pending');
+  });
+
+  it('delivers an IM message to the conversation task through the send rules and replies with a rejection', async () => {
+    mockChannelConversationUpsert.mockResolvedValue({ id: 'conv-1', taskId: 'task-1', userId: 'user-1', projectId: 'proj-1', boundDaemonName: 'daemon-a' });
+    const event = {
+      provider: 'FEISHU' as const,
+      externalUserId: 'ou_1',
+      externalChatId: 'oc_1',
+      externalMessageId: 'om_9',
+      externalEventId: 'evt_9',
+      conversationType: 'dm' as const,
+      mentionsBot: false,
+      text: 'next step',
+      rawPayload: {},
+    };
+
+    expect((await handleNormalizedInboundEvent(event)).outputs).toEqual([]);
+    expect(mockDeliverUserMessage).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'task-1',
+      content: 'next step',
+      role: 'user',
+    }));
+
+    mockDeliverUserMessage.mockRejectedValueOnce(new TaskIngressError('TASK_NOT_RUNNING', 409, 'not running', {
+      error: 'task_not_running',
+      message: 'Only running ai_task accepts new messages',
+    }));
+    const rejected = await handleNormalizedInboundEvent({ ...event, externalMessageId: 'om_10' });
+    expect(rejected.outputs).toEqual([{ text: 'Only running ai_task accepts new messages' }]);
   });
 
   it('lists tasks and switches the current conversation task using /task', async () => {

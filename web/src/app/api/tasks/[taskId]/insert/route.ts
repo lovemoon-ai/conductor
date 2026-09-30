@@ -11,6 +11,7 @@ import { resolveFireTaskRouting } from "@/lib/tasks/fire-routing";
 import { normalizeTaskStatus, normalizeOptionalString } from "@/lib/tasks/task-config";
 import { buildMessageResponse } from "@/shared/utils/message-attachments";
 import { stripTopLevelAuditKeys } from "@/lib/audit/metadata";
+import { assertNoSessionRefreshPending, startRoundIfPersistentIdle } from "@/lib/tasks/deliver-user-message";
 
 const INSERT_ACK_TIMEOUT_MS = 2500;
 
@@ -85,6 +86,31 @@ export async function POST(
       { status: 409 },
     );
   }
+  // A persistent task never interrupts its end-of-round summary; an idle
+  // round is started by the inserted message, like a normal send.
+  try {
+    const roundMessage = await startRoundIfPersistentIdle({
+      userId: user.id,
+      task,
+      content,
+      metadata: callerMetadata,
+    });
+    if (roundMessage) {
+      return NextResponse.json({
+        delivered: true,
+        interrupted: false,
+        round_started: true,
+        task_id: taskId,
+        message_id: roundMessage.id,
+        message: buildMessageResponse(roundMessage),
+      });
+    }
+  } catch (error) {
+    if (error instanceof TaskIngressError) {
+      return NextResponse.json(error.details ?? { error: error.message }, { status: error.status });
+    }
+    throw error;
+  }
   if (normalizeTaskStatus(task.status) !== "running") {
     return NextResponse.json(
       { error: "task_not_running", message: "Only running ai_task supports message insertion" },
@@ -110,6 +136,7 @@ export async function POST(
   // tell an inserted message apart from an ordinary user message.
   let message;
   try {
+    await assertNoSessionRefreshPending(taskId);
     ({ message } = await appendUserMessageToTask({
       userId: user.id,
       taskId,
