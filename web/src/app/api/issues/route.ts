@@ -12,6 +12,7 @@ import {
   issueSerializationWithProjectSelect,
   issueSerializationWithPriorityAndProjectSelect,
   isMissingIssueExtendedColumnError,
+  issueStatusFilterSchema,
   loadIssueTaskMaps,
   normalizeIssueCreateBody,
   serializeIssueWithTasks,
@@ -19,6 +20,7 @@ import {
   withIssuePrioritySchemaFallback,
 } from './shared';
 import { parseIssueMetadata } from '@/lib/issues/serialization';
+import { ISSUE_STATUSES, issueStatusStoredValues } from '@/lib/issues/config';
 import { stripTopLevelAuditKeys } from '@/lib/audit/metadata';
 
 export async function GET(request: NextRequest) {
@@ -51,6 +53,15 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const rawStatus = searchParams.get('status')?.trim();
+  const statusFilter = rawStatus ? issueStatusFilterSchema.safeParse(rawStatus) : null;
+  if (statusFilter && !statusFilter.success) {
+    return NextResponse.json(
+      { error: `Invalid status filter; expected a comma-separated list of ${ISSUE_STATUSES.join(', ')}` },
+      { status: 400 },
+    );
+  }
+
   let listWhere: Record<string, unknown>;
   if (explicitProjectIds.length > 0) {
     listWhere = {
@@ -63,6 +74,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     }
     listWhere = { projectId: { in: scopedProjectIds } };
+  }
+  if (statusFilter?.success) {
+    listWhere.status = { in: [...new Set(statusFilter.data)].flatMap(issueStatusStoredValues) };
   }
 
   const listQuery = {
@@ -136,6 +150,14 @@ export async function POST(request: NextRequest) {
   }
 
   const input = parsed.data;
+  // Only the todo→doing transition spawns the issue's task, so a doing issue
+  // created directly would never get one (the web always creates todo).
+  if (input.status === 'doing') {
+    return NextResponse.json(
+      { error: 'Cannot create an issue in doing; create it as todo, then start it (conductor issue start <id>)' },
+      { status: 400 },
+    );
+  }
   const project = await db.project.findFirst({
     where: {
       id: input.projectId,

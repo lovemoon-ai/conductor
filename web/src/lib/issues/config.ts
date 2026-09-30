@@ -71,6 +71,12 @@ export const coerceIssueStatus = (value: unknown): IssueStatusValue | null => {
   return LEGACY_ISSUE_STATUS_ALIASES[normalized] ?? null;
 };
 
+/** Raw DB values that serialize as `status` (the canonical value plus its legacy aliases). */
+export const issueStatusStoredValues = (status: IssueStatusValue): string[] => [
+  status,
+  ...Object.keys(LEGACY_ISSUE_STATUS_ALIASES).filter((alias) => LEGACY_ISSUE_STATUS_ALIASES[alias] === status),
+];
+
 export const normalizeIssueStatus = (value: unknown): IssueStatusValue => {
   return coerceIssueStatus(value) ?? 'todo';
 };

@@ -273,6 +273,124 @@ describe("conductor issue update path picks the right SDK call", () => {
   });
 });
 
+describe("conductor issue start target daemon", () => {
+  const mergedProjects = [
+    { id: "proj-mac", name: "alpha", daemonHost: "macmini", workspacePath: "/w/alpha" },
+    { id: "proj-ubu", name: "alpha", daemonHost: "ubuntu", workspacePath: "/w/alpha" },
+    { id: "proj-other", name: "beta", daemonHost: "ubuntu", workspacePath: "/w/beta" },
+  ];
+
+  it("--daemon on a merged group moves the issue to the sibling project, like the web dialog", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: mergedProjects,
+      issues: [{ id: "issue-d1", projectId: "proj-mac", title: "T", status: "todo", priority: "P1" }],
+    });
+    const code = await main(["start", "issue-d1", "--daemon", "ubuntu", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    const patch = backend.calls.find((c) => c.method === "patchIssue");
+    assert.equal(patch.body.status, "doing");
+    assert.equal(patch.body.projectId, "proj-ubu");
+    assert.equal(patch.body.metadata.daemonHost, "ubuntu");
+  });
+
+  it("--daemon on the issue's own daemon (or the default project) only sends daemonHost", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [...mergedProjects, seedProject],
+      issues: [
+        { id: "issue-d2", projectId: "proj-mac", title: "T", status: "todo", priority: "P1" },
+        { id: "issue-d3", projectId: "proj-1", title: "T", status: "todo", priority: "P1" },
+      ],
+    });
+    for (const id of ["issue-d2", "issue-d3"]) {
+      const code = await main(["start", id, "--daemon", id === "issue-d2" ? "macmini" : "ubuntu"], { stdout, stderr, ...makeCliDeps(backend) });
+      assert.equal(code, 0, stderr.collect());
+    }
+    const patches = backend.calls.filter((c) => c.method === "patchIssue");
+    assert.deepEqual(patches.map((p) => [p.body.projectId, p.body.metadata.daemonHost]), [[undefined, "macmini"], [undefined, "ubuntu"]]);
+  });
+
+  it("--project sends the target project id; an unknown daemon is an args error", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: mergedProjects,
+      issues: [{ id: "issue-d4", projectId: "proj-mac", title: "T", status: "todo", priority: "P1" }],
+    });
+    let code = await main(["start", "issue-d4", "--daemon", "nowhere"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 2);
+    assert.match(stderr.collect(), /No project "alpha" on daemon nowhere; pass --project <id>/);
+    assert.equal(backend.calls.find((c) => c.method === "patchIssue"), undefined);
+    code = await main(["start", "issue-d4", "--project", "proj-ubu", "--daemon", "ubuntu"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    assert.equal(backend.calls.find((c) => c.method === "patchIssue").body.projectId, "proj-ubu");
+  });
+});
+
+describe("conductor issue choices match the server", () => {
+  it("--priority accepts P0 and rejects P3", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    let code = await main(["create", "--title", "T", "--priority", "P0", "--json", "--dry-run"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    assert.equal(JSON.parse(stdout.collect().trim()).request.body.priority, "P0");
+    code = await main(["create", "--title", "T", "--priority", "P3"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 2);
+  });
+
+  it("create --status doing is rejected (create, then start)", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({ projects: [seedProject] });
+    const code = await main(["create", "--title", "T", "--status", "doing"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 2);
+    assert.equal(backend.calls.find((c) => c.method === "createIssue"), undefined);
+  });
+
+  it("update --title keeps stored metadata (the server shallow-merges)", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      issues: [{
+        id: "issue-m1", projectId: "proj-1", title: "T", status: "todo", priority: "P1",
+        metadata: { backendType: "codex", daemonHost: "macmini", clientRequestId: "k1" },
+      }],
+    });
+    const code = await main(["update", "issue-m1", "--title", "T2", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    const patch = backend.calls.find((c) => c.method === "patchIssue");
+    // Only the audit namespace goes over the wire; nothing to clobber with.
+    assert.deepEqual(Object.keys(patch.body.metadata), ["audit"]);
+    const out = JSON.parse(stdout.collect().trim());
+    assert.equal(out.metadata.backendType, "codex");
+    assert.equal(out.metadata.clientRequestId, "k1");
+  });
+});
+
+describe("conductor issue list --status", () => {
+  it("sends the comma-separated status list to the server", async () => {
+    const stdout = makeStream();
+    const stderr = makeStream();
+    const backend = new FakeBackendApi({
+      projects: [seedProject],
+      issues: [
+        { id: "i1", projectId: "proj-1", title: "A", status: "todo", priority: "P1" },
+        { id: "i2", projectId: "proj-1", title: "B", status: "doing", priority: "P1" },
+        { id: "i3", projectId: "proj-1", title: "C", status: "done", priority: "P1" },
+      ],
+    });
+    const code = await main(["list", "--status", "doing", "--json"], { stdout, stderr, ...makeCliDeps(backend) });
+    assert.equal(code, 0, stderr.collect());
+    assert.equal(backend.calls.find((c) => c.method === "listIssues").params.status, "doing");
+    assert.deepEqual(JSON.parse(stdout.collect().trim()).map((i) => i.id), ["i2"]);
+  });
+});
+
 describe("conductor issue update arg-checks", () => {
   it("requires at least one updatable field", async () => {
     const stdout = makeStream();

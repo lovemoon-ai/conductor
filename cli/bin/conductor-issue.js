@@ -8,10 +8,11 @@
  *        [--all-projects | --project-ids a,b]   (cross-project listing)
  *   show <id>
  *   create --title <t> [--description <d> | --description-file FILE | --description-stdin]
- *          [--priority P1|P2|P3] [--status backlog|doing|done]
+ *          [--priority P0|P1|P2] [--status todo|done]
  *          [--client-request-id <key>] [--project ...]
  *   update <id> [--title ...] [--description ...] [--priority ...] [--status ...]
  *   start <id> [--backend <b>] [--global-backend <backend>@<host>]
+ *              [--daemon <host>] [--project <id>]
  *                       (alias for update --status doing)
  *   done <id> [--evidence <text>|@FILE]
  *   delete <id> --yes    (the server refuses issues still in doing)
@@ -107,7 +108,7 @@ function parseIdList(value) {
  * Cross-project listing straight off GET /api/issues: no `project_id` lists
  * every project the user can access (own + collaborations); `project_ids`
  * lists exactly those projects (what the merged cross-daemon view uses). The
- * route has no status/limit params, so those filters are applied here.
+ * server filters `status`; the route has no limit param, so that is applied here.
  */
 async function handleListAcross(argv, deps) {
   const projectIds = parseIdList(argv.projectIds);
@@ -118,14 +119,15 @@ async function handleListAcross(argv, deps) {
     throw argsError("--project cannot be combined with --all-projects/--project-ids");
   }
   const http = await buildHttp(deps);
+  const statuses = parseStatusList(argv.status);
+  const query = {
+    ...(projectIds.length > 0 ? { project_ids: projectIds.join(",") } : {}),
+    ...(statuses && statuses.length > 0 ? { status: statuses.join(",") } : {}),
+  };
   const raw = await http.get("/api/issues", {
-    query: projectIds.length > 0 ? { project_ids: projectIds.join(",") } : undefined,
+    query: Object.keys(query).length > 0 ? query : undefined,
   });
   let issues = Array.isArray(raw) ? raw : [];
-  const statuses = parseStatusList(argv.status);
-  if (statuses && statuses.length > 0) {
-    issues = issues.filter((issue) => statuses.includes(issue.status));
-  }
   if (argv.limit !== undefined) issues = issues.slice(0, argv.limit);
   if (argv.json) {
     // Same shape as the single-project `list --json` (the SDK-normalized form).
@@ -262,6 +264,32 @@ async function handleCreate(argv, deps) {
   return EXIT.OK;
 }
 
+/**
+ * Target project for `issue start`: `--project` as given, else — for
+ * `--daemon` on a project bound to another daemon — the same-named sibling
+ * project on that daemon. The server re-checks that it is a merged sibling.
+ */
+async function resolveStartProjectId(apis, argv, daemonHost) {
+  if (argv.project) {
+    return (await resolveProject(apis, { project: argv.project })).id;
+  }
+  if (!daemonHost) return undefined;
+  const issue = await apis.issues.getIssue(argv.id);
+  const current = await apis.projects.getProject(issue.projectId);
+  if (!current.daemonHost || current.daemonHost === daemonHost) return undefined;
+  const siblings = (await apis.projects.listProjects()).filter(
+    (project) => project.name === current.name && project.daemonHost === daemonHost,
+  );
+  if (siblings.length !== 1) {
+    throw argsError(
+      siblings.length === 0
+        ? `No project "${current.name}" on daemon ${daemonHost}; pass --project <id>`
+        : `Several projects "${current.name}" on daemon ${daemonHost}; pass --project <id>`,
+    );
+  }
+  return siblings[0].id;
+}
+
 async function handleUpdate(argv, deps, overrides = {}) {
   const apis = await buildApis(deps);
   const description = readDescription({
@@ -279,8 +307,18 @@ async function handleUpdate(argv, deps, overrides = {}) {
   const globalBackend = parseGlobalBackend(argv.globalBackend);
   // The server reads the spawned task's backend from `metadata.backendType`.
   const backendType = globalBackend?.backend ?? (argv.backend ? String(argv.backend) : undefined);
-  const metadata = buildAuditMetadata(deps.env, backendType ? { backendType } : {});
+  const daemonHost = argv.daemon ? String(argv.daemon).trim() : undefined;
+  const metadata = buildAuditMetadata(deps.env, {
+    ...(backendType ? { backendType } : {}),
+    ...(daemonHost ? { daemonHost } : {}),
+  });
+  // `start` only: the web's doing dialog re-parents the issue onto the chosen
+  // daemon's sibling project in a merged cross-daemon group.
+  const targetProjectId = overrides.status === "doing"
+    ? await resolveStartProjectId(apis, argv, daemonHost)
+    : undefined;
   const body = {
+    ...(targetProjectId ? { projectId: targetProjectId } : {}),
     ...(argv.title ? { title: String(argv.title) } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(argv.priority ? { priority: String(argv.priority) } : {}),
@@ -382,7 +420,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "list",
         "List issues",
         (cmd) => cmd
-          .option("status", { type: "string", describe: "Comma-separated status filter (e.g. backlog,doing)" })
+          .option("status", { type: "string", describe: "Comma-separated status filter: todo,doing,done" })
           .option("limit", { type: "number" })
           .option("all-projects", { type: "boolean", default: false, describe: "List issues across every accessible project" })
           .option("project-ids", { type: "string", describe: "Comma-separated project ids to list issues across" }),
@@ -406,8 +444,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("description", { type: "string" })
           .option("description-file", { type: "string" })
           .option("description-stdin", { type: "boolean", default: false })
-          .option("priority", { choices: ["P1", "P2", "P3"] })
-          .option("status", { choices: ["backlog", "doing", "done"] })
+          .option("priority", { choices: ["P0", "P1", "P2"] })
+          // Only moving into doing starts an issue's task: create, then `start`.
+          .option("status", { choices: ["todo", "done"] })
           .option("client-request-id", { type: "string" }),
         async (argv) => {
           exitCode = await handleCreate(argv, { ...handlerDeps, configFile: argv.configFile });
@@ -422,8 +461,8 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("description", { type: "string" })
           .option("description-file", { type: "string" })
           .option("description-stdin", { type: "boolean", default: false })
-          .option("priority", { choices: ["P1", "P2", "P3"] })
-          .option("status", { choices: ["backlog", "doing", "done"] }),
+          .option("priority", { choices: ["P0", "P1", "P2"] })
+          .option("status", { choices: ["todo", "doing", "done"] }),
         async (argv) => {
           exitCode = await handleUpdate(argv, { ...handlerDeps, configFile: argv.configFile });
         },
@@ -437,6 +476,10 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("global-backend", {
             type: "string",
             describe: "Run the AI on a global AI backend from settings, as <backend>@<host>",
+          })
+          .option("daemon", {
+            type: "string",
+            describe: "Daemon to run the task on (merged cross-daemon groups and the default project)",
           })
           .conflicts("backend", "global-backend"),
         async (argv) => {
@@ -472,8 +515,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         if (err) {
           throw err;
         }
-        stderr.write(`${msg}\n`);
-        exitCode = EXIT.ARGS;
+        // Throw so yargs stops here; returning would still run the command
+        // (e.g. `create --priority P3` was sent to the server anyway).
+        throw argsError(msg);
       })
       .parseAsync();
   } catch (err) {
