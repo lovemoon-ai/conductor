@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { summarizeDailyReportWithGlm } from "./glm-summarizer";
+import { excludeArchivedReportProjects } from "./visible-projects";
 
 export type DailyReportDeliveryChannel = "in_app" | "feishu";
 
@@ -760,12 +761,7 @@ export async function generateDailyReport(input: {
   // the summary text and pushed notifications. Like the task list, a task
   // follows the hide state of the project it is DISPLAYED under (see the loop),
   // so this is a per-task check rather than a query filter.
-  const hiddenProjectIds = new Set(
-    ((await (db as any).project.findMany({
-      where: { userId: input.userId, hiddenAt: { not: null } },
-      select: { id: true },
-    })) as Array<{ id: string }>).map((project) => project.id),
-  );
+  const hiddenProjectIds = await findHiddenProjectIds(input.userId);
 
   for (const task of tasks) {
     const displayProject = (task.secondProjectId && filedProjects.get(task.secondProjectId)) || task.project;
@@ -892,6 +888,23 @@ export async function generateDailyReport(input: {
   };
 }
 
+const findHiddenProjectIds = async (userId: string): Promise<Set<string>> =>
+  new Set(
+    ((await (db as any).project.findMany({
+      where: { userId, hiddenAt: { not: null } },
+      select: { id: true },
+    })) as Array<{ id: string }>).map((project) => project.id),
+  );
+
+/** Saved reports follow the current hide state, like the ones generated now. */
+const excludeArchivedProjects = (
+  report: DailyReportResponse,
+  hiddenProjectIds: Set<string>,
+): DailyReportResponse => ({
+  ...report,
+  payload: { ...report.payload, ...excludeArchivedReportProjects(report.payload, hiddenProjectIds) },
+});
+
 export const serializeDailyReportRun = (
   row: DailyReportRunRow,
   persisted = true,
@@ -983,7 +996,10 @@ export async function getDailyReport(input: {
         },
       })) as DailyReportRunRow | null;
       if (row) {
-        return serializeDailyReportRun(row);
+        return excludeArchivedProjects(
+          serializeDailyReportRun(row),
+          await findHiddenProjectIds(input.userId),
+        );
       }
     } catch (error) {
       if (!isMissingDailyReportSchemaError(error)) {
@@ -1085,7 +1101,8 @@ export async function listDailyReportRuns(input: {
       orderBy: { reportDate: "desc" },
       take: Math.max(1, Math.min(60, input.limit ?? 14)),
     })) as DailyReportRunRow[];
-    return rows.map((row) => serializeDailyReportRun(row));
+    const hiddenProjectIds = await findHiddenProjectIds(input.userId);
+    return rows.map((row) => excludeArchivedProjects(serializeDailyReportRun(row), hiddenProjectIds));
   } catch (error) {
     if (!isMissingDailyReportSchemaError(error)) {
       throw error;
