@@ -28,8 +28,13 @@ vi.mock("@/lib/db", () => ({
       create: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
+      findUnique: vi.fn(),
     },
   },
+}));
+
+vi.mock("@/lib/tasks/persistent-round", () => ({
+  startPersistentRound: vi.fn(),
 }));
 
 vi.mock("@/lib/realtime/hub", () => ({
@@ -61,6 +66,26 @@ const { db } = await import("@/lib/db");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 const { appendUserMessageToTask } = await import("@/lib/channel/task-ingress-service");
+const { startPersistentRound } = await import("@/lib/tasks/persistent-round");
+
+const endedPersistentTask = {
+  id: "task-p",
+  projectId: "proj-1",
+  taskType: "ai_task",
+  metadata: JSON.stringify({
+    persistent: { enabled: true, round: 2, roundEndedAt: "2026-09-30T00:00:00.000Z" },
+  }),
+};
+
+const postMessage = (body: Record<string, unknown>) =>
+  POST(
+    createMockRequest({
+      method: "POST",
+      url: "http://localhost:6152/api/tasks/task-p/messages",
+      body,
+    }),
+    { params: Promise.resolve({ taskId: "task-p" }) },
+  );
 
 describe("/api/tasks/[taskId]/messages", () => {
   beforeEach(() => {
@@ -70,6 +95,56 @@ describe("/api/tasks/[taskId]/messages", () => {
       email: "test@example.com",
       phone: null,
     } as any);
+  });
+
+  it("starts a new round when a user message reaches an ended persistent round", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
+    vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });
+    vi.mocked(db.message.findUnique).mockResolvedValue({
+      id: "msg-r3",
+      taskId: "task-p",
+      role: "user",
+      content: "next round",
+      metadata: null,
+      createdAt: new Date("2026-09-30T00:01:00.000Z"),
+    } as any);
+
+    const response = await postMessage({ content: "next round", role: "user" });
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(startPersistentRound).toHaveBeenCalledWith({ userId: "user-1", taskId: "task-p", content: "next round" });
+    expect(appendUserMessageToTask).not.toHaveBeenCalled();
+    expect(data).toMatchObject({ id: "msg-r3", content: "next round" });
+  });
+
+  it("surfaces a failed round start and never appends to the ended round", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
+    vi.mocked(startPersistentRound).mockResolvedValue({ ok: false, status: 409, error: "Daemon mac-mini is offline" });
+
+    const response = await postMessage({ content: "next round", role: "user" });
+
+    expect(response.status).toBe(409);
+    expect(await extractJson(response)).toEqual({ error: "Daemon mac-mini is offline" });
+    expect(appendUserMessageToTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps non-user messages (the fire's own output) in the ended round", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({ task: null, message: {
+      id: "msg-sdk",
+      taskId: "task-p",
+      role: "sdk",
+      content: "summary",
+      metadata: null,
+      createdAt: new Date(),
+    } } as any);
+
+    const response = await postMessage({ content: "summary", role: "sdk" });
+
+    expect(response.status).toBe(200);
+    expect(startPersistentRound).not.toHaveBeenCalled();
+    expect(appendUserMessageToTask).toHaveBeenCalled();
   });
 
   it("rejects POST for pty_task", async () => {

@@ -52,7 +52,7 @@ export const PERSISTENT_ROUND_CAPABILITY = "persistent_round_v1";
 type PersistentTaskRow = NonNullable<Awaited<ReturnType<typeof findPersistentTask>>>;
 
 export type PersistentRoundResult =
-  | { ok: true; task: PersistentTaskRow }
+  | { ok: true; task: PersistentTaskRow; messageId?: string }
   | { ok: false; status: number; error: string; details?: Record<string, unknown> };
 
 // `unknown` included: the fire may still be alive behind a lost connection.
@@ -442,5 +442,5 @@ export async function startPersistentRound(input: {
         : roundPrompt,
   });
 
-  return { ok: true, task: updated };
+  return { ok: true, task: updated, messageId: userMessage.id };
 }
