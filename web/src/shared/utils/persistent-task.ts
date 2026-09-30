@@ -17,6 +17,8 @@ export interface PersistentTaskState {
   round: number;
   roundEndedAt: string | null;
   roundEndMessageId: string | null;
+  /** Set while a request is starting the next round, so concurrent starts back off. */
+  roundStarting: { id: string; at: string } | null;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -42,6 +44,10 @@ export const readPersistentTaskState = (metadata: unknown): PersistentTaskState 
     round,
     roundEndedAt: readOptionalString(raw.roundEndedAt),
     roundEndMessageId: readOptionalString(raw.roundEndMessageId),
+    roundStarting:
+      isRecord(raw.roundStarting) && readOptionalString(raw.roundStarting.id) && readOptionalString(raw.roundStarting.at)
+        ? { id: raw.roundStarting.id as string, at: raw.roundStarting.at as string }
+        : null,
   };
 };
 

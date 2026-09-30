@@ -258,7 +258,8 @@ describe("persistent task rounds API", () => {
 
     it("builds the prompt from the summary as it is after the stop", async () => {
       vi.mocked(stopTaskBeforeRelaunch).mockImplementation(async () => {
-        stored = { ...stored, metadata: persistentMetadata({ summary: "Released 0.14.0" }) };
+        // The summary capture keeps the rest of metadata.persistent (the round-start claim).
+        stored = { ...stored, metadata: persistentMetadata({ ...storedPersistent(), summary: "Released 0.14.0" }) };
         return { ok: true };
       });
       expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
@@ -409,13 +410,49 @@ describe("persistent task rounds API", () => {
       expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
     });
 
-    it("writes nothing when the previous round cannot be stopped", async () => {
+    it("writes nothing and releases its claim when the previous round cannot be stopped", async () => {
+      const before = stored;
       vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: false, error: "Timed out" });
       const response = await call(startRound, "/rounds", "POST", { content: "go" });
       expect(response.status).toBe(409);
-      expect(db.task.updateMany).not.toHaveBeenCalled();
+      expect(stored.status).toBe(before.status);
+      expect(storedPersistent()).toMatchObject({ round: 2, roundStarting: null });
       expect(db.message.create).not.toHaveBeenCalled();
       expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+      // A retry is not blocked by the released claim.
+      vi.mocked(stopTaskBeforeRelaunch).mockResolvedValue({ ok: true });
+      expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
+    });
+
+    it("lets exactly one of two concurrent starts stop the old round and dispatch the new one", async () => {
+      let releaseStop!: () => void;
+      vi.mocked(stopTaskBeforeRelaunch).mockImplementation(
+        () => new Promise((resolve) => { releaseStop = () => resolve({ ok: true }); }),
+      );
+      const first = call(startRound, "/rounds", "POST", { content: "from A" });
+      const second = call(startRound, "/rounds", "POST", { content: "from B" });
+      await vi.waitFor(() => expect(stopTaskBeforeRelaunch).toHaveBeenCalled());
+      const loser = await second;
+      releaseStop();
+      const winner = await first;
+
+      expect(winner.status).toBe(200);
+      expect(loser.status).toBe(409);
+      expect(await extractJson(loser)).toMatchObject({ error: "round_changed" });
+      expect(stopTaskBeforeRelaunch).toHaveBeenCalledTimes(1);
+      expect(finalizeAiTaskCreation).toHaveBeenCalledTimes(1);
+      expect(storedPersistent()).toMatchObject({ round: 3, roundStarting: null });
+    });
+
+    it("ignores an expired round-start claim left by a crashed request", async () => {
+      const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+      useTask({ metadata: persistentMetadata({ roundStarting: { id: "crashed", at: at(10_000) } }) });
+      expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(409);
+      expect(stopTaskBeforeRelaunch).not.toHaveBeenCalled();
+
+      useTask({ metadata: persistentMetadata({ roundStarting: { id: "crashed", at: at(3 * 60_000) } }) });
+      expect((await call(startRound, "/rounds", "POST", { content: "go" })).status).toBe(200);
+      expect(storedPersistent()).toMatchObject({ round: 3, roundStarting: null });
     });
 
     it("refuses a stale client that saw an older round", async () => {

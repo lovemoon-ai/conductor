@@ -37,6 +37,7 @@ describe('persistent task metadata', () => {
       round: 1,
       roundEndedAt: null,
       roundEndMessageId: null,
+      roundStarting: null,
     });
   });
 
