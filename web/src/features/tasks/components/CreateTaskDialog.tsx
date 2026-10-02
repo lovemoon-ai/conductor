@@ -39,7 +39,7 @@ interface CreateTaskDialogProps {
   defaultProjectId?: string | null;
 }
 
-// RFC 0038: a daemon can host a task's worktree only if the AI on the other
+// A daemon can hold a global-backend task's code only if the AI on the other
 // daemon can drive it with `conductor remote exec` (git/build/test) and
 // `conductor remote cp` (file transfer). Same predicate as the API.
 const supportsRemoteWorktree = (capabilities: string[] | undefined): boolean =>
@@ -97,11 +97,6 @@ interface CreateTaskDialogFormState {
   createWorktree: boolean;
   /** RFC 0039: create the task as a persistent task. */
   persistent: boolean;
-  /**
-   * RFC 0038: daemon that hosts this task's git worktree while the AI runs on
-   * `agentHost`. Empty = the worktree (if any) is local to the AI's daemon.
-   */
-  remoteWorktreeHost: string;
   agentHost: string;
   backendType: string;
   /**
@@ -122,7 +117,6 @@ type CreateTaskDialogAction =
   | { type: 'set-project'; projectId: string }
   | { type: 'set-create-worktree'; createWorktree: boolean }
   | { type: 'set-persistent'; persistent: boolean }
-  | { type: 'set-remote-worktree-host'; remoteWorktreeHost: string }
   | { type: 'set-agent-host'; agentHost: string }
   | { type: 'set-backend'; backendType: string }
   | { type: 'set-global-backend'; globalBackendKey: string }
@@ -135,7 +129,6 @@ const initialCreateTaskDialogFormState: CreateTaskDialogFormState = {
   projectId: '',
   createWorktree: false,
   persistent: false,
-  remoteWorktreeHost: '',
   agentHost: '',
   backendType: '',
   globalBackendKey: '',
@@ -151,7 +144,6 @@ const taskDraftSchema = z.object({
   projectId: z.string(),
   createWorktree: z.boolean(),
   persistent: z.boolean().default(false),
-  remoteWorktreeHost: z.string().default(''),
   agentHost: z.string(),
   backendType: z.string(),
   globalBackendKey: z.string().default(''),
@@ -183,45 +175,24 @@ function createTaskDialogReducer(
         ...state,
         projectId: action.projectId,
         createWorktree: false,
-        remoteWorktreeHost: '',
         workerAgent: '',
         reviewers: [],
         submitError: null,
       };
-    // A local worktree and a remote one are mutually exclusive (the API rejects
-    // both), so picking one clears the other.
     case 'set-create-worktree':
-      return {
-        ...state,
-        createWorktree: action.createWorktree,
-        remoteWorktreeHost: action.createWorktree ? '' : state.remoteWorktreeHost,
-        submitError: null,
-      };
+      return { ...state, createWorktree: action.createWorktree, submitError: null };
     case 'set-persistent':
       return { ...state, persistent: action.persistent, submitError: null };
-    case 'set-remote-worktree-host':
-      return {
-        ...state,
-        remoteWorktreeHost: action.remoteWorktreeHost,
-        createWorktree: action.remoteWorktreeHost ? false : state.createWorktree,
-        // Only offered while no global backend is in effect; a remembered but
-        // unavailable one must not silently come back and drop this choice.
-        globalBackendKey: action.remoteWorktreeHost ? '' : state.globalBackendKey,
-        submitError: null,
-      };
-    // The daemon that runs the AI changed; the remote host may now be that
-    // daemon itself, so the choice is re-made.
     case 'set-agent-host':
-      return { ...state, agentHost: action.agentHost, backendType: '', remoteWorktreeHost: '', submitError: null };
+      return { ...state, agentHost: action.agentHost, backendType: '', submitError: null };
     case 'set-backend':
       return { ...state, backendType: action.backendType, globalBackendKey: '', submitError: null };
-    // A global backend runs the AI elsewhere, so the 0038 remote worktree and
-    // agent groups (both unsupported with it) are dropped; worktree stays.
+    // A global backend runs the AI elsewhere, so agent groups (unsupported
+    // with it) are dropped; worktree stays.
     case 'set-global-backend':
       return {
         ...state,
         globalBackendKey: action.globalBackendKey,
-        remoteWorktreeHost: '',
         workerAgent: '',
         reviewers: [],
         submitError: null,
@@ -279,7 +250,6 @@ export function CreateTaskDialog({
     projectId: requestedProjectId,
     createWorktree: requestedCreateWorktree,
     persistent,
-    remoteWorktreeHost: requestedRemoteWorktreeHost,
     agentHost: requestedAgentHost,
     backendType: requestedBackendType,
     globalBackendKey: requestedGlobalBackendKey,
@@ -379,25 +349,6 @@ export function CreateTaskDialog({
   const selectedProjectSupportsWorktree = Boolean(projectRepoRoot);
   const canCreateTaskWorktree = selectedProjectSupportsWorktree;
   const createWorktree = canCreateTaskWorktree ? requestedCreateWorktree : false;
-  // RFC 0038: the other members of a merged group whose daemon is online and
-  // can host a remote worktree. Only ai_task, only without an agent group (the
-  // API rejects remoteWorktree for groups), and never the AI's own daemon.
-  const remoteWorktreeOptions = useMemo(() => {
-    if (!isMergedGroup || !mergedGroupDaemonOptions) return [];
-    return mergedGroupDaemonOptions.flatMap((entry) => {
-      if (entry.memberId === projectId || !entry.agent || !supportsRemoteWorktree(entry.agent.capabilities)) {
-        return [];
-      }
-      const member = currentGroup?.members.find((candidate) => candidate.id === entry.memberId) as
-        | (Project & Record<string, unknown>)
-        | undefined;
-      const repoRoot = member && typeof member.repoRoot === 'string' ? member.repoRoot.trim() : '';
-      if (!repoRoot) return [];
-      const workspacePath = member && typeof member.workspacePath === 'string' ? member.workspacePath : null;
-      return [{ host: entry.host, label: formatBindingLabel(entry.host, workspacePath) }];
-    });
-  }, [currentGroup, isMergedGroup, mergedGroupDaemonOptions, projectId]);
-  const remoteWorktreeBlockedByAgents = Boolean(workerAgent.trim());
   // RFC 0041: global backends from settings, for a project bound to a daemon.
   // The project's own daemon is not listed (its backends already are); the
   // rest are shown greyed out with the reason when they cannot run now.
@@ -431,13 +382,6 @@ export function CreateTaskDialog({
   const selectedGlobalBackend = globalBackendOptions.find(
     (option) => option.key === requestedGlobalBackendKey && !option.disabledReason,
   ) ?? null;
-  const canUseRemoteWorktree = remoteWorktreeOptions.length > 0
-    && !remoteWorktreeBlockedByAgents
-    && !selectedGlobalBackend;
-  const remoteWorktreeHost = canUseRemoteWorktree
-    && remoteWorktreeOptions.some((option) => option.host === requestedRemoteWorktreeHost)
-    ? requestedRemoteWorktreeHost
-    : '';
   const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
   const boundDaemonAgent = isBoundProject
     ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
@@ -549,9 +493,7 @@ export function CreateTaskDialog({
         ...(agents ? { agents } : {}),
         ...(trimmedInitialContent ? { initialContent: trimmedInitialContent } : {}),
         ...(persistent ? { metadata: { persistent: { enabled: true } } } : {}),
-        launchConfig: remoteWorktreeHost
-          ? { remoteWorktree: { host: remoteWorktreeHost } }
-          : (createWorktree ? { worktree: true } : null),
+        launchConfig: createWorktree ? { worktree: true } : null,
       });
       clearDeviceSetupDraft(draftKey);
       dispatch({ type: 'reset' });
@@ -884,46 +826,6 @@ export function CreateTaskDialog({
                   </label>
                 </div>
               ) : null}
-
-              {remoteWorktreeOptions.length > 0 && !selectedGlobalBackend ? (
-                <div className="rounded-xl border border-border p-4">
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="create-task-remote-worktree" className="text-sm font-medium text-ink">
-                      Workspace on another daemon
-                    </label>
-                    <HelpTip label="remote worktree" align="right">
-                      Run the AI on {agentHost || 'the selected daemon'} but create the git worktree, build and
-                      test on the chosen daemon. The AI drives that machine through conductor remote; its
-                      local copy of the repository stays read-only.
-                    </HelpTip>
-                  </div>
-                  <select
-                    id="create-task-remote-worktree"
-                    aria-label="Workspace on another daemon"
-                    value={remoteWorktreeHost}
-                    disabled={remoteWorktreeBlockedByAgents}
-                    onChange={(e) => {
-                      dispatch({ type: 'set-remote-worktree-host', remoteWorktreeHost: e.target.value });
-                    }}
-                    className="webapp-input mt-2 w-full"
-                  >
-                    <option value="">Same daemon as the AI (default)</option>
-                    {remoteWorktreeOptions.map((option) => (
-                      <option key={option.host} value={option.host}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-xs text-muted">
-                    {remoteWorktreeBlockedByAgents
-                      ? 'Not available together with an agent group.'
-                      : remoteWorktreeHost
-                        ? `A new branch is created on ${remoteWorktreeHost} and cleaned up when the task is deleted or archived.`
-                        : 'Use when this daemon has the AI account but the other one has the build or hardware environment.'}
-                  </p>
-                </div>
-              ) : null}
-
 
               {hasEligibleDaemon && !selectedGlobalBackend ? (
                 <div className="mt-4 border-t border-border pt-4">

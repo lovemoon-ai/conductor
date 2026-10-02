@@ -4,6 +4,8 @@
 
 Implemented（2026-09-12 后端 + CLI + 端到端验证；2026-09-13 前端入口：创建对话框"Workspace on another daemon"选项 + 任务卡 `host:branch` 标签）
 
+**2026-10-02：用户入口已移除，由 RFC 0041（全局 AI 后端）取代。** 创建对话框 / issue 对话框的 "Workspace on another daemon"、`conductor task create --remote-worktree`、请求体里的 `launch_config.remoteWorktree.host` 与 issue 的 `remoteWorktreeHost` 都已删除（`POST /api/tasks` 对调用方传入的 `remoteWorktree` 返回 400）。本 RFC 的底层机制保留，作为全局后端 worktree 模式的实现：`launch_config.remoteWorktree`、操作规程 bootstrap、B 上 worktree 的清理、任务卡 `host:branch` 标签；已有的 remote worktree 任务照常重启、续轮和清理。
+
 ## Owner
 
 dang217

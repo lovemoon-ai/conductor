@@ -305,8 +305,6 @@ export const issuePatchSchema = z.object({
   type: issueTypeSchema.optional(),
   position: z.number().finite().optional(),
   metadata: issueMetadataSchema.nullable().optional(),
-  /** RFC 0038: todo→doing only; the daemon hosting the spawned task's worktree. */
-  remoteWorktreeHost: z.string().min(1).optional(),
   /** RFC 0033: todo→doing only; run the spawned task as a worker + reviewer group. Validated by `parseAgentsInput`. */
   agents: z.unknown().optional(),
   /** RFC 0041: todo→doing only; run the spawned task's AI on this global backend. */
@@ -376,10 +374,6 @@ export const normalizeIssuePatchBody = (body: unknown) => {
   }
   if (hasOwn(record, 'metadata')) {
     normalized.metadata = normalizeMetadata(record.metadata) ?? record.metadata;
-  }
-  if (hasOwn(record, 'remoteWorktreeHost') || hasOwn(record, 'remote_worktree_host')) {
-    normalized.remoteWorktreeHost =
-      normalizeOptionalString(readField(record, 'remote_worktree_host', 'remoteWorktreeHost')) ?? '';
   }
   if (hasOwn(record, 'agents')) {
     normalized.agents = record.agents;

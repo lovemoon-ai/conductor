@@ -31,8 +31,7 @@
  *   resume --daemon-host <h> --backend <b> --session <id> [--session-file <p>] [--title] [--prompt]
  *
  *   create also takes: --daemon-host, --agent <name>[:backend] (repeatable; first
- *   is the worker), --global-backend <host>:<backend>, --worktree,
- *   --remote-worktree <host>, --persistent
+ *   is the worker), --global-backend <backend>@<host>, --worktree, --persistent
  *   send also takes: --attach FILE (repeatable)
  *   messages also takes: --follow [--interval <sec>] [--until-idle]
  *   list also takes (without --archived): --all-projects, --project-ids a,b
@@ -351,6 +350,16 @@ async function handleList(argv, deps) {
 }
 
 async function handleCreate(argv, deps) {
+  // Removed flag: an unknown argument only warns, and would start a plain local task.
+  if (argv.remoteWorktree !== undefined) {
+    const err = new Error(
+      "--remote-worktree was removed. Create the task in the project on the daemon that holds the code, "
+        + "with --global-backend <backend>@<ai-host> --worktree: the host now names the daemon that runs the AI, "
+        + "not the one that holds the code.",
+    );
+    err.code = "ARGS";
+    throw err;
+  }
   const apis = await buildApis(deps);
   const project = await resolveProject(apis, {
     env: deps.env,
@@ -774,9 +783,9 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
             array: true,
             describe: "Multi-agent group member <name>[:backend]; repeat it. The first is the worker, the rest reviewers",
           })
-          .option("global-backend", { type: "string", describe: "Run the AI on a global backend <host>:<backend> (RFC 0041)" })
+          .option("global-backend", { type: "string", describe: "Run the AI on a global AI backend from settings, as <backend>@<host>" })
           .option("worktree", { type: "boolean", describe: "Run in a new git worktree on the project's daemon" })
-          .option("remote-worktree", { type: "string", describe: "Run in a new git worktree on this remote daemon" })
+          .option("remote-worktree", { type: "string", hidden: true })
           .option("persistent", { type: "boolean", describe: "Create a persistent task (RFC 0039)" }),
         async (argv) => {
           exitCode = await handleCreate(argv, { ...handlerDeps, configFile: argv.configFile });

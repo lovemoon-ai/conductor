@@ -1,15 +1,13 @@
 /**
  * RFC 0038: a task whose AI runs on one daemon while its git worktree lives on
- * another. The launching side only needs three things from here: resolve the
- * remote target (which project row on which daemon, with what capabilities),
- * mint the `remoteWorktree` launch_config, and write the operating protocol the
- * AI follows to create and use that worktree over `conductor remote`.
+ * another, as a global-backend task (RFC 0041) creates one. The launching side
+ * only needs three things from here: check the remote target, mint the
+ * `remoteWorktree` launch_config, and write the operating protocol the AI
+ * follows to create and use that worktree over `conductor remote`.
  */
 
-import { db } from "@/lib/db";
-import { canMergeProjectsByFields } from "@/lib/projects/grouping";
 import { appendTaskPrompt } from "./agent-group";
-import { normalizeOptionalString, parseJsonObject, type JsonObject } from "./task-config";
+import { normalizeOptionalString } from "./task-config";
 import {
   buildInitialWorktreeBranchName,
   resolveTaskWorktreeCwdFromLaunchConfig,
@@ -21,88 +19,7 @@ import {
 /** Both are required: `exec` for git/build/test, `file` for `remote cp`. */
 const REMOTE_WORKTREE_CAPABILITIES = ["remote_exec", "remote_file"] as const;
 
-/** The only field a caller supplies; everything else is resolved server-side. */
-export const readRemoteWorktreeRequestHost = (launchConfig: JsonObject | null): string | null => {
-  const raw = parseJsonObject(launchConfig?.remoteWorktree ?? launchConfig?.remote_worktree);
-  return normalizeOptionalString(raw?.host);
-};
-
-export const resolveRemoteWorktreeTarget = async (args: {
-  userId: string;
-  /** The project the task is filed under — the one bound on the launching daemon. */
-  project: {
-    id: string;
-    name: string;
-    daemonHost: string | null;
-    workspacePath: string | null;
-    gitRemoteUrl?: string | null;
-    mergeOptOut?: boolean | null;
-  };
-  requestedHost: string;
-  connectedAgents: Array<{ host: string; capabilities: string[] }>;
-  /** `AuthUser.tokenScope`; a `daemon_share` token is pinned to one guest host. */
-  tokenScope?: string | null;
-}): Promise<{ remoteWorktree: RemoteWorktreeLaunchConfig } | { error: string; status: number }> => {
-  const { project, requestedHost } = args;
-  // The DaemonShare body scanner (`daemon-share/scope.ts`) keys on field names
-  // like `agentHost`; `remoteWorktree.host` is a new host-targeting field, and a
-  // share credential must never point a task at the grantee's other machines.
-  if (args.tokenScope === "daemon_share") {
-    return { error: "remoteWorktree is not available to a shared daemon token", status: 403 };
-  }
-  if (!project.daemonHost || !project.workspacePath) {
-    return {
-      error: "remoteWorktree requires a project bound on the launching daemon",
-      status: 409,
-    };
-  }
-  if (requestedHost === project.daemonHost) {
-    return {
-      error: `remoteWorktree.host must be a different daemon than ${project.daemonHost}; use worktree: true for a local worktree`,
-      status: 409,
-    };
-  }
-  const daemonError = checkRemoteDaemon(requestedHost, args.connectedAgents);
-  if (daemonError) {
-    return daemonError;
-  }
-
-  // The same repository on the other daemon is its own Project row; the UI
-  // shows the two as one merged card. Reuse the merge predicate so "same
-  // project" means exactly what the user sees.
-  const sibling = await db.project.findFirst({
-    where: { userId: args.userId, daemonHost: requestedHost, name: project.name },
-  });
-  const siblingFields = sibling as
-    | {
-        id: string;
-        name: string;
-        daemonHost?: string | null;
-        workspacePath?: string | null;
-        repoRoot?: string | null;
-        worktreeBranch?: string | null;
-        lastCommit?: string | null;
-        gitRemoteUrl?: string | null;
-        mergeOptOut?: boolean | null;
-      }
-    | null;
-  if (!siblingFields || !canMergeProjectsByFields(project, siblingFields)) {
-    return {
-      error: `Project "${project.name}" is not bound on daemon ${requestedHost}`,
-      status: 409,
-    };
-  }
-  const target = resolveRemoteTarget({ ...siblingFields, daemonHost: requestedHost });
-  if ("error" in target) {
-    return target;
-  }
-  return { remoteWorktree: buildRemoteWorktreeForTarget(target) };
-};
-
-/**
- * Online + advertises everything `conductor remote` needs. Shared by RFC 0038
- * and RFC 0041 (global AI backend), whose target is the task's own project.
- */
+/** Online + advertises everything `conductor remote` needs. */
 export const checkRemoteDaemon = (
   host: string,
   connectedAgents: Array<{ host: string; capabilities: string[] }>,

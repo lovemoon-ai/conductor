@@ -295,7 +295,7 @@ describe("conductor task create / resume / list extensions", () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--worktree"],
+      ["create", "--title", "G", "--global-backend", "claude@l20", "--worktree"],
       { "POST /api/tasks": { id: "t7", title: "G" } },
       deps,
     );
@@ -305,24 +305,43 @@ describe("conductor task create / resume / list extensions", () => {
     assert.deepEqual(calls[0].body.launchConfig, { worktree: true });
   });
 
-  it("create rejects --global-backend with --remote-worktree (server 409s it)", async () => {
+  it("create still accepts the older <host>:<backend> form and rejects a malformed one", async () => {
+    const { deps } = sdkDeps();
+    const legacy = await runWithFetch(
+      main,
+      ["create", "--title", "G", "--global-backend", "l20:Claude"],
+      { "POST /api/tasks": { id: "t7", title: "G" } },
+      deps,
+    );
+    assert.equal(legacy.code, 0, legacy.err);
+    assert.deepEqual(legacy.calls[0].body.globalBackend, { host: "l20", backend: "claude" });
+
+    const bad = await runWithFetch(main, ["create", "--title", "G", "--global-backend", "claude"], {}, deps);
+    assert.equal(bad.code, 2);
+    assert.equal(bad.calls.length, 0);
+    assert.match(bad.err, /<backend>@<host>/);
+  });
+
+  it("create no longer takes --remote-worktree (use --global-backend)", async () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--remote-worktree", "ubuntu"],
+      ["create", "--title", "G", "--remote-worktree", "ubuntu"],
       {},
       deps,
     );
     assert.equal(code, 2);
     assert.equal(calls.length, 0);
-    assert.match(err, /--remote-worktree/);
+    assert.match(err, /--remote-worktree was removed/);
+    assert.match(err, /--global-backend <backend>@<ai-host> --worktree/);
+    assert.match(err, /runs the AI, not the one that holds the code/);
   });
 
   it("create rejects a --backend that differs from --global-backend", async () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--backend", "codex"],
+      ["create", "--title", "G", "--global-backend", "claude@l20", "--backend", "codex"],
       {},
       deps,
     );
@@ -335,7 +354,7 @@ describe("conductor task create / resume / list extensions", () => {
     const { deps } = sdkDeps();
     const { code, err, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--backend", "claude"],
+      ["create", "--title", "G", "--global-backend", "claude@l20", "--backend", "claude"],
       { "POST /api/tasks": { id: "t7", title: "G" } },
       deps,
     );
@@ -366,7 +385,7 @@ describe("conductor task create / resume / list extensions", () => {
     const { deps } = sdkDeps();
     const { code, calls } = await runWithFetch(
       main,
-      ["create", "--title", "G", "--global-backend", "l20:claude", "--agent", "x"],
+      ["create", "--title", "G", "--global-backend", "claude@l20", "--agent", "x"],
       {},
       deps,
     );

@@ -61,12 +61,6 @@ const isConductorFireHost = (host: string | null | undefined): boolean =>
 const normalizeHost = (value: string | null | undefined): string =>
   typeof value === 'string' ? value.trim() : '';
 
-// RFC 0038: same predicate as the API — the worktree daemon is driven through
-// `conductor remote exec` and `conductor remote cp`.
-const supportsRemoteWorktree = (agent: Agent, project: Project): boolean =>
-  Boolean(normalizeHost(project.repoRoot))
-  && ['remote_exec', 'remote_file'].every((required) => agent.capabilities?.includes(required));
-
 const hasRemoteCapabilities = (agent: Agent): boolean =>
   ['remote_exec', 'remote_file'].every((required) => agent.capabilities?.includes(required));
 
@@ -191,7 +185,6 @@ const getIssueDaemonOptions = (
   if (!projectHost) {
     return [];
   }
-  const optionProjects: Array<{ project: Project; canHostWorktree: boolean }> = [];
 
   for (const candidate of projects) {
     if (candidate.id !== project.id) {
@@ -215,21 +208,9 @@ const getIssueDaemonOptions = (
       supportedBackends: [...(agent.supportedBackends ?? [])],
       globalBackends: getGlobalBackendOptions(agent, globalBackends, agentByHost),
     });
-    optionProjects.push({ project: candidate, canHostWorktree: supportsRemoteWorktree(agent, candidate) });
   }
 
-  // RFC 0038: pair each AI daemon with the workspace hosts the API will accept
-  // for it. "Same project" is not transitive (a project without a git remote
-  // merges with any), so check against the AI option's own project.
-  return options.map((option, index) => ({
-    ...option,
-    remoteWorktreeHosts: options
-      .filter((other, otherIndex) =>
-        otherIndex !== index
-        && optionProjects[otherIndex].canHostWorktree
-        && canMergeProjects(optionProjects[index].project, optionProjects[otherIndex].project))
-      .map((other) => other.host),
-  }));
+  return options;
 };
 
 type PendingIssueStart = {
@@ -529,7 +510,6 @@ function IssuesPageContent() {
         status: pendingIssueStart.status,
         position: nextPosition,
         ...(projectChanged ? { projectId: args.projectId } : {}),
-        ...(args.remoteWorktreeHost ? { remoteWorktreeHost: args.remoteWorktreeHost } : {}),
         ...(args.agents ? { agents: args.agents } : {}),
         ...(args.globalBackend ? { globalBackend: args.globalBackend } : {}),
         metadata: {
