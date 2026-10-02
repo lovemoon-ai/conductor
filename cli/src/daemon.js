@@ -47,6 +47,7 @@ import {
 import { REMOTE_WORKTREE_ENV, remoteWorktreeFireEnv } from "./remote/mcp-launch.js";
 import {
   REMOTE_FILE_CAPABILITY,
+  REMOTE_FILE_PREVIEW_CAPABILITY,
   createRemoteFileHandlers,
   handleRemoteFileRequest,
 } from "./remote-file-handlers.js";
@@ -3909,7 +3910,7 @@ export function startDaemon(config = {}, deps = {}) {
     log("[remote-exec] Disabled by config (remote_exec: false); capability not advertised");
   }
   if (remoteFileEnabled) {
-    advertisedCapabilities.push(REMOTE_FILE_CAPABILITY);
+    advertisedCapabilities.push(REMOTE_FILE_CAPABILITY, REMOTE_FILE_PREVIEW_CAPABILITY);
   } else {
     log("[remote-file] Disabled by config (remote_file: false); capability not advertised");
   }
@@ -3985,6 +3986,15 @@ export function startDaemon(config = {}, deps = {}) {
         config: sdkConfig,
         agentHost: AGENT_NAME,
         guestRoot: IS_GUEST_DAEMON ? GUEST_ROOT : null,
+        // Every Fire logs to `<task dir>/conductor.log`, so the log path is the
+        // one place the working directory survives a daemon restart (adopted
+        // tmux records carry it too).
+        resolveTaskCwd: (taskId) => {
+          const ptyCwd = activePtySessions.get(taskId)?.cwd;
+          if (ptyCwd) return ptyCwd;
+          const logPath = activeTaskProcesses.get(taskId)?.logPath;
+          return logPath ? path.dirname(logPath) : null;
+        },
       })
     : null;
 

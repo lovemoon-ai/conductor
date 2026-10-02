@@ -200,6 +200,21 @@ describe("conductor task attribute verbs", () => {
     assert.equal(none.code, 2);
   });
 
+  it("preview posts the path and prints the temporary link", async () => {
+    const { code, out, calls } = await runWithFetch(main, ["preview", "t1", "docs/report.md"], {
+      "POST /api/tasks/t1/preview": { token: "tok", path: "report.md", viewUrl: "/preview/tok/report.md" },
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(calls[0].body, { path: "docs/report.md" });
+    assert.match(out, /https:\/\/backend\.example\/preview\/tok\/report\.md/);
+
+    const refused = await runWithFetch(main, ["preview", "t1", "notes.bin"], {
+      "POST /api/tasks/t1/preview": { status: 415, body: { error: "this file type cannot be previewed" } },
+    });
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /cannot be previewed/);
+  });
+
   it("share prints the public link; unshare DELETEs it", async () => {
     const shared = await runWithFetch(main, ["share", "t1"], {
       "POST /api/tasks/t1/share": { token: "tok123", createdAt: "x" },

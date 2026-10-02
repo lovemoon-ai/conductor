@@ -123,6 +123,7 @@
     "POST /api/projects/reorder": { "cli": "project reorder" },
 
     "GET /api/search": { "cli": "search" },
+    "GET /api/preview/[token]/[...path]": { "cli": "task preview" },
     "GET /api/shared/[token]": { "cli": "task shared" },
     "POST /api/speech/transcribe": { "cli": "task transcribe" },
 
@@ -155,6 +156,7 @@
     "PATCH /api/tasks/[taskId]/scheduled-messages/[scheduleId]": { "cli": "task schedule update" },
     "DELETE /api/tasks/[taskId]/scheduled-messages/[scheduleId]": { "cli": "task schedule delete" },
     "PUT /api/tasks/[taskId]/second-project": { "cli": "task move" },
+    "POST /api/tasks/[taskId]/preview": { "cli": "task preview" },
     "POST /api/tasks/[taskId]/share": { "cli": "task share" },
     "DELETE /api/tasks/[taskId]/share": { "cli": "task unshare" },
     "GET /api/tasks/[taskId]/terminal": { "cli": "task terminal show" },

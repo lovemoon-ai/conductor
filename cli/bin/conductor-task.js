@@ -23,6 +23,7 @@
  *   delete <id> --yes [--permanent] | archive <id> | unarchive <id> [--daemon-host <h>]
  *   rename <id> <title> | pin <id> | unpin <id> | labels <id> [<label-id>...] [--clear]
  *   move <id> [<project>] [--back] | share <id> | unshare <id> | shared <token|link>
+ *   preview <id> <path>
  *   transcribe <audio.wav|mp3> [--language <tag>]
  *   persistent <id> [--enable|--disable] [--instructions ...] [--summary ...]
  *   round end <id> | round start <id> [<message>] [--backend] [--daemon-host] [--worktree inherit|new|none]
@@ -940,6 +941,14 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
         "Create (or print) the read-only share link of a task",
         (cmd) => cmd.positional("id", { type: "string", demandOption: true }),
         run(extra.handleShare),
+      )
+      .command(
+        "preview <id> <path>",
+        "Open a temporary link to a file on the task's daemon (HTML, Markdown, images…)",
+        (cmd) => cmd
+          .positional("id", { type: "string", demandOption: true })
+          .positional("path", { type: "string", demandOption: true, describe: "Absolute, ~/ or relative to the task's working directory" }),
+        run(extra.handlePreview),
       )
       .command(
         "unshare <id>",

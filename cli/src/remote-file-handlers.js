@@ -38,6 +38,13 @@ const MAX_CONCURRENT_TRANSFERS = 4;
 const NUL = String.fromCharCode(0);
 
 export const REMOTE_FILE_CAPABILITY = "remote_file";
+/**
+ * This daemon enforces `rootPath` on `push` and resolves a relative path against
+ * a task's working directory. The backend must see it before opening a file
+ * preview: an older daemon would silently ignore `rootPath` and serve the whole
+ * disk to a preview link.
+ */
+export const REMOTE_FILE_PREVIEW_CAPABILITY = "remote_file_preview";
 
 /**
  * Move single files between this daemon's disk and the account that owns it,
@@ -68,6 +75,7 @@ export const REMOTE_FILE_CAPABILITY = "remote_file";
  * @param {number} [opts.chunkBytes]
  * @param {(ms:number)=>Promise<unknown>} [opts.sleep] backoff hook, injectable for tests
  * @param {string|null} [opts.guestRoot] when set, paths outside it are refused
+ * @param {(taskId:string)=>string|null} [opts.resolveTaskCwd] working directory of a live task
  */
 export function createRemoteFileHandlers(opts = {}) {
   const config = opts.config || null;
@@ -77,6 +85,7 @@ export function createRemoteFileHandlers(opts = {}) {
   const chunkBytes = resolveRemoteChunkBytes(opts.chunkBytes);
   const sleep = typeof opts.sleep === "function" ? opts.sleep : delay;
   const guestRoot = opts.guestRoot || null;
+  const resolveTaskCwd = typeof opts.resolveTaskCwd === "function" ? opts.resolveTaskCwd : () => null;
   // One controller for the whole daemon: `abortAll()` on shutdown tears down
   // every in-flight stream instead of letting them hold the process open.
   const shutdownController = new AbortController();
@@ -114,12 +123,55 @@ export function createRemoteFileHandlers(opts = {}) {
    * mistakes rather than a determined escape — same caveat as everywhere else
    * in this repo.
    */
-  function resolveRemotePath(value) {
-    const resolved = normalizeRemotePath(value);
+  function resolveRemotePath(value, taskId) {
+    const resolved = normalizeRemotePath(taskId ? resolveAgainstTask(value, taskId) : value);
     if (guestRoot && !isPathInsideGuestRoot(resolved, guestRoot)) {
       throw new Error(`path is outside this daemon's shared root: ${resolved}`);
     }
     return resolved;
+  }
+
+  /** A link the AI wrote as `docs/report.md` means "relative to where I ran". */
+  function resolveAgainstTask(value, taskId) {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw || path.isAbsolute(raw) || raw === "~" || raw.startsWith("~/")) return value;
+    const cwd = resolveTaskCwd(String(taskId));
+    if (!cwd) {
+      throw new Error(`cannot resolve relative path ${raw}: task ${taskId} is not running on this daemon`);
+    }
+    return path.join(cwd, raw);
+  }
+
+  /**
+   * Confine a preview read to `rootPath`. Unlike the guest-root check this one
+   * follows symlinks: the paths under a preview link are chosen by the page
+   * being previewed, not typed by the machine's owner, so a symlink into
+   * `~/.ssh` must not be a way out. Dotfiles below the root are refused for the
+   * same reason (`.env`, `.git/config`).
+   */
+  async function resolveInsideRoot(source, rootPath) {
+    let real;
+    let root;
+    try {
+      root = await fsp.realpath(normalizeRemotePath(rootPath));
+      real = await fsp.realpath(source);
+    } catch (error) {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+        throw new Error(`no such file: ${source}`);
+      }
+      throw error;
+    }
+    const relative = path.relative(root, real);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`path is outside the preview root: ${source}`);
+    }
+    if (relative.split(path.sep).some((segment) => segment.startsWith("."))) {
+      throw new Error(`hidden files are not available to preview: ${source}`);
+    }
+    if (guestRoot && !isPathInsideGuestRoot(real, await fsp.realpath(guestRoot))) {
+      throw new Error(`path is outside this daemon's shared root: ${source}`);
+    }
+    return real;
   }
 
   async function acquireSlot() {
@@ -306,7 +358,10 @@ export function createRemoteFileHandlers(opts = {}) {
   async function push(args = {}) {
     const transferId = requireId(args.transferId ?? args.transfer_id, "transferId");
     const transferToken = requireId(args.transferToken ?? args.transfer_token, "transferToken");
-    const source = resolveRemotePath(args.remotePath ?? args.remote_path);
+    let source = resolveRemotePath(args.remotePath ?? args.remote_path);
+    const rootPath = args.rootPath ?? args.root_path;
+    if (rootPath) source = await resolveInsideRoot(source, rootPath);
+    const limit = Math.min(maxBytes, toPositiveInt(args.maxBytes ?? args.max_bytes) || maxBytes);
 
     const stat = await statOrNull(source);
     if (!stat) {
@@ -318,8 +373,8 @@ export function createRemoteFileHandlers(opts = {}) {
     if (!stat.isFile()) {
       throw new Error(`${source} is not a regular file`);
     }
-    if (stat.size > maxBytes) {
-      throw new Error(`${source} is ${stat.size} bytes, over the ${maxBytes} byte limit`);
+    if (stat.size > limit) {
+      throw new Error(`${source} is ${stat.size} bytes, over the ${limit} byte limit`);
     }
 
     await acquireSlot();
@@ -414,11 +469,12 @@ export function createRemoteFileHandlers(opts = {}) {
 
   /** Probe a path. A missing path is an answer, not an error. */
   async function stat(args = {}) {
-    const target = resolveRemotePath(args.remotePath ?? args.remote_path);
+    const target = resolveRemotePath(args.remotePath ?? args.remote_path, args.taskId ?? args.task_id);
     const info = await statOrNull(target);
     if (!info) {
       return {
         path: target,
+        realPath: null,
         exists: false,
         isFile: false,
         isDirectory: false,
@@ -429,6 +485,9 @@ export function createRemoteFileHandlers(opts = {}) {
     }
     return {
       path: target,
+      // Symlinks resolved: a preview roots itself here, so that the root it
+      // later enforces is the directory the file really lives in.
+      realPath: await fsp.realpath(target),
       exists: true,
       isFile: info.isFile(),
       isDirectory: info.isDirectory(),

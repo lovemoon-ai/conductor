@@ -51,6 +51,8 @@ export interface TransferRecord {
    *  happens as soon as a delivered upload's bytes stop having a consumer. The
    *  record outlives its blob so the client's status poll still resolves. */
   blobReleased: boolean;
+  /** Which budget this transfer is charged to — see `CreateTransferInput`. */
+  preview: boolean;
   createdAt: number;
   expiresAt: number;
 }
@@ -64,6 +66,14 @@ export interface CreateTransferInput {
   sizeBytes?: number | null;
   sha256?: string | null;
   mode?: number | null;
+  /**
+   * A file preview's download. Previews are fetched without anyone asking for
+   * each file, so they are budgeted apart from `remote cp`: their own disk
+   * allowance and their own concurrency count, neither of which can use up
+   * the other's. They also know their size cap, and reserve that instead of
+   * the worst case.
+   */
+  preview?: { reserveBytes: number };
 }
 
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
@@ -109,6 +119,15 @@ export function remoteFileTotalBytes(): number {
 /** Per-user slice of the global staging budget. */
 export function remoteFileUserBytes(): number {
   return envBytes("CONDUCTOR_REMOTE_FILE_USER_BYTES", DEFAULT_USER_BYTES);
+}
+
+/** Previews' own staging allowance, process-wide and per user. */
+function previewTotalBytes(): number {
+  return envBytes("CONDUCTOR_PREVIEW_TOTAL_BYTES", 2 * 1024 * 1024 * 1024);
+}
+
+function previewUserBytes(): number {
+  return envBytes("CONDUCTOR_PREVIEW_USER_BYTES", 500 * 1024 * 1024);
 }
 
 /** Resolved per call so a test (or a redeploy) can repoint the storage root
@@ -161,9 +180,10 @@ function isLive(record: TransferRecord): boolean {
  * collectively blow past the budget. `receivedBytes` is the floor for the
  * pathological case of a sender that under-declared and streamed more.
  */
-function reservedBytes(userId?: string): number {
+function reservedBytes(userId?: string, preview = false): number {
   let total = 0;
   for (const record of transfers.values()) {
+    if (record.preview !== preview) continue;
     if (userId !== undefined && record.userId !== userId) continue;
     // Blob already unlinked: the record lingers only so the client's status
     // poll resolves, and a record with no bytes on disk must cost no budget.
@@ -211,9 +231,10 @@ export function remoteFileReservedBytesForTests(userId?: string): number {
 }
 
 export function createTransfer(input: CreateTransferInput): TransferRecord {
+  const preview = Boolean(input.preview);
   let live = 0;
   for (const record of transfers.values()) {
-    if (record.userId === input.userId && isLive(record)) live += 1;
+    if (record.userId === input.userId && record.preview === preview && isLive(record)) live += 1;
   }
   if (live >= MAX_LIVE_TRANSFERS_PER_USER) {
     throw codedError(
@@ -227,17 +248,19 @@ export function createTransfer(input: CreateTransferInput): TransferRecord {
   // as soon as the real total shows up.
   const maxBytes = remoteFileMaxBytes();
   const reserve =
-    input.direction === "up" && typeof input.sizeBytes === "number" ? input.sizeBytes : maxBytes;
+    input.direction === "up" && typeof input.sizeBytes === "number"
+      ? input.sizeBytes
+      : Math.min(input.preview?.reserveBytes ?? maxBytes, maxBytes);
 
-  const totalBudget = remoteFileTotalBytes();
-  if (reservedBytes() + reserve > totalBudget) {
+  const totalBudget = preview ? previewTotalBytes() : remoteFileTotalBytes();
+  if (reservedBytes(undefined, preview) + reserve > totalBudget) {
     throw codedError(
       `remote file staging is full (limit ${totalBudget} bytes); retry shortly`,
       "TRANSFER_BUDGET",
     );
   }
-  const userBudget = remoteFileUserBytes();
-  if (reservedBytes(input.userId) + reserve > userBudget) {
+  const userBudget = preview ? previewUserBytes() : remoteFileUserBytes();
+  if (reservedBytes(input.userId, preview) + reserve > userBudget) {
     throw codedError(
       `remote file staging budget exhausted for this account (limit ${userBudget} bytes); ` +
         "finish or cancel a transfer and retry",
@@ -266,6 +289,7 @@ export function createTransfer(input: CreateTransferInput): TransferRecord {
     totalBytes: input.direction === "up" ? input.sizeBytes ?? null : null,
     reservedBytes: reserve,
     blobReleased: false,
+    preview,
     createdAt: now,
     expiresAt: now + TRANSFER_TTL_MS,
   };
