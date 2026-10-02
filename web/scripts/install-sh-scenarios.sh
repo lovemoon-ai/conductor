@@ -32,6 +32,8 @@ SCENARIOS=(
     user-owned-npm-untouched
     version-manager-shims-untouched
     self-npm-ignores-system-npm
+    stalled-npm-falls-back-to-mirror
+    node-download-failure-is-explained
 )
 
 FAILURES=0
@@ -140,8 +142,16 @@ case "${1:-}" in
     rebuild) exit 0 ;;
     install)
         assert_inside_sandbox "$prefix"
+        # STUB_NPM_STALL: hang the way npm does on a registry connection that never answers,
+        # unless the install was pointed at another registry.
+        case " $* " in
+            *" --registry="*) ;;
+            *) [ -z "${STUB_NPM_STALL:-}" ] || exec sleep 60 ;;
+        esac
         pkg="$prefix/lib/node_modules/@love-moon/conductor-cli"
         mkdir -p "$pkg/bin" "$prefix/bin"
+        printf '%s\n' "$*" > "$pkg/install-args"
+        printf '%s\n' "${npm_config_nodedir:-}" > "$pkg/install-nodedir"
         printf '{"name":"@love-moon/conductor-cli","version":"9.9.9"}\n' > "$pkg/package.json"
         printf '#!/usr/bin/env bash\necho 9.9.9\n' > "$pkg/bin/conductor.js"
         printf 'process.exit(0)\n' > "$pkg/bin/conductor-verify-node-pty.js"
@@ -333,6 +343,9 @@ scenario_fresh_managed_node() {
     new_case darwin arm64
     run_installer
     assert_managed_node_layout
+    assert_contains "$(managed_pkg_root)/install-nodedir" \
+        "$(conductor_home)/node-v${NODE_VERSION}-darwin-arm64" \
+        "node-gyp compiles against the headers the managed Node ships"
     assert_contains "${CASE_DIR}/output.log" 'export PATH="$HOME/.conductor/node/bin:$PATH"' \
         "advertises the stable node/bin symlink"
 }
@@ -490,6 +503,33 @@ scenario_self_npm_ignores_system_npm() {
     assert_absent "${HOME_DIR}/env-prefix" "NPM_CONFIG_PREFIX does not retarget the install"
     assert_contains "${CASE_DIR}/output.log" 'export PATH="$HOME/.conductor/node/bin:$PATH"' \
         "PATH setup offered over the older conductor on PATH"
+}
+
+# npm hangs forever on a registry connection that stalls mid-handshake. The installer has to stop
+# it and get the package from the mirror instead.
+scenario_stalled_npm_falls_back_to_mirror() {
+    new_case linux arm64
+    run_installer STUB_NPM_STALL=1 CONDUCTOR_INSTALL_NPM_TIMEOUT=2
+
+    assert_managed_node_layout
+    assert_contains "${CASE_DIR}/output.log" "did not finish within 2s" "stalled npm is stopped"
+    assert_contains "$(managed_pkg_root)/install-args" "registry=https://registry.npmmirror.com/" \
+        "retried against the mirror"
+}
+
+# A machine that cannot reach nodejs.org used to get a bare curl error and nothing else.
+scenario_node_download_failure_is_explained() {
+    new_case linux arm64
+    printf '#!/usr/bin/env bash\necho "curl: (7) Failed to connect" >&2\nexit 7\n' > "${STUB_DIR}/curl"
+
+    if env -i HOME="$HOME_DIR" PATH="${STUB_DIR}:/usr/bin:/bin:/usr/sbin:/sbin" SHELL=/bin/zsh \
+        CONDUCTOR_INSTALL_RC_FILE="$RC_FILE" bash "$INSTALL_SH" > "${CASE_DIR}/output.log" 2>&1; then
+        fail "installer succeeded without a Node download"
+    fi
+
+    assert_contains "${CASE_DIR}/output.log" "Could not download Node.js" "names what failed"
+    assert_contains "${CASE_DIR}/output.log" "HTTPS_PROXY" "says how to get past it"
+    assert_absent "$(conductor_home)/node" "no half-installed Node left behind"
 }
 
 # ----------------------------------------------------------------------------- main

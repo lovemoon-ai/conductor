@@ -9,6 +9,7 @@ import {
   parseUpdateWindow,
   isInUpdateWindow,
   isManagedInstallPath,
+  resolveBundledNodeDir,
   resolveGlobalInstallPrefix,
   resolveInstallMethod,
 } from "../src/version-check.js";
@@ -138,6 +139,28 @@ describe("isManagedInstallPath", () => {
       }),
       false,
     );
+  });
+});
+
+describe("resolveBundledNodeDir", () => {
+  const nodeExecutable = "/home/duino/.conductor/node-v23.11.0-linux-arm64/bin/node";
+
+  it("returns the Node dir when it ships its own headers", () => {
+    const probed = [];
+    const nodeDir = resolveBundledNodeDir(nodeExecutable, {
+      existsSync: (candidate) => {
+        probed.push(candidate);
+        return true;
+      },
+    });
+    assert.strictEqual(nodeDir, "/home/duino/.conductor/node-v23.11.0-linux-arm64");
+    assert.deepStrictEqual(probed, [
+      "/home/duino/.conductor/node-v23.11.0-linux-arm64/include/node/common.gypi",
+    ]);
+  });
+
+  it("returns null when the headers are not next to the binary", () => {
+    assert.strictEqual(resolveBundledNodeDir(nodeExecutable, { existsSync: () => false }), null);
   });
 });
 

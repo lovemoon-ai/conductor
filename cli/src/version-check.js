@@ -162,6 +162,16 @@ export function resolveGlobalInstallPrefix(packageRoot) {
   return normalized.slice(0, markerIndex);
 }
 
+/**
+ * The directory of the running Node when it ships its own headers, which official tarballs, nvm
+ * and Homebrew all do. Handed to node-gyp as `npm_config_nodedir`, it compiles node-pty against
+ * those instead of downloading the headers from nodejs.org.
+ */
+export function resolveBundledNodeDir(nodeExecutable = process.execPath, { existsSync = fs.existsSync } = {}) {
+  const nodeDir = path.dirname(path.dirname(nodeExecutable));
+  return existsSync(path.join(nodeDir, "include", "node", "common.gypi")) ? nodeDir : null;
+}
+
 export function buildUpgradeCommand(options = {}) {
   const installMethod = resolveInstallMethod(options);
   if (installMethod === "homebrew") {
