@@ -4,7 +4,7 @@
  * The client computes groups from the full project list it already holds
  * (`features/projects/utils/project-groups.ts`). Server callers only ever have
  * one project in hand, so they need this lookup instead. It mirrors the pairwise
- * check `lib/tasks/remote-worktree.ts` does, generalized from "the sibling on
+ * check `lib/tasks/global-backend.ts` does, generalized from "the sibling on
  * daemon X" to "every sibling".
  *
  * Membership is computed, never stored — see `lib/projects/grouping.ts` for the

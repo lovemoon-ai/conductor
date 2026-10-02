@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { MoveIssueToDoingDialog, type MoveIssueToDoingDaemonOption } from './MoveIssueToDoingDialog';
@@ -190,15 +190,9 @@ describe('MoveIssueToDoingDialog', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  const REMOTE_CAPABLE: MoveIssueToDoingDaemonOption[] = MERGED_DAEMONS.map((option) => ({
-    ...option,
-    remoteWorktreeHosts: MERGED_DAEMONS.filter((other) => other.host !== option.host).map((other) => other.host),
-  }));
-
   describe('global AI backend (RFC 0041)', () => {
     const WITH_GLOBAL: MoveIssueToDoingDaemonOption[] = [{
       ...SINGLE_DAEMON[0],
-      remoteWorktreeHosts: [],
       globalBackends: [
         { host: 'gpu-box', backend: 'codex', disabledReason: null },
         { host: 'laptop', backend: 'claude', disabledReason: 'laptop is offline' },
@@ -234,163 +228,6 @@ describe('MoveIssueToDoingDialog', () => {
         projectId: 'project-a',
         globalBackend: { host: 'gpu-box', backend: 'codex' },
       });
-    });
-  });
-
-  describe('workspace on another daemon (RFC 0038)', () => {
-    it('is hidden when no other daemon can host the worktree', () => {
-      render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={MERGED_DAEMONS}
-          onClose={() => {}}
-          onConfirm={() => {}}
-        />,
-      );
-
-      expect(screen.queryByLabelText('Workspace on another daemon')).toBeNull();
-    });
-
-    it('starts collapsed on the same daemon and confirms with the picked host', async () => {
-      const onConfirm = vi.fn();
-      render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE}
-          onClose={() => {}}
-          onConfirm={onConfirm}
-        />,
-      );
-
-      const details = screen.getByText('Workspace on another daemon').closest('details');
-      expect(details).not.toHaveAttribute('open');
-      const select = screen.getByLabelText('Workspace on another daemon');
-      expect(select).toHaveValue('');
-      // Never offers the daemon that runs the AI.
-      expect(Array.from((select as HTMLSelectElement).options).map((option) => option.value)).toEqual(['', 'daemon-b']);
-
-      fireEvent.change(select, { target: { value: 'daemon-b' } });
-      expect(screen.getByText('Workspace on another daemon: daemon-b')).toBeInTheDocument();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
-      });
-
-      expect(onConfirm).toHaveBeenCalledWith({
-        backendType: 'claude',
-        daemonHost: 'daemon-a',
-        projectId: 'project-a',
-        remoteWorktreeHost: 'daemon-b',
-      });
-    });
-
-    it('keeps a pick whose daemon went offline and blocks confirm until another workspace is chosen', async () => {
-      const onConfirm = vi.fn();
-      const { rerender } = render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE}
-          onClose={() => {}}
-          onConfirm={onConfirm}
-        />,
-      );
-
-      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-b' } });
-      rerender(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE.slice(0, 1)}
-          onClose={() => {}}
-          onConfirm={onConfirm}
-        />,
-      );
-
-      expect(screen.getByRole('alert').textContent).toMatch(/daemon-b is no longer available/);
-      expect(screen.getByLabelText('Workspace on another daemon')).toHaveValue('daemon-b');
-      const confirm = screen.getByRole('button', { name: 'Move To Doing' });
-      expect(confirm).toBeDisabled();
-
-      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: '' } });
-
-      expect(screen.queryByRole('alert')).toBeNull();
-      // With nothing left to pick, the section disappears again.
-      expect(screen.queryByLabelText('Workspace on another daemon')).toBeNull();
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
-      });
-      expect(onConfirm).toHaveBeenCalledWith({
-        backendType: 'claude',
-        daemonHost: 'daemon-a',
-        projectId: 'project-a',
-      });
-    });
-
-    it('offers only the workspace hosts paired with the selected AI daemon', () => {
-      render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={[
-            { host: 'daemon-a', projectId: 'project-a', supportedBackends: ['claude'], remoteWorktreeHosts: ['daemon-c'] },
-            { host: 'daemon-b', projectId: 'project-b', supportedBackends: ['claude'], remoteWorktreeHosts: [] },
-            { host: 'daemon-c', projectId: 'project-c', supportedBackends: ['claude'], remoteWorktreeHosts: ['daemon-a'] },
-          ]}
-          onClose={() => {}}
-          onConfirm={() => {}}
-        />,
-      );
-
-      const select = screen.getByLabelText('Workspace on another daemon') as HTMLSelectElement;
-      expect(Array.from(select.options).map((option) => option.value)).toEqual(['', 'daemon-c']);
-
-      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-b' } });
-
-      expect(screen.queryByLabelText('Workspace on another daemon')).toBeNull();
-    });
-
-    it('names the offline AI daemon when the AI falls back onto the chosen workspace daemon', () => {
-      const { rerender } = render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE}
-          onClose={() => {}}
-          onConfirm={() => {}}
-        />,
-      );
-
-      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-b' } });
-      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-a' } });
-      // daemon-b (the AI) disconnects; the AI falls back to daemon-a.
-      rerender(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE.slice(0, 1)}
-          onClose={() => {}}
-          onConfirm={() => {}}
-        />,
-      );
-
-      const alert = screen.getByRole('alert').textContent ?? '';
-      expect(alert).toMatch(/daemon-b went offline, so the AI now runs on daemon-a, your chosen workspace/);
-      expect(alert).not.toMatch(/daemon-a is no longer available/);
-      expect(screen.getByRole('button', { name: 'Move To Doing' })).toBeDisabled();
-    });
-
-    it('resets the choice when the AI daemon changes', () => {
-      render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE}
-          onClose={() => {}}
-          onConfirm={() => {}}
-        />,
-      );
-
-      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-b' } });
-      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-b' } });
-
-      const select = screen.getByLabelText('Workspace on another daemon') as HTMLSelectElement;
-      expect(select).toHaveValue('');
-      expect(Array.from(select.options).map((option) => option.value)).toEqual(['', 'daemon-a']);
     });
   });
 
@@ -441,44 +278,6 @@ describe('MoveIssueToDoingDialog', () => {
         projectId: 'project-a',
         agents: [{ name: 'feature-dev' }, { name: 'code-reviewer', backend: 'claude' }],
       });
-    });
-
-    it('blocks the remote workspace while a worker agent is picked, and restores it when cleared', async () => {
-      apiGetMock.mockReset().mockResolvedValue({
-        agents: [{ name: 'feature-dev', description: null, backend: null }],
-      });
-      const onConfirm = vi.fn();
-      render(
-        <MoveIssueToDoingDialog
-          open
-          daemonOptions={REMOTE_CAPABLE}
-          onClose={() => {}}
-          onConfirm={onConfirm}
-        />,
-      );
-
-      fireEvent.change(screen.getByLabelText('Workspace on another daemon'), { target: { value: 'daemon-b' } });
-      openAgentsSection();
-      const workerAgent = await screen.findByLabelText('Worker agent');
-      fireEvent.change(workerAgent, { target: { value: 'feature-dev' } });
-
-      const workspace = screen.getByLabelText('Workspace on another daemon');
-      expect(workspace).toBeDisabled();
-      expect(workspace).toHaveValue('');
-      expect(screen.getByText('Not available together with an agent group.')).toBeInTheDocument();
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Move To Doing' }));
-      });
-      expect(onConfirm).toHaveBeenLastCalledWith({
-        backendType: 'claude',
-        daemonHost: 'daemon-a',
-        projectId: 'project-a',
-        agents: [{ name: 'feature-dev' }],
-      });
-
-      fireEvent.change(workerAgent, { target: { value: '' } });
-      await waitFor(() => expect(screen.getByLabelText('Workspace on another daemon')).toHaveValue('daemon-b'));
     });
 
     it('loads the registry of the picked daemon\'s sibling project in a merged group', async () => {

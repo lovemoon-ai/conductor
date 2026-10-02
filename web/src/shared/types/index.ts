@@ -555,8 +555,6 @@ export interface UpdateIssueInput {
   type?: IssueType;
   position?: number;
   metadata?: Record<string, unknown> | null;
-  /** RFC 0038: on todo→doing, host the spawned task's worktree on this daemon. */
-  remoteWorktreeHost?: string;
   /** RFC 0033: on todo→doing, run the spawned task as a worker + reviewer agent group. */
   agents?: CreateTaskInput['agents'];
   /** RFC 0041: on todo→doing, run the spawned task's AI on this global backend. */

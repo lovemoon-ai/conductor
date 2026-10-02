@@ -20,11 +20,10 @@ import {
 import { serializeTaskResponse } from '@/lib/tasks/serialization';
 import { normalizeOptionalString, normalizeTaskStatus, parseJsonObject, type JsonObject } from '@/lib/tasks/task-config';
 import { resolveTaskStopTargetHost, stopTaskBeforeRelaunch } from '@/lib/tasks/task-stop';
-import { buildTaskWorktreeLaunchConfig, type RemoteWorktreeLaunchConfig } from '@/lib/tasks/worktree';
+import { buildTaskWorktreeLaunchConfig } from '@/lib/tasks/worktree';
 import {
   buildRemoteWorkspaceBootstrap,
   buildRemoteWorktreeBootstrap,
-  resolveRemoteWorktreeTarget,
 } from '@/lib/tasks/remote-worktree';
 import {
   readGlobalBackendRequest,
@@ -357,6 +356,15 @@ export async function PATCH(
 
   const { activeTaskByIssueId, linkedTaskByIssueId, tasksByIssueId } = await loadIssueTaskMaps(user.id, [existing.id]);
 
+  // Removed with the "Workspace on another daemon" entry. Refuse a stale
+  // client rather than start a local worktree where it asked for another daemon.
+  const rawBody = (body ?? {}) as Record<string, unknown>;
+  if (rawBody.remoteWorktreeHost != null || rawBody.remote_worktree_host != null) {
+    return NextResponse.json(
+      { error: 'remoteWorktreeHost is no longer supported; use globalBackend' },
+      { status: 400 },
+    );
+  }
   const parsed = issuePatchSchema.safeParse(normalizeIssuePatchBody(body));
   if (!parsed.success) {
     return NextResponse.json(
@@ -571,18 +579,8 @@ export async function PATCH(
   let restartPlan: PlannedInplaceTaskRestart | null = null;
   let reviewerSpawnArgs: Omit<Parameters<typeof spawnAgentGroupReviewers>[0], 'workerTaskId'> | null = null;
 
-  // The workspace choice only shapes a brand-new task. Refuse it rather than
+  // These choices only shape a brand-new task. Refuse them rather than
   // silently restarting a linked task (or doing nothing) where the user asked.
-  if (input.remoteWorktreeHost && !shouldSpawnTask) {
-    return NextResponse.json(
-      {
-        error: linkedTask
-          ? 'This issue already has a linked task; its workspace cannot be moved to another daemon'
-          : 'remoteWorktreeHost only applies when moving the issue into doing starts a new task',
-      },
-      { status: 409 },
-    );
-  }
   if (agentGroup && !shouldSpawnTask) {
     return NextResponse.json(
       {
@@ -592,9 +590,6 @@ export async function PATCH(
       },
       { status: 409 },
     );
-  }
-  if (agentGroup && input.remoteWorktreeHost) {
-    return NextResponse.json({ error: 'remoteWorktree does not support agent groups' }, { status: 409 });
   }
   // RFC 0041: the spawned task's AI runs on a global backend daemon while the
   // code stays on the issue project's daemon.
@@ -616,12 +611,6 @@ export async function PATCH(
   }
   if (globalBackendRequest && agentGroup) {
     return NextResponse.json({ error: 'global_backend does not support agent groups' }, { status: 409 });
-  }
-  if (globalBackendRequest && input.remoteWorktreeHost) {
-    return NextResponse.json(
-      { error: 'global_backend and remoteWorktree are mutually exclusive' },
-      { status: 409 },
-    );
   }
   // Daemon remembered in `metadata.daemonHost` for the next doing dialog; for
   // a global-backend task that is the code's daemon, not the AI's.
@@ -746,31 +735,7 @@ export async function PATCH(
     if (agentGroupBackendError) {
       return NextResponse.json({ error: agentGroupBackendError }, { status: 400 });
     }
-    // RFC 0038: the AI runs on `agentHost`, its worktree on a merged-group sibling.
-    let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
-    if (input.remoteWorktreeHost) {
-      const resolved = await resolveRemoteWorktreeTarget({
-        userId: user.id,
-        project: {
-          id: executionProject.id,
-          name: executionProject.name,
-          daemonHost: projectDaemonHost,
-          workspacePath: projectWorkspacePath,
-          gitRemoteUrl: executionProject.gitRemoteUrl,
-          mergeOptOut: executionProject.mergeOptOut,
-        },
-        requestedHost: input.remoteWorktreeHost,
-        connectedAgents,
-        tokenScope: user.tokenScope ?? null,
-      });
-      if ('error' in resolved) {
-        return NextResponse.json({ error: resolved.error }, { status: resolved.status });
-      }
-      remoteWorktree = resolved.remoteWorktree;
-    }
-    if (globalMount) {
-      remoteWorktree = globalMount.remoteWorktree;
-    }
+    const remoteWorktree = globalMount?.remoteWorktree ?? null;
     const remoteWorkspace = globalMount?.remoteWorkspace ?? null;
     // The AI's read-only local clone: for a global backend only a real copy of
     // this repository on its daemon.
@@ -849,7 +814,7 @@ export async function PATCH(
         ...(remoteWorkspace ? { remoteWorkspace } : {}),
       };
     } else if (projectWorkspacePath) {
-      if (projectRepoRoot && !remoteWorktree) {
+      if (projectRepoRoot) {
         requestedTaskId = randomUUID();
         try {
           launchConfig = buildTaskWorktreeLaunchConfig({
@@ -867,11 +832,9 @@ export async function PATCH(
           );
         }
       } else {
-        requestedTaskId = remoteWorktree ? randomUUID() : undefined;
         launchConfig = {
           cwd: projectWorkspacePath,
           ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
-          ...(remoteWorktree ? { remoteWorktree } : {}),
         };
       }
     }

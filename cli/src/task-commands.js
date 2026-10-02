@@ -568,14 +568,21 @@ export function parseAgents(values) {
   });
 }
 
+/** `claude@l20`, as the web UI and `issue start` write it; the older `l20:claude` still parses. */
 export function parseGlobalBackend(value) {
   const raw = trimmed(value);
   if (!raw) return undefined;
-  const index = raw.indexOf(":");
-  const host = index > 0 ? raw.slice(0, index).trim() : "";
-  const backend = index > 0 ? raw.slice(index + 1).trim() : "";
-  if (!host || !backend) throw argsError("--global-backend must look like <host>:<backend>, e.g. l20:claude");
-  return { host, backend };
+  const at = raw.indexOf("@");
+  const colon = raw.indexOf(":");
+  const [backend, host] = at > 0
+    ? [raw.slice(0, at), raw.slice(at + 1)]
+    : colon > 0
+      ? [raw.slice(colon + 1), raw.slice(0, colon)]
+      : ["", ""];
+  if (!host.trim() || !backend.trim()) {
+    throw argsError("--global-backend must look like <backend>@<host>, e.g. claude@l20");
+  }
+  return { host: host.trim(), backend: backend.trim().toLowerCase() };
 }
 
 /** True when `task create` needs the full frontend payload rather than the SDK subset. */
@@ -585,23 +592,15 @@ export function hasExtendedCreateOptions(argv) {
       || (argv.agent && [].concat(argv.agent).length)
       || trimmed(argv.globalBackend)
       || argv.worktree
-      || trimmed(argv.remoteWorktree)
       || argv.persistent,
   );
 }
 
 export function buildExtendedCreateBody(argv, deps, projectId, title) {
-  if (argv.worktree && trimmed(argv.remoteWorktree)) {
-    throw argsError("Pass --worktree or --remote-worktree, not both");
-  }
   const globalBackend = parseGlobalBackend(argv.globalBackend);
   const agents = parseAgents(argv.agent);
   if (globalBackend && (agents.length || trimmed(argv.daemonHost))) {
     throw argsError("--global-backend cannot be combined with --agent or --daemon-host");
-  }
-  // Both are rejected by POST /api/tasks; fail before the round trip.
-  if (globalBackend && trimmed(argv.remoteWorktree)) {
-    throw argsError("--global-backend cannot be combined with --remote-worktree");
   }
   if (globalBackend && trimmed(argv.backend) && trimmed(argv.backend) !== globalBackend.backend) {
     throw argsError(
@@ -625,8 +624,7 @@ export function buildExtendedCreateBody(argv, deps, projectId, title) {
     if (trimmed(argv.backend)) body.backendType = trimmed(argv.backend);
   }
   if (agents.length) body.agents = agents;
-  if (trimmed(argv.remoteWorktree)) body.launchConfig = { remoteWorktree: { host: trimmed(argv.remoteWorktree) } };
-  else if (argv.worktree) body.launchConfig = { worktree: true };
+  if (argv.worktree) body.launchConfig = { worktree: true };
   return body;
 }
 

@@ -19,13 +19,10 @@ import {
   buildTaskWorktreeLaunchConfig,
   isRemoteWorktreeRequested,
   isTaskWorktreeRequested,
-  type RemoteWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import {
   buildRemoteWorkspaceBootstrap,
   buildRemoteWorktreeBootstrap,
-  readRemoteWorktreeRequestHost,
-  resolveRemoteWorktreeTarget,
 } from "@/lib/tasks/remote-worktree";
 import {
   readGlobalBackendRequest,
@@ -565,12 +562,6 @@ export async function POST(request: NextRequest) {
     if (readBodyField(normalizedBody, "agents", "agents") != null) {
       return NextResponse.json({ error: "global_backend does not support agent groups" }, { status: 409 });
     }
-    if (isRemoteWorktreeRequested(requestedLaunchConfig)) {
-      return NextResponse.json(
-        { error: "global_backend and remoteWorktree are mutually exclusive" },
-        { status: 409 },
-      );
-    }
     const resolvedMount = await resolveGlobalBackendMount({
       userId: user.id,
       tokenScope: user.tokenScope ?? null,
@@ -709,30 +700,18 @@ export async function POST(request: NextRequest) {
   if (taskType === "pty_task" && worktreeRequested) {
     return NextResponse.json({ error: "PTY task does not support worktree" }, { status: 400 });
   }
-  // RFC 0038: the worktree lives on another daemon and is created by the AI.
-  const remoteWorktreeHost = readRemoteWorktreeRequestHost(launchConfig);
-  if (isRemoteWorktreeRequested(launchConfig) && !remoteWorktreeHost) {
-    return NextResponse.json({ error: "remoteWorktree.host is required" }, { status: 400 });
-  }
-  if (remoteWorktreeHost && taskType !== "ai_task") {
-    return NextResponse.json({ error: "remoteWorktree is only supported for ai_task" }, { status: 400 });
-  }
-  if (remoteWorktreeHost && worktreeRequested) {
+  // Only the server mints a remote worktree, for a global backend (RFC 0041).
+  // Refuse a caller-supplied one (older clients) rather than start a local task.
+  if (isRemoteWorktreeRequested(launchConfig)) {
     return NextResponse.json(
-      { error: "worktree and remoteWorktree are mutually exclusive" },
-      { status: 409 },
-    );
-  }
-  if (remoteWorktreeHost && agentGroup) {
-    return NextResponse.json(
-      { error: "remoteWorktree does not support agent groups" },
-      { status: 409 },
+      { error: "launch_config.remoteWorktree is no longer supported; use global_backend" },
+      { status: 400 },
     );
   }
   const requestedId =
     typeof normalizedBody.id === "string" && normalizedBody.id.trim()
       ? normalizedBody.id
-      : worktreeRequested || remoteWorktreeHost || agentGroup
+      : worktreeRequested || agentGroup
         ? randomUUID()
         : undefined;
 
@@ -744,30 +723,7 @@ export async function POST(request: NextRequest) {
   // CLI — no orchestration here.
   const groupId: string | null = agentGroupPlan?.groupId ?? null;
   const workerBackendType = agentGroupPlan?.workerBackendType ?? requestedBackendType;
-  let remoteWorktree: RemoteWorktreeLaunchConfig | null = null;
-  if (remoteWorktreeHost) {
-    const resolved = await resolveRemoteWorktreeTarget({
-      userId: user.id,
-      project: {
-        id: project.id,
-        name: project.name,
-        daemonHost: projectDaemonHost,
-        workspacePath: projectWorkspacePath,
-        gitRemoteUrl: (project as { gitRemoteUrl?: string | null }).gitRemoteUrl ?? null,
-        mergeOptOut: (project as { mergeOptOut?: boolean | null }).mergeOptOut ?? null,
-      },
-      requestedHost: remoteWorktreeHost,
-      connectedAgents,
-      tokenScope: user.tokenScope ?? null,
-    });
-    if ("error" in resolved) {
-      return NextResponse.json({ error: resolved.error }, { status: resolved.status });
-    }
-    remoteWorktree = resolved.remoteWorktree;
-  }
-  if (globalMount) {
-    remoteWorktree = globalMount.remoteWorktree;
-  }
+  const remoteWorktree = globalMount?.remoteWorktree ?? null;
   const remoteWorkspace = globalMount?.remoteWorkspace ?? null;
   // The AI's read-only local clone: for a global backend only a real copy of
   // this repository on its daemon, never an unrelated default-project dir.
@@ -846,8 +802,6 @@ export async function POST(request: NextRequest) {
         aiLaunchConfig.worktreeBranch = projectWorktreeBranch;
       }
       if (remoteWorktree) {
-        // Never trust caller-supplied paths: the request only names the host.
-        delete aiLaunchConfig.remote_worktree;
         aiLaunchConfig.remoteWorktree = remoteWorktree;
       }
       if (remoteWorkspace) {

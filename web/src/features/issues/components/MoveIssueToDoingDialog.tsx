@@ -27,12 +27,6 @@ export type MoveIssueToDoingDaemonOption = {
   /** Backends advertised by the daemon's online agent. */
   supportedBackends: string[];
   /**
-   * RFC 0038: other options' hosts that can hold the git worktree of a task
-   * whose AI runs on this one (online with remote_exec + remote_file, a
-   * git-backed project the API treats as the same project as this option's).
-   */
-  remoteWorktreeHosts?: string[];
-  /**
    * RFC 0041: global AI backends that can run this option's task while the
    * code stays on its daemon; `disabledReason` greys out one that cannot now.
    */
@@ -52,8 +46,6 @@ export type MoveIssueToDoingConfirm = {
   backendType: string;
   daemonHost: string;
   projectId: string;
-  /** Daemon hosting the worktree; omitted when it is the AI's own daemon. */
-  remoteWorktreeHost?: string;
   /** RFC 0033: worker + reviewer agents; omitted for a plain task. */
   agents?: CreateTaskInput['agents'];
   /** RFC 0041: run the AI on this global backend; `backendType` is its backend. */
@@ -66,7 +58,6 @@ const normalizeString = (value: string | null | undefined): string =>
 type MoveIssueToDoingFormState = AgentGroupSelection & {
   preferredDaemonHost: string;
   backendType: string;
-  remoteWorktreeHost: string;
   /** `globalBackendValue` of the picked global backend, or empty. */
   globalBackend: string;
 };
@@ -75,7 +66,6 @@ type MoveIssueToDoingFormAction =
   | { type: 'select-daemon'; daemonHost: string; supportedBackends: string[] }
   | { type: 'select-backend'; backendType: string }
   | { type: 'select-global-backend'; globalBackend: string }
-  | { type: 'select-remote-worktree'; remoteWorktreeHost: string }
   | AgentGroupAction;
 
 function moveIssueToDoingFormReducer(
@@ -90,8 +80,6 @@ function moveIssueToDoingFormReducer(
         backendType: action.supportedBackends.includes(state.backendType)
           ? state.backendType
           : action.supportedBackends[0] ?? '',
-        // The AI daemon changed; the worktree host may now be that daemon.
-        remoteWorktreeHost: '',
         globalBackend: '',
       };
     case 'select-backend':
@@ -100,19 +88,13 @@ function moveIssueToDoingFormReducer(
         backendType: action.backendType,
         globalBackend: '',
       };
-    // A global backend runs the AI elsewhere: no remote worktree or agent group.
+    // A global backend runs the AI elsewhere: no agent group.
     case 'select-global-backend':
       return {
         ...state,
         globalBackend: action.globalBackend,
-        remoteWorktreeHost: '',
         workerAgent: '',
         reviewers: [],
-      };
-    case 'select-remote-worktree':
-      return {
-        ...state,
-        remoteWorktreeHost: action.remoteWorktreeHost,
       };
     default:
       return reduceAgentGroup(state, action);
@@ -219,7 +201,6 @@ function MoveIssueToDoingDialogContent({
   const [state, dispatch] = useReducer(moveIssueToDoingFormReducer, {
     preferredDaemonHost: initialDaemonHost,
     backendType: initialBackendType,
-    remoteWorktreeHost: '',
     globalBackend: '',
     workerAgent: '',
     reviewers: [],
@@ -236,10 +217,6 @@ function MoveIssueToDoingDialogContent({
   const backendType = availableBackends.includes(state.backendType)
     ? state.backendType
     : availableBackends[0] ?? '';
-  // Other online daemons that can host this task's worktree while the AI runs
-  // on `daemonHost`.
-  const remoteWorktreeHosts = (currentOption?.remoteWorktreeHosts ?? [])
-    .filter((host) => host !== daemonHost && optionByHost.has(host));
   const globalBackendOptions = currentOption?.globalBackends ?? [];
   const selectedGlobalBackend = globalBackendOptions.find(
     (option) => globalBackendValue(option) === state.globalBackend && !option.disabledReason,
@@ -252,18 +229,11 @@ function MoveIssueToDoingDialogContent({
   // After a daemon switch the picked agents are not yet validated against the
   // new project's registry; never submit a group the user can no longer see.
   const agentsPending = Boolean(agents) && (isLoadingAgents || agentsLoadFailed);
-  // The API rejects a remote worktree for agent groups; the pick is kept and
-  // comes back if the worker agent is cleared.
-  const remoteWorktreeHost = agents ? '' : state.remoteWorktreeHost;
-  // Keep a vanished pick (daemon went offline while the dialog was open) and
-  // block confirm, instead of quietly falling back to a local worktree.
-  const remoteWorktreeHostUnavailable = Boolean(remoteWorktreeHost)
-    && !remoteWorktreeHosts.includes(remoteWorktreeHost);
 
   const effectiveBackendType = selectedGlobalBackend?.backend ?? backendType;
 
   const handleConfirm = async () => {
-    if (!effectiveBackendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending) {
+    if (!effectiveBackendType || !currentOption || isSubmitting || agentsPending) {
       return;
     }
     setIsSubmitting(true);
@@ -275,7 +245,6 @@ function MoveIssueToDoingDialogContent({
         ...(selectedGlobalBackend
           ? { globalBackend: { host: selectedGlobalBackend.host, backend: selectedGlobalBackend.backend } }
           : {}),
-        ...(remoteWorktreeHost ? { remoteWorktreeHost } : {}),
         ...(agents ? { agents } : {}),
       });
     } finally {
@@ -372,64 +341,6 @@ function MoveIssueToDoingDialogContent({
         ) : null}
       </div>
 
-      {remoteWorktreeHostUnavailable ? (
-        <p
-          role="alert"
-          className="rounded-md border border-amber-400/50 bg-amber-50/50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200"
-        >
-          {remoteWorktreeHost === daemonHost ? (
-            // The picked AI daemon went offline and the AI fell back onto the
-            // daemon chosen as the workspace.
-            <>
-              Daemon <code>{state.preferredDaemonHost}</code> went offline, so the AI now runs on{' '}
-              <code>{daemonHost}</code>, your chosen workspace.
-            </>
-          ) : (
-            <>Workspace daemon <code>{remoteWorktreeHost}</code> is no longer available.</>
-          )}{' '}
-          Pick another workspace to continue.
-        </p>
-      ) : null}
-
-      {!selectedGlobalBackend && (remoteWorktreeHosts.length > 0 || remoteWorktreeHostUnavailable) ? (
-        <details className="rounded-lg border border-border px-3 py-2">
-          <summary className="cursor-pointer text-sm font-medium text-ink">
-            Workspace on another daemon{remoteWorktreeHost ? `: ${remoteWorktreeHost}` : ''}
-          </summary>
-          <select
-            id="issue-doing-remote-worktree"
-            aria-label="Workspace on another daemon"
-            value={remoteWorktreeHost}
-            onChange={(event) => dispatch({
-              type: 'select-remote-worktree',
-              remoteWorktreeHost: event.target.value,
-            })}
-            className="mt-2 w-full webapp-input"
-            disabled={isSubmitting || Boolean(agents)}
-          >
-            <option value="">Same daemon as the AI (default)</option>
-            {remoteWorktreeHostUnavailable ? (
-              <option value={remoteWorktreeHost} disabled>
-                {remoteWorktreeHost} (unavailable)
-              </option>
-            ) : null}
-            {remoteWorktreeHosts.map((host) => {
-              const option = optionByHost.get(host);
-              return (
-                <option key={host} value={host}>
-                  {option?.label?.trim() ? option.label : host}
-                </option>
-              );
-            })}
-          </select>
-          <p className="mt-1 text-xs text-muted">
-            {agents
-              ? 'Not available together with an agent group.'
-              : `Run the AI on ${daemonHost} but create the git worktree, build and test on the chosen daemon.`}
-          </p>
-        </details>
-      ) : null}
-
       {currentOption && !selectedGlobalBackend ? (
         <details
           className="rounded-lg border border-border px-3 py-2"
@@ -471,7 +382,7 @@ function MoveIssueToDoingDialogContent({
         <button
           type="button"
           onClick={() => void handleConfirm()}
-          disabled={!effectiveBackendType || !currentOption || isSubmitting || remoteWorktreeHostUnavailable || agentsPending}
+          disabled={!effectiveBackendType || !currentOption || isSubmitting || agentsPending}
           className="webapp-btn-primary px-5 py-2.5 text-sm"
         >
           {isSubmitting ? 'Starting...' : 'Move To Doing'}

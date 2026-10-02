@@ -78,7 +78,7 @@ dang217
   | 本项目 daemon（本地） | daemon 预先在本机建 worktree（现状） | 直接在项目目录工作（现状） |
   | 全局后端（A ≠ B） | AI 在 B 上建 worktree（0038 `remoteWorktree`） | AI 直接在 B 的 `workspacePath` 工作（新 `remoteWorkspace`） |
 
-- 选中全局后端时只禁用两项：0038 的 "Workspace on another daemon"（已无意义）与 agent group（一期不支持）。
+- 选中全局后端时只禁用 agent group（一期不支持）。0038 的 "Workspace on another daemon" 入口已于 2026-10-02 移除：它是本 RFC 勾选 worktree 时的子集，跨 daemon 任务只保留全局后端这一个入口。
 - 请求体：`project_id = B 的项目`，`global_backend: { host: "macmini", backend: "claude" }`，`backend_type` 同步为该后端，`launch_config.worktree` 照常按勾选传 `true` / 不传。
 
 ### 3. 服务端（`POST /api/tasks`）
