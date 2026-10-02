@@ -11,6 +11,7 @@ import {
   detectPackageManager,
   fetchLatestVersion,
   isNewerVersion,
+  resolveBundledNodeDir,
   resolveGlobalInstallPrefix,
 } from "./version-check.js";
 import {
@@ -283,6 +284,8 @@ function buildInstallEnv(packageManager, packageRoot, env) {
     const prefix = resolveGlobalInstallPrefix(packageRoot);
     if (prefix) installEnv.npm_config_prefix = prefix;
   }
+  const nodeDir = resolveBundledNodeDir();
+  if (nodeDir && !installEnv.npm_config_nodedir) installEnv.npm_config_nodedir = nodeDir;
   return installEnv;
 }
 

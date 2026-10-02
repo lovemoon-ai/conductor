@@ -17,6 +17,7 @@ import {
   fetchLatestVersion,
   isNewerVersion,
   detectPackageManager,
+  resolveBundledNodeDir,
   resolveGlobalInstallPrefix,
 } from "../src/version-check.js";
 import {
@@ -31,6 +32,7 @@ const PKG_ROOT = path.join(__dirname, "..");
 
 const pkgJson = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, "package.json"), "utf-8"));
 const CURRENT_VERSION = pkgJson.version;
+const INSTALL_TIMEOUT_MS = 15 * 60_000;
 const INSTALL_METHOD = resolveInstallMethod({
   env: process.env,
   packageRoot: PKG_ROOT,
@@ -176,6 +178,11 @@ async function performUpdate() {
     console.log("");
   }
 
+  const nodeDir = resolveBundledNodeDir();
+  if (nodeDir && !process.env.npm_config_nodedir) {
+    process.env.npm_config_nodedir = nodeDir;
+  }
+
   if (packageManager === "pnpm") {
     console.log("   Preparing pnpm native dependency allowlist...");
     await ensurePnpmOnlyBuiltDependencies({
@@ -212,16 +219,26 @@ async function performUpdate() {
       stdio: "inherit",
       shell: true
     });
+    // npm never gives up on a registry connection that stalls mid-handshake.
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, INSTALL_TIMEOUT_MS);
 
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) {
         resolve();
+      } else if (timedOut) {
+        reject(new Error(`${cmd} did not finish within ${INSTALL_TIMEOUT_MS / 60_000} minutes`));
       } else {
         reject(new Error(`Exit code ${code}`));
       }
     });
 
     child.on("error", (error) => {
+      clearTimeout(timer);
       reject(error);
     });
   });

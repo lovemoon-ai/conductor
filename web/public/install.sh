@@ -22,6 +22,8 @@ NPM_GLOBAL_PREFIX=""
 GLOBAL_BIN_DIR=""
 RC_FILE=""
 RC_SHELL=""
+NPM_MIRROR_REGISTRY="https://registry.npmmirror.com/"
+NPM_INSTALL_TIMEOUT="${CONDUCTOR_INSTALL_NPM_TIMEOUT:-300}"
 PATH_BLOCK_START="# >>> conductor install >>>"
 PATH_BLOCK_END="# <<< conductor install <<<"
 
@@ -273,16 +275,24 @@ setup_conductor_node() {
     local node_filename="node-v${NODE_VERSION}-${OS}-${ARCH}.tar.gz"
     local node_url="https://nodejs.org/dist/v${NODE_VERSION}/${node_filename}"
     local archive_path="${CONDUCTOR_HOME}/${node_filename}"
+    local download_failed=""
     NODE_INSTALL_DIR="${CONDUCTOR_HOME}/node-v${NODE_VERSION}-${OS}-${ARCH}"
 
     if [ ! -x "${NODE_INSTALL_DIR}/bin/node" ]; then
         log_info "Downloading Node.js ${NODE_VERSION}..."
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "$node_url" -o "$archive_path"
+            curl -fsSL --connect-timeout 20 --retry 2 "$node_url" -o "$archive_path" || download_failed=1
         elif command -v wget >/dev/null 2>&1; then
-            wget -q "$node_url" -O "$archive_path"
+            wget -q "$node_url" -O "$archive_path" || download_failed=1
         else
             log_error "Neither curl nor wget found. Please install one of them."
+            exit 1
+        fi
+
+        if [ -n "$download_failed" ]; then
+            rm -f "$archive_path"
+            log_error "Could not download Node.js from ${node_url}"
+            log_error "Check that this machine can reach nodejs.org. Behind a proxy, set HTTPS_PROXY and re-run."
             exit 1
         fi
 
@@ -307,6 +317,9 @@ setup_conductor_node() {
     # would silently retarget the install. This only lasts for this process; nothing is persisted.
     unset NPM_CONFIG_PREFIX
     export npm_config_prefix="$NODE_INSTALL_DIR"
+    # node-pty has no Linux prebuild and is compiled by node-gyp, which would otherwise download
+    # the Node headers from nodejs.org. The tarball already ships them.
+    export npm_config_nodedir="$NODE_INSTALL_DIR"
     NPM_CMD="${NODE_LINK_DIR}/bin/npm"
     NODE_CMD="${NODE_LINK_DIR}/bin/node"
     USED_CONDUCTOR_NODE=1
@@ -315,6 +328,53 @@ setup_conductor_node() {
     log_info "Conductor-managed Node.js ready: $("$NODE_CMD" --version)"
     log_info "Node path: $NODE_CMD"
     log_info "npm path: $NPM_CMD"
+}
+
+# npm never gives up on a registry connection that stalls mid-handshake, so the install is bounded
+# here. macOS ships no `timeout`, hence the watchdog. The short sleeps keep a killed watchdog from
+# leaving a long-lived `sleep` behind.
+run_with_timeout() {
+    local seconds="$1"
+    local status=0
+    shift
+
+    "$@" &
+    local pid=$!
+    (
+        while [ "$seconds" -gt 0 ]; do
+            sleep 1
+            seconds=$((seconds - 1))
+        done
+        kill "$pid" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    local watchdog=$!
+
+    # A backgrounded command ignores Ctrl-C, so stopping the installer has to stop it explicitly.
+    trap 'kill "$pid" "$watchdog" 2>/dev/null; exit 130' INT TERM
+    wait "$pid" || status=$?
+    trap - INT TERM
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+    return "$status"
+}
+
+# $@ = extra npm arguments.
+npm_install_global() {
+    local status=0
+
+    run_with_timeout "$NPM_INSTALL_TIMEOUT" $INSTALL_USE_SUDO "$NPM_CMD" install -g "$@" "${PACKAGE_NAME}@latest" \
+        || status=$?
+
+    if [ "$status" -eq 0 ]; then
+        log_info "Successfully installed ${PACKAGE_NAME}"
+        refresh_runtime_paths
+        return 0
+    fi
+
+    if [ "$status" -eq 143 ]; then
+        log_warn "npm install did not finish within ${NPM_INSTALL_TIMEOUT}s and was stopped."
+    fi
+    return 1
 }
 
 install_conductor() {
@@ -340,33 +400,18 @@ install_conductor() {
         fi
     fi
 
-    if [ -n "$INSTALL_USE_SUDO" ]; then
-        if $INSTALL_USE_SUDO "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
-            log_info "Successfully installed ${PACKAGE_NAME}"
-            refresh_runtime_paths
-            return 0
-        fi
-    else
-        if "$NPM_CMD" install -g "${PACKAGE_NAME}@latest"; then
-            log_info "Successfully installed ${PACKAGE_NAME}"
-            refresh_runtime_paths
-            return 0
-        fi
+    if npm_install_global; then
+        return 0
+    fi
+
+    log_warn "Global installation failed. Trying the ${NPM_MIRROR_REGISTRY} mirror..."
+    if npm_install_global "--registry=${NPM_MIRROR_REGISTRY}"; then
+        return 0
     fi
 
     log_warn "Global installation failed. Trying with --force flag..."
-    if [ -n "$INSTALL_USE_SUDO" ]; then
-        if $INSTALL_USE_SUDO "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
-            log_info "Successfully installed ${PACKAGE_NAME} with --force"
-            refresh_runtime_paths
-            return 0
-        fi
-    else
-        if "$NPM_CMD" install -g --force "${PACKAGE_NAME}@latest"; then
-            log_info "Successfully installed ${PACKAGE_NAME} with --force"
-            refresh_runtime_paths
-            return 0
-        fi
+    if npm_install_global --force; then
+        return 0
     fi
 
     log_error "Failed to install ${PACKAGE_NAME}"
