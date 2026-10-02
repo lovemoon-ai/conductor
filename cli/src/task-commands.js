@@ -248,6 +248,15 @@ export async function handleShare(argv, deps) {
   return print(deps, argv, url ? { ...data, url } : data, url ? `Share link: ${url}` : `Shared task ${argv.id}`);
 }
 
+/** Open a temporary preview link for a file on the task's daemon (what clicking a file link in the chat does). */
+export async function handlePreview(argv, deps) {
+  const http = await buildHttp(deps);
+  const { dryRun, data } = await sendOrPreview(http, argv, deps, "POST", taskPath(argv.id, "preview"), { path: argv.path });
+  if (dryRun) return EXIT.OK;
+  const url = data?.viewUrl ? `${http.baseUrl}${data.viewUrl}` : null;
+  return print(deps, argv, url ? { ...data, url } : data, url ? `Preview link (expires after 5 idle minutes): ${url}` : `No preview link for ${argv.path}`);
+}
+
 export async function handleUnshare(argv, deps) {
   const http = await buildHttp(deps);
   const { dryRun, data } = await sendOrPreview(http, argv, deps, "DELETE", taskPath(argv.id, "share"));

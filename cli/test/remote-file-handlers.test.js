@@ -847,6 +847,7 @@ test("stat describes a file, a directory and a missing path without throwing", a
   assert.equal(missing.error, undefined);
   assert.deepEqual(missing.result, {
     path: path.join(dir, "gone", "x.txt"),
+    realPath: null,
     exists: false,
     isFile: false,
     isDirectory: false,
@@ -854,6 +855,81 @@ test("stat describes a file, a directory and a missing path without throwing", a
     mode: null,
     mtime: null,
   });
+});
+
+test("stat resolves a relative path against the task's working directory", async () => {
+  const dir = await fs.realpath(await makeTempDir());
+  await fs.mkdir(path.join(dir, "docs"));
+  await fs.writeFile(path.join(dir, "docs", "report.md"), "# hi");
+  const handlers = makeHandlers({
+    resolveTaskCwd: (taskId) => (taskId === "task-1" ? dir : null),
+  });
+
+  const relative = await handlers.dispatch({
+    action: "stat",
+    args: { remotePath: "docs/report.md", taskId: "task-1" },
+  });
+  assert.equal(relative.error, undefined);
+  assert.equal(relative.result.path, path.join(dir, "docs", "report.md"));
+  assert.equal(relative.result.realPath, path.join(dir, "docs", "report.md"));
+
+  // An absolute path is never re-based, whatever task it is asked on behalf of.
+  const absolute = await handlers.dispatch({
+    action: "stat",
+    args: { remotePath: path.join(dir, "docs"), taskId: "task-1" },
+  });
+  assert.equal(absolute.result.isDirectory, true);
+
+  const unknownTask = await handlers.dispatch({
+    action: "stat",
+    args: { remotePath: "docs/report.md", taskId: "task-gone" },
+  });
+  assert.match(unknownTask.error, /task task-gone is not running on this daemon/);
+});
+
+test("push with rootPath refuses anything that resolves outside the preview root", async () => {
+  const base = await fs.realpath(await makeTempDir());
+  const root = path.join(base, "site");
+  await fs.mkdir(path.join(root, "assets"), { recursive: true });
+  await fs.mkdir(path.join(root, ".git"));
+  await fs.writeFile(path.join(root, "index.html"), "<h1>ok</h1>");
+  await fs.writeFile(path.join(root, "assets", "app.js"), "1");
+  await fs.writeFile(path.join(root, ".env"), "SECRET=1");
+  await fs.writeFile(path.join(root, ".git", "config"), "token");
+  await fs.writeFile(path.join(base, "secret.txt"), "outside");
+  // A link that lives inside the root but points out of it.
+  await fs.symlink(path.join(base, "secret.txt"), path.join(root, "leak.txt"));
+  await fs.symlink(path.join(root, "assets", "app.js"), path.join(root, "alias.js"));
+
+  const { fetchImpl, calls } = makeFetch();
+  const handlers = makeHandlers({ fetchImpl });
+  const push = (remotePath, extra = {}) =>
+    handlers.dispatch({
+      action: "push",
+      args: { transferId: "t1", transferToken: "tok", remotePath, rootPath: root, ...extra },
+    });
+
+  const inside = await push(path.join(root, "assets", "app.js"));
+  assert.equal(inside.error, undefined);
+  assert.equal(inside.result.sizeBytes, 1);
+  // A symlink that stays inside the root is fine.
+  assert.equal((await push(path.join(root, "alias.js"))).error, undefined);
+
+  assert.match((await push(path.join(base, "secret.txt"))).error, /outside the preview root/);
+  assert.match((await push(path.join(root, "..", "secret.txt"))).error, /outside the preview root/);
+  assert.match((await push(path.join(root, "leak.txt"))).error, /outside the preview root/);
+  assert.match((await push(root)).error, /outside the preview root/);
+  assert.match((await push(path.join(root, ".env"))).error, /hidden files/);
+  assert.match((await push(path.join(root, ".git", "config"))).error, /hidden files/);
+  assert.match((await push(path.join(root, "missing.css"))).error, /no such file/);
+  // The caller's cap applies on top of the daemon's own.
+  assert.match(
+    (await push(path.join(root, "index.html"), { maxBytes: 4 })).error,
+    /over the 4 byte limit/,
+  );
+
+  // Only the two allowed files ever reached the backend.
+  assert.equal(calls.filter((call) => call.init.method === "PUT").length, 2);
 });
 
 test("guestRoot confines pull, push and stat to the shared root", async () => {

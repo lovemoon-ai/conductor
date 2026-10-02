@@ -389,7 +389,7 @@ export const MessageBubble = memo(function MessageBubble({
               <p className="whitespace-pre-wrap break-words text-ink">{message.content}</p>
             ) : (
               <div className="min-w-0">
-                <MarkdownRenderer content={message.content} />
+                <MarkdownRenderer content={message.content} taskId={message.taskId} />
               </div>
             )}
             {message.attachments && message.attachments.length > 0 ? (

@@ -133,6 +133,8 @@ describe("conductor-config", () => {
     assert.ok(parsed && typeof parsed === "object", "config.yaml is not valid YAML");
     assert.equal(typeof parsed.daemon_name, "string");
     assert.ok(parsed.daemon_name.length > 0);
+    // Written explicitly on first config so file previews work out of the box.
+    assert.equal(parsed.remote_file, true);
 
     const allowCliList = parsed.allow_cli_list;
     assert.ok(allowCliList && typeof allowCliList === "object", "allow_cli_list should be an object");
