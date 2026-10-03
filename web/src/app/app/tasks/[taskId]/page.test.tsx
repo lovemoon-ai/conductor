@@ -344,14 +344,36 @@ describe('TaskDetailPage', () => {
     );
   });
 
-  it('does not wrap at the first task-list row', async () => {
+  it('wraps ungrouped task-list rows at both ends', async () => {
     taskIdState = 'task-1';
-    tasksState = [makeTask('task-1', 'First'), makeTask('task-2', 'Second')];
+    tasksState = [makeTask('task-1', 'First'), makeTask('task-2', 'Second'), makeTask('task-3', 'Third')];
     searchParamsState.set('from', '/app/tasks?projectId=project-1');
 
     render(<TaskDetailPage />);
 
-    expect(await screen.findByRole('button', { name: 'swipe left' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
+        titleSwipePreviewLeft: 'Third',
+        titleSwipePreviewRight: 'Second',
+      }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'swipe right' }));
+    expect(replaceMock).toHaveBeenCalledWith(
+      '/app/tasks/task-3?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
+      { scroll: false },
+    );
+  });
+
+  it('disables swiping when the current task is the only list row', async () => {
+    taskIdState = 'task-1';
+    tasksState = [makeTask('task-1', 'First')];
+    searchParamsState.set('from', '/app/tasks?projectId=project-1');
+
+    render(<TaskDetailPage />);
+
+    expect(await screen.findByText('First')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'swipe left' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'swipe right' })).not.toBeInTheDocument();
   });
 
