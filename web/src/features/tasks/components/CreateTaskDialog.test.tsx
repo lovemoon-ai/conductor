@@ -792,6 +792,31 @@ describe('CreateTaskDialog', () => {
       ];
     });
 
+    it('in the default project, picking a global backend selects its daemon and backend', async () => {
+      projectsState = { projects: [{ id: 'project-default', name: 'Default', isDefault: true }] };
+      globalBackendsState.backends = [
+        { host: 'daemon-b', backend: 'gpt' },
+        { host: 'daemon-c', backend: 'claude' },
+      ];
+      createTaskMock.mockResolvedValue({ id: 'task-default-global' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      const group = within(await screen.findByLabelText('AI backend')).getByRole('group', { name: 'Global' });
+      const options = within(group).getAllByRole('option') as HTMLOptionElement[];
+      expect(options.map((option) => option.textContent)).toEqual([
+        'gpt @ daemon-b',
+        'claude @ daemon-c — daemon-c is offline',
+      ]);
+      expect(options.map((option) => option.disabled)).toEqual([false, true]);
+
+      fireEvent.change(screen.getByLabelText('AI backend'), { target: { value: 'global:daemon-b\u0000gpt' } });
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Default global' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledTimes(1));
+      const input = createTaskMock.mock.calls[0][0];
+      expect(input).toMatchObject({ projectId: 'project-default', agentHost: 'daemon-b', backendType: 'gpt' });
+      expect(input.globalBackend).toBeUndefined();
+    });
+
     it('greys out an AI daemon whose conductor is too old to be a global backend', () => {
       globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
       agentsState.agents = [{ ...agentsState.agents[0], capabilities: [] }, agentsState.agents[1]];
