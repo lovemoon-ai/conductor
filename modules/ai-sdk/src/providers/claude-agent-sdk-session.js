@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import { CLAUDE_AGENT_SDK_VARIANT as CLAUDE_PROVIDER_VARIANT } from "../built-in-backends.js";
@@ -25,6 +26,9 @@ import {
 const DEFAULT_TURN_DEADLINE_MS = 12 * 60 * 1000;
 const MIN_TURN_DEADLINE_MS = 30 * 1000;
 const MAX_TURN_DEADLINE_MS = 30 * 60 * 1000;
+// How long an interrupted turn of the long-lived query may take to report its
+// result before the process is torn down instead.
+const INTERRUPT_GRACE_MS = 10 * 1000;
 const DEFAULT_SETTING_SOURCES = ["user", "project", "local"];
 const PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]);
 const DEFAULT_PERMISSION_MODE = "bypassPermissions";
@@ -35,15 +39,81 @@ function waitForever() {
   return new Promise(() => {});
 }
 
-async function* buildClaudeInput(promptText, media) {
-  yield {
+function buildClaudeUserMessage(promptText, media, uuid) {
+  return {
     type: "user",
     message: {
       role: "user",
-      content: buildClaudeContent(promptText, media),
+      content: media.length ? buildClaudeContent(promptText, media) : promptText,
     },
     parent_tool_use_id: null,
+    ...(uuid ? { uuid } : {}),
   };
+}
+
+async function* buildClaudeInput(promptText, media) {
+  yield buildClaudeUserMessage(promptText, media);
+}
+
+/**
+ * The prompt stream of a long-lived query. It stays open between turns: claude
+ * only winds a print-mode process down (killing background subagents after its
+ * wait ceiling) once its input is closed.
+ */
+function createInputQueue() {
+  const buffer = [];
+  let waiter = null;
+  let closed = false;
+  const finish = () => {
+    closed = true;
+    if (waiter) {
+      const resolve = waiter;
+      waiter = null;
+      resolve({ value: undefined, done: true });
+    }
+  };
+  return {
+    push(message) {
+      if (closed) {
+        return false;
+      }
+      if (waiter) {
+        const resolve = waiter;
+        waiter = null;
+        resolve({ value: message, done: false });
+      } else {
+        buffer.push(message);
+      }
+      return true;
+    },
+    close: finish,
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          if (buffer.length) {
+            return Promise.resolve({ value: buffer.shift(), done: false });
+          }
+          if (closed) {
+            return Promise.resolve({ value: undefined, done: true });
+          }
+          return new Promise((resolve) => {
+            waiter = resolve;
+          });
+        },
+        return: () => {
+          finish();
+          return Promise.resolve({ value: undefined, done: true });
+        },
+      };
+    },
+  };
+}
+
+function resultUserMessageUuids(resultMessage) {
+  if (Array.isArray(resultMessage?.user_message_uuids)) {
+    return resultMessage.user_message_uuids;
+  }
+  return resultMessage?.user_message_uuid ? [resultMessage.user_message_uuid] : [];
 }
 
 function createTurnError(message, extras = {}) {
@@ -75,11 +145,28 @@ function sumStreamedUsage(usageByMessageId, base = null) {
 }
 
 /**
- * A finished turn's usage. A turn that waits on background tasks emits one result per
- * segment, and `usage` covers only the last one; `modelUsage` accumulates every API call
- * the query's process made (all segments and subagents), so prefer its sum.
+ * A finished turn's usage. `usage` covers only the main loop's last segment, while
+ * `modelUsage` accumulates every API call the query's process made (all segments,
+ * subagents and earlier turns of a long-lived query), so prefer its sum minus `base`,
+ * the total at the end of the previous turn.
  */
-function resultUsage(resultMessage) {
+function resultUsage(resultMessage, base = null) {
+  const total = modelUsageTotal(resultMessage);
+  if (!total) {
+    return resultMessage.usage ? { ...resultMessage.usage } : null;
+  }
+  // /clear resets the running total; a total below its base starts over.
+  if (!base || Object.keys(base).some((key) => !(total[key] >= base[key]))) {
+    return total;
+  }
+  const delta = {};
+  for (const [key, value] of Object.entries(total)) {
+    delta[key] = value - base[key];
+  }
+  return delta;
+}
+
+function modelUsageTotal(resultMessage) {
   const total = {};
   for (const entry of Object.values(resultMessage.modelUsage || {})) {
     for (const [from, to] of [
@@ -94,10 +181,7 @@ function resultUsage(resultMessage) {
       }
     }
   }
-  if (Object.keys(total).length) {
-    return total;
-  }
-  return resultMessage.usage ? { ...resultMessage.usage } : null;
+  return Object.keys(total).length ? total : null;
 }
 
 function normalizeClaudeBackend(backend) {
@@ -363,6 +447,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     this.lastReplyTarget = "";
     this.manualResumeReady = Boolean(this.sessionId);
     this.currentTurn = null;
+    this.liveQuery = null;
     this.lastResult = null;
     this.rateLimitInfo = null;
     this.currentTurnStatus = null;
@@ -962,7 +1047,8 @@ export class ClaudeAgentSdkSession extends EventEmitter {
             noteToolStarted(currentTurn, block.id, block.name, block.input);
           }
         }
-        const text = extractAssistantText(message.message);
+        // Subagent narration (parent_tool_use_id set) is not a reply to the user.
+        const text = message.parent_tool_use_id ? "" : extractAssistantText(message.message);
         if (!text) {
           return;
         }
@@ -1020,6 +1106,25 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     if (!currentTurn) {
       return false;
     }
+    const { liveQuery } = currentTurn;
+    if (liveQuery) {
+      // The interrupted turn reports its own result; tear the process down only
+      // if it does not, so a stuck CLI cannot hold the turn open.
+      try {
+        await liveQuery.query.interrupt?.();
+      } catch {
+        // best effort
+      }
+      if (this.currentTurn === currentTurn) {
+        const timer = setTimeout(() => {
+          if (this.currentTurn === currentTurn) {
+            this.closeLiveQuery(liveQuery);
+          }
+        }, INTERRUPT_GRACE_MS);
+        timer.unref?.();
+      }
+      return true;
+    }
     try {
       await currentTurn.query?.interrupt?.();
     } catch {
@@ -1036,6 +1141,158 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       // best effort
     }
     return true;
+  }
+
+  createTurnState({ suppressReply = false, onProgress = null } = {}) {
+    return {
+      abortController: null,
+      liveQuery: null,
+      onProgress,
+      settle: null,
+      suppressReply,
+      compactMetadata: null,
+      compactError: "",
+      conversationReset: "",
+      emittedAssistantMessage: false,
+      fullText: "",
+      items: [],
+      query: null,
+      resultMessage: null,
+      terminalWorkingStatusEmitted: false,
+      usageBase: null,
+      usageByMessageId: new Map(),
+      uuid: "",
+    };
+  }
+
+  /**
+   * One claude process per session, fed through a prompt stream that stays
+   * open between turns. A one-shot string prompt closes claude's input at once,
+   * and claude then kills background subagents 10 minutes after the main
+   * agent's turn ends (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS). Kept open, the
+   * subagents run to completion and claude starts its own follow-up turn on
+   * their notifications.
+   */
+  ensureLiveQuery(sdkModule) {
+    if (this.liveQuery && !this.liveQuery.ended) {
+      return this.liveQuery;
+    }
+    const abortController = new AbortController();
+    const liveQuery = {
+      abortController,
+      backgroundTurn: null,
+      ended: false,
+      input: createInputQueue(),
+      query: null,
+      usageBase: null,
+    };
+    liveQuery.query = sdkModule.query({
+      prompt: liveQuery.input,
+      options: this.buildSdkOptions(abortController),
+    });
+    this.liveQuery = liveQuery;
+    void this.pumpLiveQuery(liveQuery);
+    return liveQuery;
+  }
+
+  closeLiveQuery(liveQuery) {
+    liveQuery.ended = true;
+    if (this.liveQuery === liveQuery) {
+      this.liveQuery = null;
+    }
+    liveQuery.input.close();
+    try {
+      liveQuery.abortController.abort();
+    } catch {
+      // best effort
+    }
+    try {
+      liveQuery.query?.close?.();
+    } catch {
+      // best effort
+    }
+  }
+
+  settleTurn(turn, error, resultMessage = null) {
+    const settle = turn.settle;
+    turn.settle = null;
+    settle?.(error, resultMessage);
+  }
+
+  async pumpLiveQuery(liveQuery) {
+    let failure = null;
+    try {
+      for await (const message of liveQuery.query) {
+        await this.dispatchLiveMessage(liveQuery, message);
+      }
+    } catch (error) {
+      failure = error;
+    }
+    this.closeLiveQuery(liveQuery);
+    const turn = this.currentTurn;
+    if (turn?.liveQuery === liveQuery && turn.settle) {
+      this.settleTurn(turn, failure, turn.resultMessage);
+    } else if (failure && !this.closeRequested) {
+      this.trace(`claude process ended between turns: ${failure?.message || failure}`);
+    }
+    const backgroundTurn = liveQuery.backgroundTurn;
+    liveQuery.backgroundTurn = null;
+    if (backgroundTurn) {
+      await this.finishBackgroundTurn(backgroundTurn, null, failure);
+    }
+  }
+
+  /**
+   * Routes the long-lived query's output. A result ends the pending turn when it
+   * echoes that turn's user message uuid (or echoes none while no follow-up turn
+   * of claude's own is running); everything else is a background turn, e.g.
+   * claude answering a finished subagent's notification between user turns.
+   */
+  async dispatchLiveMessage(liveQuery, message) {
+    const turn =
+      this.currentTurn?.liveQuery === liveQuery && this.currentTurn.settle ? this.currentTurn : null;
+    const backgroundTurn = liveQuery.backgroundTurn;
+    if (message?.type !== "result") {
+      const target = backgroundTurn || turn || (liveQuery.backgroundTurn = this.createTurnState());
+      await this.handleSdkMessage(message, target, { onProgress: target.onProgress });
+      return;
+    }
+    liveQuery.backgroundTurn = null;
+    const uuids = resultUserMessageUuids(message);
+    if (turn && (uuids.length ? uuids.includes(turn.uuid) : !backgroundTurn)) {
+      // A background turn that folded the user's message in ends as this turn.
+      if (backgroundTurn?.emittedAssistantMessage) {
+        turn.emittedAssistantMessage = true;
+      }
+      await this.handleSdkMessage(message, turn, { onProgress: turn.onProgress });
+      liveQuery.usageBase = modelUsageTotal(message) || liveQuery.usageBase;
+      this.settleTurn(turn, null, message);
+      return;
+    }
+    const target = backgroundTurn || this.createTurnState();
+    await this.handleSdkMessage(message, target, {});
+    await this.finishBackgroundTurn(target, message);
+  }
+
+  async finishBackgroundTurn(backgroundTurn, resultMessage, failure = null) {
+    const failed = Boolean(failure) || (resultMessage && resultMessage.subtype !== "success");
+    const text = normalizeText(resultMessage?.result);
+    if (!failed && text && !backgroundTurn.emittedAssistantMessage) {
+      await this.emitAssistantMessage(text);
+    }
+    // A pending user turn owns the working status.
+    if (this.currentTurn) {
+      return;
+    }
+    await this.emitTerminalWorkingStatus(
+      backgroundTurn,
+      failed
+        ? {
+            phase: "turn_failed",
+            status_done_line: failure?.message || extractResultErrorMessage(resultMessage),
+          }
+        : { phase: "turn_completed", status_done_line: "claude finished" },
+    );
   }
 
   async runTurn(promptText, { useInitialImages = false, media: mediaInput, contextFiles, onProgress = null, jsonSchema = null, suppressReply = false } = {}) {
@@ -1073,32 +1330,25 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       this.history.push({ role: "user", content: promptText });
     }
 
-    const abortController = new AbortController();
-    const currentTurn = {
-      abortController,
-      suppressReply,
-      compactMetadata: null,
-      compactError: "",
-      conversationReset: "",
-      emittedAssistantMessage: false,
-      fullText: "",
-      items: [],
-      query: null,
-      resultMessage: null,
-      terminalWorkingStatusEmitted: false,
-      usageByMessageId: new Map(),
-    };
+    // Structured output is fixed when the process starts, so a jsonSchema turn
+    // runs on a one-shot query of its own.
+    const oneShot = Boolean(jsonSchema && typeof jsonSchema === "object");
+    const abortController = oneShot ? new AbortController() : null;
+    const currentTurn = this.createTurnState({ suppressReply, onProgress });
+    currentTurn.abortController = abortController;
     this.currentTurn = currentTurn;
     this.markTurnStartedStatus();
 
-    const closeGuard = this.createCloseGuard(() => {
-      abortController.abort();
+    const stopTurn = () => {
+      if (currentTurn.liveQuery) {
+        this.closeLiveQuery(currentTurn.liveQuery);
+        return;
+      }
+      abortController?.abort();
       currentTurn.query?.close?.();
-    });
-    const turnTimeoutGuard = this.createTurnTimeoutGuard(() => {
-      abortController.abort();
-      currentTurn.query?.close?.();
-    });
+    };
+    const closeGuard = this.createCloseGuard(stopTurn);
+    const turnTimeoutGuard = this.createTurnTimeoutGuard(stopTurn);
 
     const previousOutputFormat = this.options.outputFormat;
     if (jsonSchema && typeof jsonSchema === "object") {
@@ -1115,22 +1365,35 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         onProgress,
       );
 
-      const query = sdkModule.query({
-        prompt: media.length ? buildClaudeInput(effectivePrompt, media) : effectivePrompt,
-        options: this.buildSdkOptions(abortController),
-      });
-      currentTurn.query = query;
-
-      const resultMessage = await Promise.race([
-        (async () => {
+      let turnResult;
+      if (oneShot) {
+        const query = sdkModule.query({
+          prompt: media.length ? buildClaudeInput(effectivePrompt, media) : effectivePrompt,
+          options: this.buildSdkOptions(abortController),
+        });
+        currentTurn.query = query;
+        turnResult = (async () => {
           for await (const message of query) {
             await this.handleSdkMessage(message, currentTurn, { onProgress });
           }
           return currentTurn.resultMessage;
-        })(),
-        closeGuard.promise,
-        turnTimeoutGuard.promise,
-      ]);
+        })();
+      } else {
+        turnResult = new Promise((resolve, reject) => {
+          currentTurn.settle = (error, message) => (error ? reject(error) : resolve(message));
+        });
+        const liveQuery = this.ensureLiveQuery(sdkModule);
+        currentTurn.liveQuery = liveQuery;
+        currentTurn.query = liveQuery.query;
+        currentTurn.usageBase = liveQuery.usageBase;
+        currentTurn.uuid = randomUUID();
+        if (!liveQuery.input.push(buildClaudeUserMessage(effectivePrompt, media, currentTurn.uuid))) {
+          this.settleTurn(currentTurn, createTurnError("Claude process input is closed", { reason: "process_exited" }));
+        }
+      }
+      turnResult.catch(() => {});
+
+      const resultMessage = await Promise.race([turnResult, closeGuard.promise, turnTimeoutGuard.promise]);
 
       if (!resultMessage) {
         throw createTurnError("Claude query ended without a result message", {
@@ -1157,7 +1420,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
             ? [...resultMessage.permission_denials]
             : [],
           // A failed turn still spent tokens.
-          usage: resultUsage(resultMessage),
+          usage: resultUsage(resultMessage, currentTurn.usageBase),
         });
       }
 
@@ -1195,7 +1458,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
 
       return {
         text: responseText,
-        usage: resultUsage(resultMessage),
+        usage: resultUsage(resultMessage, currentTurn.usageBase),
         items: currentTurn.items,
         events: [],
         provider: this.backend,
@@ -1219,7 +1482,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         error?.usage ??
         sumStreamedUsage(
           currentTurn.usageByMessageId,
-          currentTurn.resultMessage ? resultUsage(currentTurn.resultMessage) : null,
+          currentTurn.resultMessage ? resultUsage(currentTurn.resultMessage, currentTurn.usageBase) : null,
         );
       if (error?.reason === "turn_timeout") {
         await this.interruptCurrentTurn();
@@ -1257,10 +1520,13 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       }
       closeGuard.cleanup();
       turnTimeoutGuard.cleanup();
-      try {
-        currentTurn.query?.close?.();
-      } catch {
-        // best effort
+      currentTurn.settle = null;
+      if (oneShot) {
+        try {
+          currentTurn.query?.close?.();
+        } catch {
+          // best effort
+        }
       }
     }
   }
@@ -1455,7 +1721,12 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     }
     this.closeRequested = true;
     this.flushCloseWaiters();
-    await this.interruptCurrentTurn();
+    if (!this.currentTurn?.liveQuery) {
+      await this.interruptCurrentTurn();
+    }
+    if (this.liveQuery) {
+      this.closeLiveQuery(this.liveQuery);
+    }
     this.closed = true;
   }
 }
