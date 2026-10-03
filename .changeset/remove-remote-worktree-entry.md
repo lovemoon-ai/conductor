@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": minor
+"@love-moon/conductor-cli": patch
 ---
 
 Remove `conductor task create --remote-worktree <host>`; passing it now fails

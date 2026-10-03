@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": minor
+"@love-moon/conductor-cli": patch
 ---
 
 Add `conductor task preview <id> <path>`: open a temporary link to a file on the
