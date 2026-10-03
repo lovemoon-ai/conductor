@@ -352,9 +352,26 @@ export function CreateTaskDialog({
   // RFC 0041: global backends from settings, for a project bound to a daemon.
   // The project's own daemon is not listed (its backends already are); the
   // rest are shown greyed out with the reason when they cannot run now.
+  // The default project has no code daemon: a global backend there is just a
+  // shortcut that picks its daemon and backend for an ordinary task.
+  const codeHost = (isMergedGroup || isBoundProject) ? boundDaemonHost : null;
   const globalBackendOptions = useMemo(() => {
-    const codeHost = (isMergedGroup || isBoundProject) ? boundDaemonHost : null;
-    if (!codeHost) return [];
+    if (!codeHost) {
+      if (!isDefaultProject) return [];
+      return globalBackends.map((entry) => {
+        const agent = daemons.find((daemon) => daemon.host === entry.host) ?? null;
+        return {
+          key: globalAiBackendKey(entry),
+          entry,
+          label: `${entry.backend} @ ${entry.host}`,
+          disabledReason: !agent
+            ? `${entry.host} is offline`
+            : !(agent.supportedBackends ?? []).includes(entry.backend)
+              ? `${entry.backend} is not available on ${entry.host}`
+              : null,
+        };
+      });
+    }
     const codeAgent = daemons.find((daemon) => daemon.host === codeHost) ?? null;
     return globalBackends
       .filter((entry) => entry.host !== codeHost)
@@ -378,10 +395,10 @@ export function CreateTaskDialog({
           disabledReason,
         };
       });
-  }, [boundDaemonHost, daemons, globalBackends, isBoundProject, isMergedGroup]);
-  const selectedGlobalBackend = globalBackendOptions.find(
+  }, [codeHost, daemons, globalBackends, isDefaultProject]);
+  const selectedGlobalBackend = codeHost ? globalBackendOptions.find(
     (option) => option.key === requestedGlobalBackendKey && !option.disabledReason,
-  ) ?? null;
+  ) ?? null : null;
   const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
   const boundDaemonAgent = isBoundProject
     ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
@@ -700,7 +717,11 @@ export function CreateTaskDialog({
                         value={selectedGlobalBackend ? `global:${selectedGlobalBackend.key}` : backendType}
                         onChange={(e) => {
                           const { value } = e.target;
-                          if (value.startsWith('global:')) {
+                          const globalOption = globalBackendOptions.find((option) => `global:${option.key}` === value);
+                          if (globalOption && !codeHost) {
+                            dispatch({ type: 'set-agent-host', agentHost: globalOption.entry.host });
+                            dispatch({ type: 'set-backend', backendType: globalOption.entry.backend });
+                          } else if (value.startsWith('global:')) {
                             dispatch({ type: 'set-global-backend', globalBackendKey: value.slice('global:'.length) });
                           } else {
                             dispatch({ type: 'set-backend', backendType: value });
