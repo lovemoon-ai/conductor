@@ -188,6 +188,20 @@ describe('resolveTaskDaemonHost', () => {
     expect(resolveTaskDaemonHost(task, null)).toBe('fire-1');
   });
 
+  it('shows the code daemon, not the AI daemon, for a global-backend task', () => {
+    const task = baseTask({
+      metadata: { daemonName: 'ai-host', globalBackend: { host: 'ai-host', backend: 'claude' } },
+      agentHost: 'ai-host',
+      launchConfig: { remoteWorkspace: { host: 'code-host', projectId: 'p', repoRoot: '/r', workspacePath: '/r' } },
+    });
+    expect(resolveTaskDaemonHost(task, null)).toBe('code-host');
+    const worktreeTask = baseTask({
+      ...task,
+      launchConfig: { remoteWorktree: { host: 'code-host', branch: 'b' } },
+    });
+    expect(resolveTaskDaemonHost(worktreeTask, null)).toBe('code-host');
+  });
+
   it('returns null when no signal is available', () => {
     const task = baseTask({ projectId: 'unknown', metadata: null });
     expect(resolveTaskDaemonHost(task, new Map())).toBeNull();

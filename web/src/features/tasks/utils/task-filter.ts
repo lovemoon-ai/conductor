@@ -17,14 +17,24 @@ import { isPersistentTask, shouldShowPersistentTasks } from '@/shared/utils/pers
  *  4. `project.daemonHost` — owner of the task's project; the original
  *     pre-default-project behaviour.
  *
+ * A global-backend task (RFC 0041) runs its AI on one daemon but its code on
+ * another; it shows the code's daemon — the `remoteWorkspace`/`remoteWorktree`
+ * host — ahead of all of the above, which name the AI daemon.
+ *
  * Callers that only have project-side data can pass either a project lookup
  * `Map<projectId, daemonHost>` or `null` to skip step 4.
  */
 export function resolveTaskDaemonHost(
-  task: Pick<Task, 'projectId' | 'agentHost' | 'executionHost' | 'metadata'>,
+  task: Pick<Task, 'projectId' | 'agentHost' | 'executionHost' | 'metadata' | 'launchConfig'>,
   projectDaemonHostMap: Map<string, string | null> | null = null,
 ): string | null {
   const meta = task.metadata as Record<string, unknown> | null | undefined;
+  if (meta?.globalBackend) {
+    const launch = task.launchConfig as Record<string, unknown> | null | undefined;
+    const remote = (launch?.remoteWorkspace ?? launch?.remoteWorktree) as Record<string, unknown> | null | undefined;
+    const fromWorkspace = typeof remote?.host === 'string' ? remote.host.trim() : '';
+    if (fromWorkspace) return fromWorkspace;
+  }
   const fromMetadata = typeof meta?.daemonName === 'string' ? meta.daemonName.trim() : '';
   if (fromMetadata) return fromMetadata;
   const fromExecution = typeof task.executionHost === 'string' ? task.executionHost.trim() : '';
