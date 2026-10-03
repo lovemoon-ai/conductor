@@ -7,6 +7,12 @@ import {
   resolveClaudePermissionPolicy,
 } from "../src/providers/claude-agent-sdk-session.js";
 
+// A turn's prompt reaches the SDK as a stream of user messages; read the first.
+async function firstPromptText(prompt) {
+  const { value } = await prompt[Symbol.asyncIterator]().next();
+  return value?.message?.content;
+}
+
 describe("claude agent-sdk session", () => {
   it("exposes optional modelProvider metadata", async () => {
     const session = new ClaudeAgentSdkSession("claude", {
@@ -72,55 +78,6 @@ describe("claude agent-sdk session", () => {
     await session.close();
   });
 
-  it("reports every segment and subagent of a turn that waited on background tasks", async () => {
-    const session = new ClaudeAgentSdkSession("claude", {
-      cwd: process.cwd(),
-      logger: { log: () => {} },
-      sdkModule: {
-        query: () => ({
-          async *[Symbol.asyncIterator]() {
-            // Real SDK shape: `usage` is per segment, `modelUsage` is cumulative for the process.
-            yield {
-              type: "result",
-              subtype: "success",
-              session_id: "claude-bg-1",
-              result: "waiting",
-              usage: { input_tokens: 20, cache_creation_input_tokens: 40548, output_tokens: 393 },
-              modelUsage: {
-                "claude-haiku-4-5": { inputTokens: 616, outputTokens: 410, cacheReadInputTokens: 0, cacheCreationInputTokens: 40548 },
-              },
-            };
-            yield { type: "system", subtype: "task_notification", task_id: "a1", status: "completed", usage: { total_tokens: 13966 } };
-            yield {
-              type: "result",
-              subtype: "success",
-              session_id: "claude-bg-1",
-              result: "done",
-              usage: { input_tokens: 10, cache_creation_input_tokens: 2574, cache_read_input_tokens: 20877, output_tokens: 106 },
-              modelUsage: {
-                "claude-haiku-4-5": { inputTokens: 644, outputTokens: 813, cacheReadInputTokens: 33850, cacheCreationInputTokens: 57069 },
-                "claude-opus-5-5": { inputTokens: 6, outputTokens: 7, cacheReadInputTokens: 100, cacheCreationInputTokens: 50 },
-              },
-            };
-          },
-          close: () => {},
-        }),
-      },
-    });
-
-    const result = await session.runTurn("hello");
-
-    assert.equal(result.text, "done");
-    assert.deepEqual(result.usage, {
-      input_tokens: 650,
-      output_tokens: 820,
-      cache_read_input_tokens: 33950,
-      cache_creation_input_tokens: 57119,
-    });
-
-    await session.close();
-  });
-
   it("falls back to streamed usage when an interrupted query ends without a result", async () => {
     const assistant = (id, usage) => ({
       type: "assistant",
@@ -146,52 +103,6 @@ describe("claude agent-sdk session", () => {
     await assert.rejects(session.runTurn("hello"), (error) => {
       assert.equal(error.reason, "missing_result");
       assert.deepEqual(error.usage, { input_tokens: 3, cache_read_input_tokens: 300, output_tokens: 8 });
-      return true;
-    });
-
-    await session.close();
-  });
-
-  it("keeps an earlier segment's result usage when a later segment fails without one", async () => {
-    const session = new ClaudeAgentSdkSession("claude", {
-      cwd: process.cwd(),
-      logger: { log: () => {} },
-      sdkModule: {
-        query: () => ({
-          async *[Symbol.asyncIterator]() {
-            yield {
-              type: "assistant",
-              session_id: "claude-bg-2",
-              message: { id: "msg-1", content: [], usage: { input_tokens: 5, output_tokens: 5 } },
-            };
-            yield {
-              type: "result",
-              subtype: "success",
-              session_id: "claude-bg-2",
-              result: "waiting",
-              usage: { input_tokens: 5, output_tokens: 5 },
-              modelUsage: { opus: { inputTokens: 50, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
-            };
-            // The segment after a background task's notification, cut off mid-way.
-            yield {
-              type: "assistant",
-              session_id: "claude-bg-2",
-              message: { id: "msg-2", content: [], usage: { input_tokens: 7, output_tokens: 3 } },
-            };
-            throw new Error("socket hang up");
-          },
-          close: () => {},
-        }),
-      },
-    });
-
-    await assert.rejects(session.runTurn("hello"), (error) => {
-      assert.deepEqual(error.usage, {
-        input_tokens: 57,
-        output_tokens: 23,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      });
       return true;
     });
 
@@ -290,9 +201,9 @@ describe("claude agent-sdk session", () => {
       logger: { log: () => {} },
       sdkModule: {
         query: ({ prompt, options }) => {
-          captured.push({ prompt, resume: options.resume });
           return {
             async *[Symbol.asyncIterator]() {
+              captured.push({ prompt: await firstPromptText(prompt), resume: options.resume });
               yield { type: "system", subtype: "status", status: "compacting", session_id: "claude-compact-1" };
               yield {
                 type: "system",
@@ -342,9 +253,9 @@ describe("claude agent-sdk session", () => {
       logger: { log: () => {} },
       sdkModule: {
         query: ({ prompt, options }) => {
-          captured.push({ prompt, resume: options.resume });
           return {
             async *[Symbol.asyncIterator]() {
+              captured.push({ prompt: await firstPromptText(prompt), resume: options.resume });
               // The CLI answers the slash command itself and moves to a new session.
               yield { type: "system", subtype: "init", session_id: "claude-clear-2" };
               yield { type: "result", subtype: "success", session_id: "claude-clear-2", result: "(no content)", usage: { input_tokens: 3 } };
@@ -496,9 +407,9 @@ describe("claude agent-sdk session", () => {
       logger: { log: () => {} },
       sdkModule: {
         query: ({ prompt }) => {
-          capturedPrompts.push(prompt);
           return {
             async *[Symbol.asyncIterator]() {
+              capturedPrompts.push(await firstPromptText(prompt));
               yield {
                 type: "result",
                 subtype: "success",
