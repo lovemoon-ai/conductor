@@ -181,19 +181,15 @@ export default function TaskDetailPage() {
     taskTypeFilter,
     tasks,
   ]);
-  // A grouped task cycles through its own card's tabs (wrapping at both ends);
-  // an ungrouped task steps through the list rows.
-  const groupTasks = navigation.groupTasksByTaskId.get(taskId);
-  const groupTaskIndex = groupTasks?.findIndex((item) => item.id === taskId) ?? -1;
-  const currentTaskIndex = groupTasks
-    ? groupTaskIndex
-    : navigation.tasks.findIndex((item) => item.id === taskId);
-  const previousTask = groupTasks && groupTaskIndex >= 0
-    ? groupTasks[(groupTaskIndex - 1 + groupTasks.length) % groupTasks.length] ?? null
-    : currentTaskIndex > 0 ? navigation.tasks[currentTaskIndex - 1] ?? null : null;
-  const nextTask = groupTasks && groupTaskIndex >= 0
-    ? groupTasks[(groupTaskIndex + 1) % groupTasks.length] ?? null
-    : currentTaskIndex >= 0 ? navigation.tasks[currentTaskIndex + 1] ?? null : null;
+  // A grouped task cycles through its own card's tabs, an ungrouped task
+  // through the list rows; both wrap at either end.
+  const swipeTasks = navigation.groupTasksByTaskId.get(taskId) ?? navigation.tasks;
+  const currentTaskIndex = swipeTasks.findIndex((item) => item.id === taskId);
+  const hasSwipeTargets = currentTaskIndex >= 0 && swipeTasks.length > 1;
+  const previousTask = hasSwipeTargets
+    ? swipeTasks[(currentTaskIndex - 1 + swipeTasks.length) % swipeTasks.length] ?? null
+    : null;
+  const nextTask = hasSwipeTargets ? swipeTasks[(currentTaskIndex + 1) % swipeTasks.length] ?? null : null;
   const canSwipeTaskTitle = !isDesktop && returnsToListView && currentTaskIndex >= 0;
 
   const handleTaskTitleSwipe = useCallback((targetTask: { id: string }, direction: TaskSwitchDirection) => {

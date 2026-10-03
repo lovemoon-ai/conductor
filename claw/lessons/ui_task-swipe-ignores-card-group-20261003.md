@@ -12,8 +12,8 @@ always came from the list rows.
 
 ## Fix
 `buildTaskListNavigation` also returns `groupTasksByTaskId` (visible tabs, tab
-order). The detail page uses it for grouped tasks and cycles with wrap-around
-(last → first, first → last); ungrouped tasks keep stepping through list rows.
+order). The detail page swipes grouped tasks through it and ungrouped tasks
+through the list rows, both wrapping (last → first, first → last).
 
 ## Avoid next time
 When a list has a nested structure (cards with tabs), decide explicitly which level
