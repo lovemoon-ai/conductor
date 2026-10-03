@@ -27,7 +27,7 @@ import {
   backfillMessageSearchIndex,
 } from "./src/lib/search/message-search";
 import { realtimeHub } from "./src/lib/realtime/hub";
-import { db } from "./src/lib/db";
+import { db, enableSqliteWal } from "./src/lib/db";
 import { backfillIssueAiSessionIfNeeded } from "./src/lib/issues/backfill-ai-session";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -67,6 +67,9 @@ function setCorsHeaders(req: IncomingMessage, res: ServerResponse) {
 }
 
 app.prepare().then(async () => {
+  await enableSqliteWal().catch((error) => {
+    console.warn(`[db] failed to enable SQLite WAL: ${error instanceof Error ? error.message : String(error)}`);
+  });
   assertTaskAttachmentStorageConfigured();
   await reconcileOrphanedTaskAttachmentFiles().catch((error) => {
     console.warn(`[attachments] orphan reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
