@@ -9,6 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE_HEARTBEAT = path.resolve(__dirname, "..", "fixtures", "fake-kimi-print-heartbeat.js");
 const FAKE_KIMI_CODE = path.resolve(__dirname, "..", "fixtures", "fake-kimi-code.js");
 const FAKE_KIMI_PRINT = path.resolve(__dirname, "..", "fixtures", "fake-kimi-print.js");
+const FAKE_KIMI_BACKGROUND = path.resolve(__dirname, "..", "fixtures", "fake-kimi-print-background.js");
 
 const createSession = (commandLine) =>
   new KimiPrintSession("kimi", {
@@ -37,6 +38,18 @@ test("silent turn still times out with turn_timeout", async () => {
     assert.equal(error?.reason, "turn_timeout");
     return true;
   });
+  await session.close();
+});
+
+test("a turn waiting on its background subagent is not killed by the idle deadline", async () => {
+  const session = createSession(`${process.execPath} ${FAKE_KIMI_BACKGROUND}`);
+  // The fake stays silent for 1.2s after launching its subagent, as kimi -p does.
+  session.turnDeadlineMs = 400;
+
+  const result = await session.runTurn("start the subagent");
+
+  assert.ok(result.text.includes("LAUNCHED"));
+  assert.ok(result.text.includes("BACKGROUND_DONE SUBAGENT_FINISHED"));
   await session.close();
 });
 
