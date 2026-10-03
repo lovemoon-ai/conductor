@@ -195,6 +195,14 @@ function quoteShellArg(value) {
   return `'${normalized.replace(/'/g, `'\\''`)}'`;
 }
 
+// Kimi Code reports a detached launch (`Agent`/`Bash` with run_in_background)
+// with these metadata lines; the task's completion later wakes the main agent
+// inside the same `kimi -p` process.
+function isBackgroundTaskLaunch(content) {
+  const text = normalizeTextContent(content);
+  return /^task_id: /m.test(text) && /^automatic_notification: true$/m.test(text);
+}
+
 function normalizeTextContent(content) {
   if (typeof content === "string") {
     return content;
@@ -726,7 +734,9 @@ export class KimiPrintSession extends EventEmitter {
             if (currentTurn.settled) {
               return;
             }
-            if (Date.now() - lastActivityAt < this.turnDeadlineMs) {
+            // `kimi -p` stays silent while it waits for background tasks it
+            // launched; killing it on idle would kill those tasks too.
+            if (Date.now() - lastActivityAt < this.turnDeadlineMs || currentTurn.backgroundTaskLaunched) {
               scheduleTurnDeadline();
               return;
             }
@@ -799,6 +809,10 @@ export class KimiPrintSession extends EventEmitter {
           }
           if (role === "tool") {
             noteToolFinished(currentTurn, payload.tool_call_id);
+            if (!currentTurn.backgroundTaskLaunched && isBackgroundTaskLaunch(payload.content)) {
+              currentTurn.backgroundTaskLaunched = true;
+              this.trace("background task launched; turn idle deadline suspended until kimi exits");
+            }
             void this.emitWorkingStatus(
               {
                 phase: "command_execution",
