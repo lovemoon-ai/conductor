@@ -181,19 +181,22 @@ export default function TaskDetailPage() {
     taskTypeFilter,
     tasks,
   ]);
-  const navigationAnchorTaskId = navigation.activeTaskIdByTaskId.get(taskId) ?? taskId;
-  const currentTaskIndex = navigation.tasks.findIndex((item) => item.id === navigationAnchorTaskId);
-  const previousTask = currentTaskIndex > 0 ? navigation.tasks[currentTaskIndex - 1] ?? null : null;
-  const nextTask = currentTaskIndex >= 0 && currentTaskIndex < navigation.tasks.length - 1
-    ? navigation.tasks[currentTaskIndex + 1] ?? null
-    : null;
+  // A grouped task cycles through its own card's tabs (wrapping at both ends);
+  // an ungrouped task steps through the list rows.
+  const groupTasks = navigation.groupTasksByTaskId.get(taskId);
+  const groupTaskIndex = groupTasks?.findIndex((item) => item.id === taskId) ?? -1;
+  const currentTaskIndex = groupTasks
+    ? groupTaskIndex
+    : navigation.tasks.findIndex((item) => item.id === taskId);
+  const previousTask = groupTasks && groupTaskIndex >= 0
+    ? groupTasks[(groupTaskIndex - 1 + groupTasks.length) % groupTasks.length] ?? null
+    : currentTaskIndex > 0 ? navigation.tasks[currentTaskIndex - 1] ?? null : null;
+  const nextTask = groupTasks && groupTaskIndex >= 0
+    ? groupTasks[(groupTaskIndex + 1) % groupTasks.length] ?? null
+    : currentTaskIndex >= 0 ? navigation.tasks[currentTaskIndex + 1] ?? null : null;
   const canSwipeTaskTitle = !isDesktop && returnsToListView && currentTaskIndex >= 0;
 
-  const handleTaskTitleSwipe = useCallback((offset: -1 | 1) => {
-    const targetTask = navigation.tasks[currentTaskIndex + offset];
-    if (!targetTask) return;
-
-    const direction: TaskSwitchDirection = offset > 0 ? 'forward' : 'backward';
+  const handleTaskTitleSwipe = useCallback((targetTask: { id: string }, direction: TaskSwitchDirection) => {
     setTaskSwitchAnimation(direction);
     if (taskSwitchAnimationTimeoutRef.current !== null) {
       clearTimeout(taskSwitchAnimationTimeoutRef.current);
@@ -203,7 +206,7 @@ export default function TaskDetailPage() {
       taskSwitchAnimationTimeoutRef.current = null;
     }, TASK_SWITCH_ANIMATION_MS);
     replace(buildTaskDetailHref(targetTask.id, returnHref), { scroll: false });
-  }, [currentTaskIndex, navigation.tasks, replace, returnHref]);
+  }, [replace, returnHref]);
 
   const handleTaskTitleSwipeProgress = useCallback((state: TitleSwipeProgress) => {
     setTaskSwipeState({
@@ -227,10 +230,10 @@ export default function TaskDetailPage() {
         onBack={() => push(returnHref)}
         showConnectionStatus
         onTitleSwipeLeft={canSwipeTaskTitle && nextTask
-          ? () => handleTaskTitleSwipe(1)
+          ? () => handleTaskTitleSwipe(nextTask, 'forward')
           : undefined}
         onTitleSwipeRight={canSwipeTaskTitle && previousTask
-          ? () => handleTaskTitleSwipe(-1)
+          ? () => handleTaskTitleSwipe(previousTask, 'backward')
           : undefined}
         onTitleSwipeProgress={canSwipeTaskTitle ? handleTaskTitleSwipeProgress : undefined}
         titleSwipePreviewLeft={previousTask?.title ?? null}

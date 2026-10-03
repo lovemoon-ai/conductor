@@ -29,6 +29,8 @@ export type TaskListNavigation = {
   tasks: Task[];
   /** Every visible grouped task points to the tab currently shown for its row. */
   activeTaskIdByTaskId: Map<string, string>;
+  /** Every visible grouped task points to its card's visible tabs, in tab order. */
+  groupTasksByTaskId: Map<string, Task[]>;
 };
 
 /**
@@ -77,10 +79,13 @@ export const buildTaskListNavigation = (
   const visibleTaskIdSet = new Set(taskById.keys());
   const renderGroups = projectTaskCardGroups(groups, (taskId) => visibleTaskIdSet.has(taskId));
   const activeTaskIdByTaskId = new Map<string, string>();
+  const groupTasksByTaskId = new Map<string, Task[]>();
 
   for (const group of renderGroups) {
+    const groupTasks = group.taskIds.flatMap((taskId) => taskById.get(taskId) ?? []);
     for (const taskId of group.taskIds) {
       activeTaskIdByTaskId.set(taskId, group.activeTaskId);
+      groupTasksByTaskId.set(taskId, groupTasks);
     }
   }
 
@@ -93,5 +98,6 @@ export const buildTaskListNavigation = (
   return {
     tasks: navigationTasks,
     activeTaskIdByTaskId,
+    groupTasksByTaskId,
   };
 };

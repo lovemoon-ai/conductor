@@ -256,13 +256,14 @@ describe('TaskDetailPage', () => {
     expect(pushMock).toHaveBeenCalledWith('/app/tasks?projectId=project-1&view=graph');
   });
 
-  it('swipes between visible task-list rows and skips inactive merged tabs', async () => {
-    taskIdState = 'task-3';
+  it('cycles a grouped task through its own card tabs and wraps at both ends', async () => {
+    taskIdState = 'task-5';
     tasksState = [
       makeTask('task-1', 'First'),
-      makeTask('task-2', 'Hidden merged tab'),
-      makeTask('task-3', 'Selected merged tab'),
+      makeTask('task-2', 'Tab A'),
+      makeTask('task-3', 'Tab B'),
       makeTask('task-4', 'Fourth'),
+      makeTask('task-5', 'Tab C'),
     ];
     searchParamsState.set('from', '/app/tasks?projectId=project-1');
     // Tab cards are global: even though the task was opened from a specific
@@ -272,8 +273,8 @@ describe('TaskDetailPage', () => {
       'conductor:task-list-groups:v2:user-1:projects%3Aall',
       JSON.stringify([{
         id: 'group-1',
-        taskIds: ['task-2', 'task-3'],
-        activeIndex: 1,
+        taskIds: ['task-2', 'task-3', 'task-5'],
+        activeIndex: 0,
         labels: {},
       }]),
     );
@@ -282,24 +283,24 @@ describe('TaskDetailPage', () => {
 
     await waitFor(() => {
       expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
-        titleSwipePreviewLeft: 'First',
-        titleSwipePreviewRight: 'Fourth',
+        titleSwipePreviewLeft: 'Tab B',
+        titleSwipePreviewRight: 'Tab A',
       }));
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'swipe left' }));
     expect(replaceMock).toHaveBeenCalledWith(
-      '/app/tasks/task-4?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
+      '/app/tasks/task-2?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
       { scroll: false },
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'swipe right' }));
     expect(replaceMock).toHaveBeenCalledWith(
-      '/app/tasks/task-1?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
+      '/app/tasks/task-3?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
       { scroll: false },
     );
     expect(replaceMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('task-2'),
+      expect.stringMatching(/task-[14]\?/),
       expect.anything(),
     );
   });
@@ -331,19 +332,15 @@ describe('TaskDetailPage', () => {
 
     await waitFor(() => {
       expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
-        titleSwipePreviewLeft: 'First',
-        titleSwipePreviewRight: 'Fourth',
+        titleSwipePreviewLeft: 'Hidden merged tab',
+        titleSwipePreviewRight: 'Hidden merged tab',
       }));
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'swipe right' }));
     expect(replaceMock).toHaveBeenCalledWith(
-      '/app/tasks/task-1?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
+      '/app/tasks/task-2?from=%2Fapp%2Ftasks%3FprojectId%3Dproject-1',
       { scroll: false },
-    );
-    expect(replaceMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('task-2'),
-      expect.anything(),
     );
   });
 

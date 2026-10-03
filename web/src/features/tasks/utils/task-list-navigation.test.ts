@@ -41,6 +41,8 @@ describe('buildTaskListNavigation', () => {
     expect(result.tasks.map((task) => task.id)).toEqual(['task-1', 'task-3', 'task-4']);
     expect(result.activeTaskIdByTaskId.get('task-2')).toBe('task-3');
     expect(result.activeTaskIdByTaskId.get('task-3')).toBe('task-3');
+    expect(result.groupTasksByTaskId.get('task-3')?.map((task) => task.id)).toEqual(['task-2', 'task-3']);
+    expect(result.groupTasksByTaskId.has('task-1')).toBe(false);
   });
 
   it('matches list filters and hides a PTY task attached to an AI task', () => {
