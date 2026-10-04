@@ -18,7 +18,7 @@ vi.mock("@/lib/auth/service", () => ({
 const { db } = await import("@/lib/db");
 const { getGlobalAiBackends } = await import("@/lib/user-preferences");
 const { ensureDefaultProject } = await import("@/lib/auth/service");
-const { readGlobalBackendRequest, readTaskGlobalBackend, resolveGlobalBackendMount } =
+const { isGlobalBackendAgentHost, readGlobalBackendRequest, readTaskGlobalBackend, resolveGlobalBackendMount } =
   await import("./global-backend");
 
 const findSiblings = mockPrismaQuery(db.project.findMany);
@@ -122,6 +122,28 @@ describe("readTaskGlobalBackend", () => {
     expect(readTaskGlobalBackend({})).toBeNull();
     expect(readTaskGlobalBackend({ globalBackend: { host: "ubuntu" } })).toBeNull();
     expect(readTaskGlobalBackend({ globalBackend: "oops" })).toBeNull();
+  });
+});
+
+describe("isGlobalBackendAgentHost", () => {
+  const metadata = { globalBackend: { host: "ruofo", backend: "claude-opus" } };
+  const remoteWorkspace = { host: "apex", projectId: "p", repoRoot: "/r", workspacePath: "/r" };
+
+  it("is true when the AI host is the global backend and the code is remote", () => {
+    expect(isGlobalBackendAgentHost({ metadata, launchConfig: { remoteWorkspace } }, "ruofo")).toBe(true);
+    expect(
+      isGlobalBackendAgentHost(
+        { metadata: JSON.stringify(metadata), launchConfig: JSON.stringify({ remoteWorkspace }) },
+        "ruofo",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for another host, no remote code, or no global backend", () => {
+    expect(isGlobalBackendAgentHost({ metadata, launchConfig: { remoteWorkspace } }, "apex")).toBe(false);
+    expect(isGlobalBackendAgentHost({ metadata, launchConfig: { cwd: "/r" } }, "ruofo")).toBe(false);
+    expect(isGlobalBackendAgentHost({ metadata: null, launchConfig: { remoteWorkspace } }, "ruofo")).toBe(false);
+    expect(isGlobalBackendAgentHost({ metadata, launchConfig: { remoteWorkspace } }, null)).toBe(false);
   });
 });
 

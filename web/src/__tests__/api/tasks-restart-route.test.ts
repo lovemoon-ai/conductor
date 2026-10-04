@@ -1092,6 +1092,53 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(data.error).toContain("does not match project binding");
   });
 
+  it("restarts a global-backend task in place on its AI daemon, not the project's daemon", async () => {
+    // "New task from this" onto another daemon keeps the source project (bound
+    // to the code's daemon) and reaches the code over a remoteWorkspace.
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "ai-daemon", supportedBackends: ["claude-opus"], capabilities: [] },
+      { id: "agent-2", host: "code-daemon", supportedBackends: ["claude"], capabilities: [] },
+    ] as any);
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({
+      agentHost: "ai-daemon",
+      executionHost: "ai-daemon",
+      backendType: "claude-opus",
+      metadata: JSON.stringify({ globalBackend: { host: "ai-daemon", backend: "claude-opus" } }),
+      launchConfig: JSON.stringify({
+        remoteWorkspace: {
+          host: "code-daemon",
+          projectId: "proj-1",
+          repoRoot: "/repo/project",
+          workspacePath: "/repo/project",
+        },
+      }),
+    }) as any);
+    vi.mocked(db.project.findFirst).mockResolvedValue({
+      id: "proj-1",
+      userId: "user-1",
+      daemonHost: "code-daemon",
+      workspacePath: "/repo/project",
+    } as any);
+
+    const response = await POST(
+      createMockRequest({ method: "POST", token: createTestToken("user-1"), body: {} }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(db.agentOutbox.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentHost: "ai-daemon",
+          eventType: "restart_task",
+          payloadJson: expect.stringContaining('"remoteWorkspace"'),
+        }),
+      }),
+    );
+  });
+
   it("returns 409 instead of 500 when source daemon presence is missing supportedBackends", async () => {
     vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
       { id: "agent-1", host: "daemon-1", capabilities: [] },

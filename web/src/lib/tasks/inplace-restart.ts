@@ -15,6 +15,7 @@ import {
 import { normalizeBackendType } from '@/lib/tasks/pty-runtime';
 import { isConductorFireHost } from '@/lib/subscription/plan-limits';
 import { persistIssueAiSession } from '@/lib/issues/persist-ai-session';
+import { isGlobalBackendAgentHost } from '@/lib/tasks/global-backend';
 
 type RestartableTask = {
   id: string;
@@ -125,7 +126,10 @@ export const planInplaceTaskRestart = (args: {
       ) ?? manualFireDaemonHosts[0] ?? null
     : sourceAgentHost;
 
-  if (projectDaemonHost) {
+  // RFC 0041: a global-backend task's AI stays on its own daemon even when the
+  // task is filed on a project bound to the code's daemon.
+  const isGlobalBackendSource = isGlobalBackendAgentHost(args.sourceTask, sourceAgentHost);
+  if (projectDaemonHost && !isGlobalBackendSource) {
     if (
       sourceAgentHost &&
       !isConductorFireHost(sourceAgentHost) &&
@@ -154,7 +158,7 @@ export const planInplaceTaskRestart = (args: {
   if (!restartAgent) {
     return {
       ok: false,
-      error: projectDaemonHost
+      error: projectDaemonHost && !isGlobalBackendSource
         ? `Project daemon ${restartAgentHost} is offline`
         : isManualFireTask
           ? `Original daemon ${restartAgentHost} is offline`
