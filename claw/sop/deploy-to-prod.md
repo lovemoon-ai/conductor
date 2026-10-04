@@ -100,3 +100,15 @@ First establish the following deployment contexts before starting deployment:
 - Clearly write out the status code results of the three local health checks.
 - If human flesh returns, clearly indicate which page or path was verified.
 - If it fails, write clearly the failure stage, failed command, key logs and next step processing suggestions; don't just say "the deployment failed".
+10. SQLite WAL (production DB journal mode; from `9c77666`, first shipped with the 0.17.0 release)
+- `web/server.ts` runs `PRAGMA journal_mode=WAL` at boot. On the first restart after deploying `9c77666` or later, `/opt/conductor/conductor.db` switches from `delete` to `wal`. The mode is stored in the DB file, so it stays on. Background: `claw/lessons/stable_sqlite-rollback-journal-write-timeouts-20261003.md`.
+- First WAL deploy only (while `sqlite3 /opt/conductor/conductor.db "PRAGMA journal_mode;"` still prints `delete`):
+  - Before deploying, take a backup: `sqlite3 /opt/conductor/conductor.db ".timeout 30000" ".backup /opt/conductor/conductor.db.bak-$(date +%Y%m%d%H%M)"`.
+  - The service user must be able to write to the directory that holds the DB, because WAL creates `conductor.db-wal` and `conductor.db-shm` next to it.
+  - After `bash scripts/deploy-prod.sh`: `PRAGMA journal_mode;` must print `wal`; `ls /opt/conductor/conductor.db*` lists `-wal` and `-shm`; `grep "\[db\] failed to enable SQLite WAL" /opt/conductor/conductor.log` returns nothing. If the switch failed (an old `server.ts` still held the DB), kill whatever listens on port 6152 and restart again.
+  - Watch `conductor.log` for P1008 / P2028; they should stop. Three concurrent `POST /api/tasks` should each return in well under 5 s.
+- Every deploy, from then on:
+  - Never back up with a plain `cp conductor.db`. Committed data can sit in `-wal` until a checkpoint. Use `sqlite3 … ".backup"`, or stop the service and copy all three files together.
+  - Never delete `conductor.db-wal` / `-shm` while the service is running.
+  - `-wal` grows under write load and shrinks at checkpoints; that is normal. To shrink it by hand: `sqlite3 /opt/conductor/conductor.db "PRAGMA wal_checkpoint(TRUNCATE);"`.
+- Rollback: rolling back the code does not take the DB out of WAL, and old builds run fine on a WAL DB. To return to `delete` mode anyway, stop the service, then run `sqlite3 /opt/conductor/conductor.db "PRAGMA journal_mode=delete;"`.
