@@ -52,6 +52,10 @@ run a single command. The PTY path and `conductor config` applied the same rewri
 - **Advice must actually work on every path it is shown on.** The hint says "set `envs.IS_SANDBOX`". That
   only held for the SDK path until the PTY env forwarded it. When a message tells the user to change config,
   trace that config key to every child process the message is shown for.
+- **Judge an env opt-out by the value the child will actually see.** YAML `IS_SANDBOX: 1` parses to the
+  number `1`; spawn turns it into `"1"`, which claude accepts. A strict `=== "1"` on the raw config value
+  showed a false "this session will fail" warning, while the PTY path (which stringifies) said it was fine.
+  Stringify like spawn does, then apply the vendor's exact compare.
 - **Don't route around a vendor's safety gate on the user's behalf.** Auto-injecting `IS_SANDBOX=1` or
   auto-approving everything with `canUseTool` would remove claude's root protection without the user knowing.
   The opt-out stays an explicit user setting, and we make it easy to find.

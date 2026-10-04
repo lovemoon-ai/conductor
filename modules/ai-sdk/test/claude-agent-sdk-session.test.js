@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { ClaudeAgentSdkSession } from "../src/session-factory.js";
 import {
@@ -784,6 +787,21 @@ describe("claude permission policy", () => {
     assert.equal(policy.rootSandboxRequired, false);
   });
 
+  // YAML `IS_SANDBOX: 1` in config envs is a number; spawn hands it to claude
+  // as "1", which passes claude's gate, so it must not trigger the warning.
+  it("treats a numeric IS_SANDBOX: 1 from YAML config as set", () => {
+    const policy = asRoot(() => resolveClaudePermissionPolicy({}, { IS_SANDBOX: 1 }));
+    assert.equal(policy.rootSandboxRequired, false);
+    assert.equal(policy.permissionMode, "bypassPermissions");
+  });
+
+  it("still requires IS_SANDBOX for YAML booleans and other numbers", () => {
+    for (const value of [true, 0, 2]) {
+      const policy = asRoot(() => resolveClaudePermissionPolicy({}, { IS_SANDBOX: value }));
+      assert.equal(policy.rootSandboxRequired, true, `IS_SANDBOX=${JSON.stringify(value)}`);
+    }
+  });
+
   // claude's root gate compares IS_SANDBOX with a strict === "1".
   it("still requires IS_SANDBOX as root for values claude does not accept", () => {
     for (const value of ["true", "yes", "on", "0", ""]) {
@@ -857,6 +875,34 @@ describe("claude root sandbox notice", () => {
     const sdkOptions = session.buildSdkOptions(new AbortController());
     assert.equal(sdkOptions.permissionMode, "bypassPermissions");
     assert.equal(sdkOptions.allowDangerouslySkipPermissions, true);
+  });
+
+  it("has no notice when config envs set IS_SANDBOX: 1 unquoted", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-root-notice-"));
+    try {
+      const configFile = path.join(dir, "config.yaml");
+      fs.writeFileSync(configFile, "envs:\n  IS_SANDBOX: 1\n");
+      const savedSandbox = process.env.IS_SANDBOX;
+      delete process.env.IS_SANDBOX;
+      try {
+        const session = asRoot(() => new ClaudeAgentSdkSession("claude", {
+          cwd: process.cwd(),
+          logger: { log: () => {} },
+          configFile,
+        }));
+        assert.strictEqual(session.env.IS_SANDBOX, 1, "fixture must exercise the numeric YAML value");
+        assert.deepEqual(session.getSnapshot().notices, []);
+      } finally {
+        if (savedSandbox === undefined) delete process.env.IS_SANDBOX;
+        else process.env.IS_SANDBOX = savedSandbox;
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tells the user that true/yes do not work", () => {
+    assert.match(buildClaudeRootSandboxNotice(), /true \/ yes 不生效/);
   });
 
   it("has no notice as root with IS_SANDBOX=1, or when not root", () => {

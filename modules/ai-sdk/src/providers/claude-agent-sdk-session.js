@@ -222,11 +222,15 @@ function normalizePermissionMode(value) {
 // through claude's loose truthy parser (`1|true|yes|on`, trimmed+lowercased).
 // Do not "helpfully" accept IS_SANDBOX=true here — claude would still refuse,
 // and the user would get no hint telling them why.
+//
+// Values are compared the way claude will see them: spawn stringifies env, so
+// YAML `IS_SANDBOX: 1` (a number from config `envs:`) reaches claude as "1"
+// and passes its gate. `true` becomes "true" and still does not.
 export function isClaudeRootPermissionRestricted(env = process.env) {
   if (typeof process.getuid !== "function" || process.getuid() !== 0) {
     return false;
   }
-  if (env?.IS_SANDBOX === "1") {
+  if (String(env?.IS_SANDBOX ?? "") === "1") {
     return false;
   }
   const bubblewrap = String(env?.CLAUDE_CODE_BUBBLEWRAP ?? "").trim().toLowerCase();
@@ -288,7 +292,7 @@ export function buildClaudeRootSandboxNotice({ configFile } = {}) {
     "  IS_SANDBOX: \"1\"",
     "```",
     "",
-    "注意值必须是字符串 \"1\"。设置后 claude 会以 root 身份直接执行命令、不再请求确认；如果不是隔离环境，建议改用普通用户运行 daemon。",
+    "注意值必须是 1（写成 1 或 \"1\" 都可以），写成 true / yes 不生效。设置后 claude 会以 root 身份直接执行命令、不再请求确认；如果不是隔离环境，建议改用普通用户运行 daemon。",
   ].join("\n");
 }
 
