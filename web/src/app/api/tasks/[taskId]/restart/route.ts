@@ -493,7 +493,7 @@ export async function POST(
   if (isCodeMoveRequest && requestedCodeHost !== restartAgentHost) {
     return NextResponse.json(
       {
-        error: `A global AI can only continue on the source task's code${sourceCodeHost ? ` (${sourceCodeHost})` : ""}; to move the work to ${requestedCodeHost}, run its AI there too`,
+        error: `code_host must equal agent_host to move the work to ${requestedCodeHost}; an AI on another daemon can only work on the source task's code${sourceCodeHost ? ` (${sourceCodeHost})` : ""}`,
       },
       { status: 409 },
     );

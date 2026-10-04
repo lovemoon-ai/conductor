@@ -31,6 +31,7 @@ describe('task-card-groups-sync-store', () => {
     expect(apiMocks.get).toHaveBeenCalledWith('/user-preferences/task-card-groups');
     expect(useTaskCardGroupsSyncStore.getState()).toMatchObject({
       hydrated: true,
+      serverLoaded: true,
       loading: false,
       error: null,
       snapshot: {
@@ -41,6 +42,26 @@ describe('task-card-groups-sync-store', () => {
         },
       },
     });
+  });
+
+  it('marks a failed load as finished but never as read from the server', async () => {
+    apiMocks.get.mockRejectedValue(new Error('502 Bad Gateway'));
+
+    await useTaskCardGroupsSyncStore.getState().hydrate('user-1');
+
+    // `hydrated` ends the loading state, but the empty snapshot is not the
+    // server's: consumers must not treat it as "no groups anywhere".
+    expect(useTaskCardGroupsSyncStore.getState()).toMatchObject({
+      hydrated: true,
+      serverLoaded: false,
+      error: '502 Bad Gateway',
+      snapshot: { version: 1, revision: 0, scopes: {} },
+    });
+
+    // A later successful retry flips it.
+    apiMocks.get.mockResolvedValue({ version: 1, revision: 3, scopes: { 'projects:all': [] } });
+    await useTaskCardGroupsSyncStore.getState().hydrate('user-1');
+    expect(useTaskCardGroupsSyncStore.getState()).toMatchObject({ serverLoaded: true, error: null });
   });
 
   it('saves only synchronized structure, excluding the device-local active tab', async () => {

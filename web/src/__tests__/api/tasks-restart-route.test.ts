@@ -504,6 +504,10 @@ describe("/api/tasks/[taskId]/restart", () => {
       const response = await restartOn({ code_host: "daemon-3" });
 
       expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body.error).toMatch(/^code_host must equal agent_host to move the work to daemon-3/);
+      // An ordinary local task: no "global AI" wording.
+      expect(body.error).not.toMatch(/global AI/);
       expect(db.task.create).not.toHaveBeenCalled();
     });
 

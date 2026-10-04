@@ -37,6 +37,7 @@ let authState: { session: { user: { id: string } } | null };
 let taskCardGroupsSyncState: {
   snapshot: { version: 1; revision: number; scopes: Record<string, unknown[]> };
   hydrated: boolean;
+  serverLoaded: boolean;
   hydrate: typeof hydrateTaskCardGroupsMock;
   saveScope: typeof saveTaskCardGroupsScopeMock;
 };
@@ -172,6 +173,7 @@ describe('TaskList', () => {
     taskCardGroupsSyncState = {
       snapshot: { version: 1, revision: 0, scopes: {} },
       hydrated: false,
+      serverLoaded: false,
       hydrate: hydrateTaskCardGroupsMock,
       saveScope: saveTaskCardGroupsScopeMock,
     };
@@ -1092,6 +1094,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: {
           version: 1,
           revision: 4,
@@ -1150,6 +1153,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: { version: 1, revision: 9, scopes: { 'projects:all': [] } },
       };
       // TaskList is memoized; a fresh callback prop forces it to re-read the
@@ -1159,6 +1163,50 @@ describe('TaskList', () => {
         expect(document.querySelector('[data-task-tab-card]')).toBeNull();
       });
       expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+    });
+
+    it('does not upload the local cache when loading the server groups fails', async () => {
+      vi.useFakeTimers();
+      try {
+        authState = { session: { user: { id: 'user-1' } } };
+        // The GET failed: the store reports the load finished (hydrated) but
+        // never read the server, so its snapshot is just the empty default.
+        taskCardGroupsSyncState = {
+          ...taskCardGroupsSyncState,
+          hydrated: true,
+          serverLoaded: false,
+          snapshot: { version: 1, revision: 0, scopes: {} },
+        };
+        window.localStorage.setItem(
+          'conductor:task-list-groups:v2:user-1:projects%3Aall',
+          JSON.stringify([{ id: 'stale-group', taskIds: ['task-1', 'task-2'], activeIndex: 0, labels: {} }]),
+        );
+
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        // The cached card still renders locally, but nothing is pushed to the
+        // server, neither by the legacy migration nor by the save effect.
+        expect(document.querySelector('[data-task-tab-card="stale-group"]')).not.toBeNull();
+        expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+        // A local edit made meanwhile stays local too.
+        const tabCard = document.querySelector('[data-task-tab-card]') as HTMLElement;
+        fireEvent.click(tabCard.querySelector('button[aria-label^="Ungroup "]') as HTMLElement);
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+        expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+        // The load is retried until the server answers.
+        hydrateTaskCardGroupsMock.mockClear();
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledWith('user-1');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('does not overwrite server groups with an empty local cache on load', async () => {
@@ -1179,6 +1227,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: {
           version: 1,
           revision: 12,
@@ -1199,6 +1248,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: {
           version: 1,
           revision: 6,
@@ -1232,6 +1282,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: { version: 1, revision: 2, scopes: { 'projects:project-1': [] } },
       };
       window.localStorage.setItem(
@@ -1263,6 +1314,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
       };
       const legacyKey = 'conductor:task-list-groups:v1:projects%3Aall';
       window.localStorage.setItem(legacyKey, JSON.stringify([{

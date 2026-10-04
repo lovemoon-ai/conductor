@@ -25,6 +25,12 @@ store also ignored the in-flight hydration GET, so the bad snapshot stuck.
   changes and set once the hydrated server snapshot has been folded into
   `groups`. The save effect still writes localStorage, but it only uploads after
   that.
+- A *failed* load is not a server read. The sync store's `hydrated` turns true
+  after a failed GET too, with an empty snapshot that looks like "the server has
+  no groups". That would have sent us down the legacy-migration path and
+  uploaded the local cache anyway. The store now has `serverLoaded`, set only
+  after a successful GET/PATCH or a realtime snapshot. `TaskList` waits on it,
+  stays local-only meanwhile, and retries the load every 15 s.
 - When the server has no global scope yet (legacy per-project scopes only), the
   sync effect now uploads the consolidated union itself. Before, it relied on the
   save effect, which never fires if the local groups already equal the union.
@@ -34,7 +40,8 @@ store also ignored the in-flight hydration GET, so the bad snapshot stuck.
 
 ## How to avoid next time
 - Never push local state to a server-authoritative store until the server
-  state has been read at least once. Gate on an explicit "server applied" signal,
+  state has been read successfully at least once. "Load finished" and "load
+  succeeded" are different states; an error path must not unlock writes. Gate on an explicit "server applied" signal,
   not a one-shot skip flag.
 - One-shot `skipXRef` flags around `useEffect` are fragile: the flag and the
   render it was meant to skip are often in different commits. Prefer an explicit

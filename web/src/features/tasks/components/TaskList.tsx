@@ -63,6 +63,8 @@ export type TaskListViewMode = 'list' | 'graph';
 // Mouse/pen whole-card drag is claimed only after vertically dominant movement;
 // touch uses the delayed activation below so normal tap, scroll, and swipe win
 // unless the user deliberately holds the card first.
+// Retry delay for a failed task-card-groups load.
+const TASK_CARD_GROUPS_RELOAD_RETRY_MS = 15_000;
 const DRAG_ACTIVATE_THRESHOLD = 6;
 // Touch starts as an ordinary scroll/tap. Holding still for this duration
 // promotes the same touch sequence into a merge drag.
@@ -218,6 +220,9 @@ function TaskListComponent({
   const hiddenProjectIds = useProjectsStore((state) => state.hiddenProjectIds);
   const syncedGroupsSnapshot = useTaskCardGroupsSyncStore((state) => state.snapshot);
   const taskCardGroupsHydrated = useTaskCardGroupsSyncStore((state) => state.hydrated);
+  // Only a successful server read counts: a failed load also ends `hydrated`,
+  // but its empty snapshot says nothing about what the server holds.
+  const taskCardGroupsServerLoaded = useTaskCardGroupsSyncStore((state) => state.serverLoaded);
   const hydrateTaskCardGroups = useTaskCardGroupsSyncStore((state) => state.hydrate);
   const saveTaskCardGroupsScope = useTaskCardGroupsSyncStore((state) => state.saveScope);
   const { confirm } = useConfirm();
@@ -600,6 +605,16 @@ function TaskListComponent({
     if (userId) void hydrateTaskCardGroups(userId);
   }, [hydrateTaskCardGroups, userId]);
 
+  // A failed load leaves the groups local-only (nothing is uploaded); retry
+  // until the server answers so this device rejoins the sync.
+  useEffect(() => {
+    if (!userId || !taskCardGroupsHydrated || taskCardGroupsServerLoaded) return;
+    const timer = setTimeout(() => {
+      void hydrateTaskCardGroups(userId);
+    }, TASK_CARD_GROUPS_RELOAD_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [hydrateTaskCardGroups, taskCardGroupsHydrated, taskCardGroupsServerLoaded, userId]);
+
   // Server scopes are authoritative, including an empty-array tombstone. Tab
   // cards are global, so fold *every* project scope into one working set — a
   // card merged under a specific project (an older per-project scope) then
@@ -608,7 +623,7 @@ function TaskListComponent({
   // wins and the union is stable across reloads. If nothing has ever synced,
   // upload this device's legacy cache once so existing users keep their cards.
   useEffect(() => {
-    if (!userId || !taskCardGroupsHydrated) return;
+    if (!userId || !taskCardGroupsServerLoaded) return;
     const scopes = syncedGroupsSnapshot.scopes;
     const migrationKey = `${userId}:${LIST_CARD_GROUPS_SCOPE}`;
     const hasServerScopes = Object.keys(scopes).length > 0;
@@ -678,7 +693,7 @@ function TaskListComponent({
     groupsStorageKey,
     saveTaskCardGroupsScope,
     syncedGroupsSnapshot,
-    taskCardGroupsHydrated,
+    taskCardGroupsServerLoaded,
     userId,
   ]);
 

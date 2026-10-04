@@ -259,6 +259,16 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     isGlobalBackendSource,
     restartSourceHost,
   ]);
+  // A global-backend source whose AI daemon cannot take the successor (offline,
+  // too old, backend gone) falls back to the code daemon's own backends; say so
+  // instead of silently moving the AI.
+  const unavailableSourceAiOption = isGlobalBackendSource && !isCodeMove
+    ? globalBackendOptions.find(
+      (option) => option.entry.host === restartSourceHost
+        && option.entry.backend === currentBackend
+        && option.disabledReason,
+    ) ?? null
+    : null;
   const effectiveBackendValue =
     selectedBackend && (backendOptions.includes(selectedBackend)
       || enabledGlobalOptions.some((option) => option.value === selectedBackend))
@@ -278,7 +288,8 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   const supportsFirstMessage = Boolean(selectedAgent?.capabilities?.includes(RESTART_FIRST_MESSAGE_CAPABILITY));
   const effectiveFirstMessage = supportsFirstMessage ? firstMessage.trim() : '';
 
-  const disabledReason = useMemo(() => {
+  // Reasons that no daemon/backend choice can fix; they lock the pickers too.
+  const taskIneligibleReason = useMemo(() => {
     if ((task.taskType ?? 'ai_task') !== 'ai_task') {
       return 'Only AI tasks support restart';
     }
@@ -293,6 +304,13 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     }
     if (!isRestartableStatus(task.status)) {
       return 'Only running or stopped tasks can restart';
+    }
+    return null;
+  }, [currentBackend, sourceAgentHost, task.sessionId, task.status, task.taskType]);
+
+  const disabledReason = useMemo(() => {
+    if (taskIneligibleReason) {
+      return taskIneligibleReason;
     }
     // Note: Fire tasks can always create new tasks; in-place restart is handled by the backend based on strategy
     if (daemonOptions.length === 0) {
@@ -331,9 +349,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     selectedAgent,
     sourceAgentHost,
     sourceRemoteCodeHost,
-    task.sessionId,
-    task.status,
-    task.taskType,
+    taskIneligibleReason,
   ]);
 
   const navigateToTask = (nextTaskId: string) => {
@@ -361,12 +377,14 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       // dispatches to exactly what the UI shows, and any target other than
       // the source machine goes through the cross-daemon path-drop guard
       // (making the warning below always truthful).
+      // A move always names the AI daemon too: the server requires
+      // code_host === agent_host for it.
       const agentHostOverride =
         aiHost &&
-        !(
+        (isCodeMove || !(
           aiHost === autoResolvedDaemonHost &&
           aiHost === restartSourceHost
-        )
+        ))
           ? aiHost
           : undefined;
       const result = await restartTask(task.id, {
@@ -425,12 +443,17 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             ))}
             {!daemonOptions.length ? <option value="">No daemon online</option> : null}
           </select>
-          <p className="text-xs text-muted">Where the code lives. Pick a global AI under Backend to run the AI elsewhere.</p>
+          <p className="text-xs text-muted">
+            Where the code lives. To run the AI on another daemon, keep this and pick a global AI under Backend.
+          </p>
           {isCodeMove ? (
             <p className="text-xs text-muted">
               The work moves to a different machine than the source task: the new task runs on{' '}
               {effectiveSelectedDaemonHost} and starts from its own copy of the project (or a fresh workspace), not the
-              source task&apos;s files. The conversation carries over.
+              source task&apos;s files. The conversation carries over.{' '}
+              {sourceCodeHost
+                ? `To keep working on the source files with an AI on ${effectiveSelectedDaemonHost} instead, choose ${sourceCodeHost} here and pick that AI under Backend${globalBackends.some((entry) => entry.host === effectiveSelectedDaemonHost) ? '' : ` (add ${effectiveSelectedDaemonHost} under Settings → Global AI backends first)`}.`
+                : null}
             </p>
           ) : null}
         </div>
@@ -443,7 +466,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             id={`restart-backend-${task.id}`}
             value={effectiveBackendValue}
             onChange={(event) => setSelectedBackend(event.target.value)}
-            disabled={!codeAgent || isSubmitting}
+            disabled={Boolean(taskIneligibleReason) || !codeAgent || isSubmitting}
             className="w-full rounded-xl border border-border bg-paper px-3 py-2 text-sm text-ink disabled:cursor-not-allowed disabled:opacity-60"
           >
             {backendOptions.map((backend) => (
@@ -473,6 +496,12 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             <p className="text-xs text-muted">
               AI runs on {selectedGlobalBackend.entry.host} and works on {effectiveSelectedDaemonHost} through conductor
               remote.
+            </p>
+          ) : unavailableSourceAiOption && effectiveSelectedDaemonHost ? (
+            <p className="text-xs text-muted">
+              The source task&apos;s AI ({unavailableSourceAiOption.label}) can&apos;t take this task:{' '}
+              {unavailableSourceAiOption.disabledReason}. The new task&apos;s AI will run on {effectiveSelectedDaemonHost}{' '}
+              itself.
             </p>
           ) : null}
         </div>
