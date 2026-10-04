@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { BridgeRunner, isClearCommand } from "../bin/conductor-fire.js";
+import { BridgeRunner, isClearCommand, isStopCommand } from "../bin/conductor-fire.js";
 
 let uniqueTaskCounter = 0;
 function uniqueTaskId() {
@@ -304,5 +304,75 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
     assert.deepEqual(oldSession.calls.runTurn, ["/clear"]);
     assert.equal(oldSession.calls.close, 0);
     assert.equal(freshSessions.length, 0);
+  });
+});
+
+describe("BridgeRunner.dispatchBackendTurn /stop", () => {
+  it("matches only a bare /stop", () => {
+    assert.equal(isStopCommand(" /STOP \n"), true);
+    assert.equal(isStopCommand("/stop now"), false);
+    assert.equal(isStopCommand("/stopwatch"), false);
+  });
+
+  it("drops the user messages queued before /stop in the same batch", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    conductor.receiveMessages = async () => ({
+      messages: [
+        { message_id: "m1", role: "user", content: "do B" },
+        { message_id: "m2", role: "user", content: "summarize", metadata: { kind: "persistent_round_end" } },
+        { message_id: "m3", role: "user", content: "do C" },
+        { message_id: "m4", role: "user", content: "/stop" },
+        { message_id: "m5", role: "user", content: "after stop" },
+      ],
+    });
+
+    await runner.processIncomingBatch();
+
+    // The round-end summary request is the server's and still runs.
+    assert.deepEqual(oldSession.calls.runTurn, ["summarize", "after stop"]);
+    assert.ok(conductor.sent.some((entry) => entry.content === "claude 已停止。" && entry.metadata.reply_to === "m4"));
+  });
+
+  it("drops the rest of the running batch when /stop interrupts a turn mid-batch", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    const runTurn = oldSession.runTurn;
+    oldSession.runTurn = async (content) => {
+      if (content === "do A") {
+        await runner.requestInterruptFromRemote({ taskId: runner.taskId, reason: "user_stop" });
+      }
+      return runTurn(content);
+    };
+    conductor.receiveMessages = async () => ({
+      messages: [
+        { message_id: "a", role: "user", content: "do A" },
+        { message_id: "b", role: "user", content: "do B" },
+      ],
+    });
+
+    await runner.processIncomingBatch();
+    assert.deepEqual(oldSession.calls.runTurn, ["do A"]);
+
+    // Only that batch: later messages run again.
+    conductor.receiveMessages = async () => ({ messages: [{ message_id: "c", role: "user", content: "do C" }] });
+    await runner.processIncomingBatch();
+    assert.deepEqual(oldSession.calls.runTurn, ["do A", "do C"]);
+  });
+
+  it("confirms a queued /stop without running a model turn", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    const progress = [];
+
+    const result = await runner.dispatchBackendTurn("/stop", {
+      replyTo: "msg-stop",
+      onProgress: (payload) => progress.push(payload),
+    });
+
+    assert.equal(oldSession.calls.runTurn.length, 0);
+    assert.equal(oldSession.calls.close, 0);
+    assert.equal(result.text, "claude 已停止。");
+    assert.deepEqual(conductor.sent.map((entry) => [entry.content, entry.metadata.reply_to]), [
+      ["claude 已停止。", "msg-stop"],
+    ]);
+    assert.equal(progress.at(-1).reply_in_progress, false);
   });
 });

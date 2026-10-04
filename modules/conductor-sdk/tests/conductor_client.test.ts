@@ -740,6 +740,36 @@ describe('ConductorClient', () => {
     await client.close();
   });
 
+  test('interrupt_turn without a target is forwarded with an empty target (/stop)', async () => {
+    const interruptEvents: Array<{ taskId: string; targetReplyTo: string }> = [];
+    const client = await ConductorClient.connect({
+      config: makeConfig(),
+      env: { CONDUCTOR_TASK_CREATE_RETRIES: '0', HOSTNAME: 'test-host' },
+      projectPath,
+      backendApi: backendApi as any,
+      wsClient: wsClient as any,
+      sessionStore,
+      agentHost: 'conductor-fire-test-host-1',
+      onInterruptTurn: (event) => {
+        interruptEvents.push(event);
+      },
+    });
+    await client.createTaskSession({ project_id: 'proj1', task_title: 'Hello', task_id: 'task-stop-1' });
+
+    await wsClient.emit({
+      type: 'interrupt_turn',
+      payload: { task_id: 'task-stop-1', request_id: 'req-stop-1', reason: 'user_interrupt' },
+    });
+
+    expect(interruptEvents).toEqual([
+      { taskId: 'task-stop-1', requestId: 'req-stop-1', reason: 'user_interrupt', targetReplyTo: '' },
+    ]);
+    expect(backendApi.commitAgentCommandAckCalls).toContainEqual(
+      expect.objectContaining({ requestId: 'req-stop-1', commandEventType: 'interrupt_turn', accepted: true }),
+    );
+    await client.close();
+  });
+
   test('interrupt_turn acknowledgements wait for an async callback result before committing', async () => {
     let resolveInterrupt: ((accepted: boolean) => void) | null = null;
 

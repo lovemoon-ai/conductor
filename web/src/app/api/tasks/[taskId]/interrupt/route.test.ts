@@ -444,7 +444,20 @@ describe("/api/tasks/[taskId]/interrupt", () => {
     expect(realtimeHub.waitForAgentCommandAck).not.toHaveBeenCalled();
   });
 
-  it("requires a target reply id", async () => {
+  it("sends a target-less interrupt so fire stops whatever turn is running (/stop)", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1",
+      projectId: "proj-1",
+      taskType: "ai_task",
+      status: "running",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      metadata: JSON.stringify({ daemonName: "daemon-a" }),
+      project: { daemonHost: "daemon-a" },
+    } as any);
+    vi.mocked(realtimeHub.getTaskAgentHost).mockReturnValue(null as any);
+    vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
+
     const response = await POST(
       createMockRequest({
         method: "POST",
@@ -453,11 +466,14 @@ describe("/api/tasks/[taskId]/interrupt", () => {
       }),
       { params: Promise.resolve({ taskId: "task-1" }) },
     );
-    const data = await extractJson(response);
 
-    expect(response.status).toBe(400);
-    expect(data).toEqual({ error: "target_reply_to required" });
-    expect(db.task.findFirst).not.toHaveBeenCalled();
-    expect(realtimeHub.waitForAgentCommandAck).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    const envelope = vi.mocked(realtimeHub.sendToAgentHost).mock.calls[0][2] as {
+      type: string;
+      payload: Record<string, unknown>;
+    };
+    expect(envelope.type).toBe("interrupt_turn");
+    expect(envelope.payload).not.toHaveProperty("target_reply_to");
+    expect(envelope.payload.reason).toBe("user_interrupt");
   });
 });

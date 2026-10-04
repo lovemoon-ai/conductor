@@ -603,6 +603,90 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(appendUserMessageToTask).toHaveBeenCalledWith(expect.objectContaining({ content, role: "user" }));
   });
 
+  it("delivers /stop and interrupts the running turn right away, without starting a round", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...endedPersistentTask,
+      status: "running",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      project: { daemonHost: "daemon-a" },
+      runtimeState: { replyInProgress: true, replyTo: "msg-running" },
+    } as any);
+    vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-p", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-stop", taskId: "task-p", role: "user", content: "/stop", metadata: null,
+        createdAt: new Date("2026-10-04T00:00:00Z"),
+      } as any,
+    });
+
+    const response = await postMessage({ content: "/stop", role: "user" });
+
+    expect(response.status).toBe(200);
+    expect(startPersistentRound).not.toHaveBeenCalled();
+    expect(appendUserMessageToTask).toHaveBeenCalledWith(expect.objectContaining({ content: "/stop" }));
+    expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "conductor-fire-a", {
+      type: "interrupt_turn",
+      payload: {
+        task_id: "task-p",
+        project_id: "proj-1",
+        request_id: expect.any(String),
+        reason: "user_stop",
+        // Older fires drop a target-less interrupt.
+        target_reply_to: "msg-running",
+      },
+    });
+  });
+
+  it("sends /stop's interrupt without a target when no reply is known to be running", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...endedPersistentTask,
+      status: "running",
+      agentHost: "conductor-fire-a",
+      executionHost: "conductor-fire-a",
+      project: { daemonHost: "daemon-a" },
+      runtimeState: null,
+    } as any);
+    vi.mocked(realtimeHub.sendToAgentHost).mockReturnValue(true);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-p", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-stop", taskId: "task-p", role: "user", content: "/stop", metadata: null,
+        createdAt: new Date("2026-10-04T00:00:00Z"),
+      } as any,
+    });
+
+    const response = await postMessage({ content: "/stop", role: "user" });
+
+    expect(response.status).toBe(200);
+    expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "conductor-fire-a", {
+      type: "interrupt_turn",
+      payload: { task_id: "task-p", project_id: "proj-1", request_id: expect.any(String), reason: "user_stop" },
+    });
+  });
+
+  it("does not interrupt for a non-user /stop message", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      ...endedPersistentTask,
+      status: "running",
+      agentHost: "conductor-fire-a",
+      project: { daemonHost: "daemon-a" },
+    } as any);
+    vi.mocked(appendUserMessageToTask).mockResolvedValueOnce({
+      task: { id: "task-p", projectId: "proj-1" } as any,
+      message: {
+        id: "msg-stop", taskId: "task-p", role: "user", content: "/stop", metadata: null,
+        createdAt: new Date("2026-10-04T00:00:00Z"),
+      } as any,
+    });
+
+    const response = await postMessage({ content: "/stop" });
+
+    expect(response.status).toBe(200);
+    expect(realtimeHub.sendToAgentHost).not.toHaveBeenCalled();
+  });
+
   it("returns existing message without re-creating when clientRequestId already exists", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-cri",

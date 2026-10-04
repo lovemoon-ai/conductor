@@ -1648,6 +1648,10 @@ export function formatCompactReply(backendName, compact, instructions = "") {
  * Per-message `/clear` detector. Only a bare `/clear` (case-insensitive)
  * counts: anything after it is more likely an instruction for the model.
  */
+export function isStopCommand(content) {
+  return typeof content === "string" && /^\/stop$/i.test(content.trim());
+}
+
 export function isClearCommand(content) {
   return typeof content === "string" && /^\/clear$/i.test(content.trim());
 }
@@ -2168,6 +2172,8 @@ export class BridgeRunner {
     this.remoteInterruptsByReplyTo = new Map();
     this.pendingInterruptRetryTimers = new Map();
     this.activeTurnReplyTo = "";
+    // A `/stop` arrived mid-batch: drop the rest of this batch (all sent before it).
+    this.dropQueuedBeforeStop = false;
     this.sessionAnnouncementSent = false;
     this.sessionAnnouncementSubscribed = false;
     this.boundSessionId = "";
@@ -2578,7 +2584,12 @@ export class BridgeRunner {
     }
     const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
     const reason = typeof event.reason === "string" ? event.reason.trim() : "";
-    const targetReplyTo = this.normalizeReplyTarget(event.targetReplyTo);
+    if (reason === "user_stop" && this.runningTurn) {
+      this.dropQueuedBeforeStop = true;
+    }
+    // No target (`/stop`): interrupt whatever turn is running right now.
+    const targetReplyTo =
+      this.normalizeReplyTarget(event.targetReplyTo) || (this.runningTurn ? this.activeTurnReplyTo : "");
     if (!targetReplyTo) {
       return false;
     }
@@ -2768,7 +2779,12 @@ export class BridgeRunner {
         .join(",")}`,
     );
 
-    for (const message of messages) {
+    // `/stop` drops every message queued before it; the user resends what they still want.
+    let lastStopIndex = -1;
+    messages.forEach((message, index) => {
+      if (this.isUserStopMessage(message)) lastStopIndex = index;
+    });
+    for (const [index, message] of messages.entries()) {
       if (this.stopped) {
         break;
       }
@@ -2776,8 +2792,16 @@ export class BridgeRunner {
         this.copilotLog(`skip message role=${String(message?.role || "unknown").toLowerCase()}`);
         continue;
       }
+      if (this.isUserStopMessage(message)) {
+        this.dropQueuedBeforeStop = false;
+      } else if ((index < lastStopIndex || this.dropQueuedBeforeStop) && this.isDroppableOnStop(message)) {
+        if (message.message_id) this.processedMessageIds.add(message.message_id);
+        this.copilotLog(`drop message queued before /stop replyTo=${message.message_id || "unknown"}`);
+        continue;
+      }
       await this.respondToMessage(message);
     }
+    this.dropQueuedBeforeStop = false;
 
     if (ackToken) {
       await this.conductor.ackMessages(this.taskId, ackToken);
@@ -2785,6 +2809,15 @@ export class BridgeRunner {
     }
     const hasMore = Boolean(result?.has_more);
     return hasMore;
+  }
+
+  isUserStopMessage(message) {
+    return String(message?.role || "").toLowerCase() === "user" && isStopCommand(message.content);
+  }
+
+  // The end-of-round summary request is the server's, not the user's: dropping it would lock the round.
+  isDroppableOnStop(message) {
+    return String(message?.role || "").toLowerCase() === "user" && message.metadata?.kind !== "persistent_round_end";
   }
 
   shouldRespond(message) {
@@ -3665,6 +3698,9 @@ export class BridgeRunner {
     if (!hasAttachmentInputs && this.createFreshBackendSession && isClearCommand(content)) {
       return this.runClearCommand(options);
     }
+    if (!hasAttachmentInputs && isStopCommand(content)) {
+      return this.runStopCommand(options);
+    }
 
     if (willRunGoal) {
       const goalResult = await this.runWithTurnUsage(() =>
@@ -3853,6 +3889,24 @@ export class BridgeRunner {
     return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };
   }
 
+  /**
+   * `/stop`: the server already interrupted the running turn when the message
+   * arrived (fire only reads it once that turn ends), so just confirm it
+   * instead of sending it to the model.
+   */
+  async runStopCommand({ onProgress, replyTo = "" } = {}) {
+    const text = `${this.backendName} 已停止。`;
+    onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+    if (this.useSessionFileReplyStream && !this.stopped) {
+      try {
+        await this.sendSessionStreamMessage({ text, replyTo });
+      } catch (error) {
+        log(`[stop] failed to post confirmation: ${error?.message || error}`);
+      }
+    }
+    return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };
+  }
+
   async handlePrePromptMessage(content) {
     const text = typeof content === "string" ? content.trim() : "";
     if (!text) {
@@ -3890,6 +3944,8 @@ export class BridgeRunner {
   }) {
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
+    // Lets a target-less interrupt (`/stop`) reach this turn.
+    this.activeTurnReplyTo = replyTarget;
     // Only this turn's own streamed replies may carry its usage.
     this.lastStreamedReplyIds.clear();
     const startedAt = Date.now();
@@ -3964,6 +4020,11 @@ export class BridgeRunner {
         this.copilotLog(`${logTag} turn interrupted by stop_task elapsedMs=${Date.now() - startedAt}`);
         return;
       }
+      const interruptInfo = this.remoteInterruptsByReplyTo.get(replyTarget);
+      if (interruptInfo && this.isTurnInterruptedError(error)) {
+        await this.handleInterruptedTurn(replyTarget, interruptInfo);
+        return;
+      }
       if (
         await this.settleCodexCheckpointUnavailableAfterStream(replyTarget, errorMessage, {
           markProcessed: false,
@@ -3977,6 +4038,9 @@ export class BridgeRunner {
       await this.reportError(`${errorLabel}执行失败: ${errorMessage}`);
     } finally {
       this.copilotLog(`${logTag} turn end elapsedMs=${Date.now() - startedAt}`);
+      this.activeTurnReplyTo = "";
+      this.clearInterruptRetryForReplyTarget(replyTarget);
+      this.remoteInterruptsByReplyTo.delete(replyTarget);
       this.runningTurn = false;
       this.scheduleRuntimeHeartbeat();
     }
