@@ -314,6 +314,50 @@ describe("BridgeRunner.dispatchBackendTurn /stop", () => {
     assert.equal(isStopCommand("/stopwatch"), false);
   });
 
+  it("drops the user messages queued before /stop in the same batch", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    conductor.receiveMessages = async () => ({
+      messages: [
+        { message_id: "m1", role: "user", content: "do B" },
+        { message_id: "m2", role: "user", content: "summarize", metadata: { kind: "persistent_round_end" } },
+        { message_id: "m3", role: "user", content: "do C" },
+        { message_id: "m4", role: "user", content: "/stop" },
+        { message_id: "m5", role: "user", content: "after stop" },
+      ],
+    });
+
+    await runner.processIncomingBatch();
+
+    // The round-end summary request is the server's and still runs.
+    assert.deepEqual(oldSession.calls.runTurn, ["summarize", "after stop"]);
+    assert.ok(conductor.sent.some((entry) => entry.content === "claude 已停止。" && entry.metadata.reply_to === "m4"));
+  });
+
+  it("drops the rest of the running batch when /stop interrupts a turn mid-batch", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    const runTurn = oldSession.runTurn;
+    oldSession.runTurn = async (content) => {
+      if (content === "do A") {
+        await runner.requestInterruptFromRemote({ taskId: runner.taskId, reason: "user_stop" });
+      }
+      return runTurn(content);
+    };
+    conductor.receiveMessages = async () => ({
+      messages: [
+        { message_id: "a", role: "user", content: "do A" },
+        { message_id: "b", role: "user", content: "do B" },
+      ],
+    });
+
+    await runner.processIncomingBatch();
+    assert.deepEqual(oldSession.calls.runTurn, ["do A"]);
+
+    // Only that batch: later messages run again.
+    conductor.receiveMessages = async () => ({ messages: [{ message_id: "c", role: "user", content: "do C" }] });
+    await runner.processIncomingBatch();
+    assert.deepEqual(oldSession.calls.runTurn, ["do A", "do C"]);
+  });
+
   it("confirms a queued /stop without running a model turn", async () => {
     const { runner, conductor, oldSession } = buildRunner();
     const progress = [];

@@ -632,7 +632,7 @@ describe("/api/tasks/[taskId]/messages", () => {
         task_id: "task-p",
         project_id: "proj-1",
         request_id: expect.any(String),
-        reason: "user_interrupt",
+        reason: "user_stop",
         // Older fires drop a target-less interrupt.
         target_reply_to: "msg-running",
       },
@@ -662,7 +662,7 @@ describe("/api/tasks/[taskId]/messages", () => {
     expect(response.status).toBe(200);
     expect(realtimeHub.sendToAgentHost).toHaveBeenCalledWith("user-1", "conductor-fire-a", {
       type: "interrupt_turn",
-      payload: { task_id: "task-p", project_id: "proj-1", request_id: expect.any(String), reason: "user_interrupt" },
+      payload: { task_id: "task-p", project_id: "proj-1", request_id: expect.any(String), reason: "user_stop" },
     });
   });
 

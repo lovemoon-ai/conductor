@@ -2172,6 +2172,8 @@ export class BridgeRunner {
     this.remoteInterruptsByReplyTo = new Map();
     this.pendingInterruptRetryTimers = new Map();
     this.activeTurnReplyTo = "";
+    // A `/stop` arrived mid-batch: drop the rest of this batch (all sent before it).
+    this.dropQueuedBeforeStop = false;
     this.sessionAnnouncementSent = false;
     this.sessionAnnouncementSubscribed = false;
     this.boundSessionId = "";
@@ -2581,6 +2583,9 @@ export class BridgeRunner {
     }
     const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
     const reason = typeof event.reason === "string" ? event.reason.trim() : "";
+    if (reason === "user_stop" && this.runningTurn) {
+      this.dropQueuedBeforeStop = true;
+    }
     // No target (`/stop`): interrupt whatever turn is running right now.
     const targetReplyTo =
       this.normalizeReplyTarget(event.targetReplyTo) || (this.runningTurn ? this.activeTurnReplyTo : "");
@@ -2773,7 +2778,12 @@ export class BridgeRunner {
         .join(",")}`,
     );
 
-    for (const message of messages) {
+    // `/stop` drops every message queued before it; the user resends what they still want.
+    let lastStopIndex = -1;
+    messages.forEach((message, index) => {
+      if (this.isUserStopMessage(message)) lastStopIndex = index;
+    });
+    for (const [index, message] of messages.entries()) {
       if (this.stopped) {
         break;
       }
@@ -2781,8 +2791,16 @@ export class BridgeRunner {
         this.copilotLog(`skip message role=${String(message?.role || "unknown").toLowerCase()}`);
         continue;
       }
+      if (this.isUserStopMessage(message)) {
+        this.dropQueuedBeforeStop = false;
+      } else if ((index < lastStopIndex || this.dropQueuedBeforeStop) && this.isDroppableOnStop(message)) {
+        if (message.message_id) this.processedMessageIds.add(message.message_id);
+        this.copilotLog(`drop message queued before /stop replyTo=${message.message_id || "unknown"}`);
+        continue;
+      }
       await this.respondToMessage(message);
     }
+    this.dropQueuedBeforeStop = false;
 
     if (ackToken) {
       await this.conductor.ackMessages(this.taskId, ackToken);
@@ -2790,6 +2808,15 @@ export class BridgeRunner {
     }
     const hasMore = Boolean(result?.has_more);
     return hasMore;
+  }
+
+  isUserStopMessage(message) {
+    return String(message?.role || "").toLowerCase() === "user" && isStopCommand(message.content);
+  }
+
+  // The end-of-round summary request is the server's, not the user's: dropping it would lock the round.
+  isDroppableOnStop(message) {
+    return String(message?.role || "").toLowerCase() === "user" && message.metadata?.kind !== "persistent_round_end";
   }
 
   shouldRespond(message) {

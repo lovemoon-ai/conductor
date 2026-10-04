@@ -39,7 +39,8 @@ export async function interruptRunningTurn(userId: string, taskId: string): Prom
       task_id: taskId,
       project_id: task.projectId,
       request_id: randomUUID(),
-      reason: "user_interrupt",
+      // Tells fire to also drop the messages queued before `/stop`.
+      reason: "user_stop",
       ...(targetReplyTo ? { target_reply_to: targetReplyTo } : {}),
     },
   };
