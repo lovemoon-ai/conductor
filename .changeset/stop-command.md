@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": patch
+"@love-moon/conductor-cli": minor
 "@love-moon/conductor-sdk": patch
 ---
 
