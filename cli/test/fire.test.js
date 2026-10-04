@@ -1604,6 +1604,61 @@ describe("conductor-fire backends", () => {
     );
   });
 
+  it("interrupts the running turn when interrupt_turn carries no target (/stop)", async () => {
+    const sentMessages = [];
+    let turnStartedResolve;
+    let runTurnReject;
+    const turnStarted = new Promise((resolve) => {
+      turnStartedResolve = resolve;
+    });
+    const runner = new BridgeRunner({
+      backendSession: {
+        interruptCurrentTurn: async () => {
+          const interruptedError = new Error("turn interrupted");
+          interruptedError.reason = "turn_interrupted";
+          runTurnReject(interruptedError);
+        },
+        runTurn: () =>
+          new Promise((_, reject) => {
+            runTurnReject = reject;
+            turnStartedResolve();
+          }),
+        threadId: "thread-1",
+        threadOptions: { model: "codex" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ content, replyTo: metadata?.reply_to });
+          return {};
+        },
+      },
+      taskId: "task-stop-1",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "codex",
+    });
+
+    assert.equal(await runner.requestInterruptFromRemote({ taskId: "task-stop-1", targetReplyTo: "" }), false);
+
+    const respondPromise = runner.respondToMessage({ message_id: "msg-stop-1", role: "user", content: "hello" });
+    await turnStarted;
+    const accepted = await runner.requestInterruptFromRemote({
+      taskId: "task-stop-1",
+      requestId: "req-stop-1",
+      reason: "user_interrupt",
+      targetReplyTo: "",
+    });
+    await respondPromise;
+
+    assert.equal(accepted, true);
+    assert.deepEqual(sentMessages, [{ content: "Conversation interrupted", replyTo: "msg-stop-1" }]);
+  });
+
   it("retries backend interruption when the first interrupt attempt fails", async () => {
     const sentMessages = [];
     let interruptCalls = 0;

@@ -124,6 +124,9 @@ vi.mock('./MessageInput', async () => {
         <button type="button" data-testid="send-button" onClick={() => onSend('hello')}>
           mock send
         </button>
+        <button type="button" data-testid="send-stop-button" onClick={() => onSend(' /STOP ')}>
+          mock /stop
+        </button>
         <button type="button" data-testid="interrupt-button" onClick={() => onInterrupt?.()}>
           mock interrupt
         </button>
@@ -892,6 +895,32 @@ describe('ChatView', () => {
         target_reply_to: 'msg-user-1',
       });
     });
+  });
+
+  it('/stop interrupts the current reply target instead of sending a message', async () => {
+    runtimeState = {
+      byTask: { 'task-1': { replyInProgress: true, replyTo: 'msg-user-1', statusLine: 'Thinking' } },
+      clearTask: clearRuntimeMock,
+    };
+    useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('send-stop-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', { target_reply_to: 'msg-user-1' });
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it('/stop without a known reply target asks fire to interrupt whatever turn is running', async () => {
+    render(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('send-stop-button'));
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/task-1/interrupt', {});
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('does not enable interrupt from a completed runtime reply target', async () => {

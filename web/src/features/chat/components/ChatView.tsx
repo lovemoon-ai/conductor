@@ -782,6 +782,10 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   };
 
   const handleSend = async (content: string, files: File[] = []) => {
+    if (!files.length && /^\/stop$/i.test(content.trim())) {
+      await handleInterrupt(true);
+      return;
+    }
     let attachmentsUploaded = false;
     if (interruptPending) {
       dispatchUiState({
@@ -954,7 +958,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     }
   }, [clearRuntime, interruptPending, restartEnabled, restartTask, taskId]);
 
-  const handleInterrupt = useCallback(async () => {
+  // `anyTurn` (the `/stop` command): with no known reply target, ask the fire
+  // host to interrupt whatever turn it is running.
+  const handleInterrupt = useCallback(async (anyTurn = false) => {
     if (restartPending) {
       dispatchUiState({
         type: 'setComposerFeedback',
@@ -963,6 +969,18 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
           message: 'Wait for the task restart to finish before interrupting another reply.',
         },
       });
+      return;
+    }
+    if (!activeInterruptReplyTo && anyTurn) {
+      try {
+        dispatchUiState({ type: 'setComposerFeedback', feedback: null });
+        await getApiClient().post(`/tasks/${taskId}/interrupt`, {});
+      } catch {
+        dispatchUiState({
+          type: 'setComposerFeedback',
+          feedback: { variant: 'warning', message: 'Nothing to stop: the AI is not running a turn.' },
+        });
+      }
       return;
     }
     if (!activeInterruptReplyTo) {

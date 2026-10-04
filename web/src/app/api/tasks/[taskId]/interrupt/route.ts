@@ -22,10 +22,8 @@ export async function POST(
     params,
     request.json().catch(() => ({})),
   ]);
+  // Omitted target (`/stop`): the fire host interrupts whatever turn is running.
   const targetReplyTo = normalizeOptionalString(body?.target_reply_to ?? body?.targetReplyTo);
-  if (!targetReplyTo) {
-    return NextResponse.json({ error: "target_reply_to required" }, { status: 400 });
-  }
 
   const task = await db.task.findFirst({
     where: {
@@ -83,7 +81,7 @@ export async function POST(
       task_id: taskId,
       project_id: task.projectId,
       request_id: requestId,
-      target_reply_to: targetReplyTo,
+      ...(targetReplyTo ? { target_reply_to: targetReplyTo } : {}),
       reason: "user_interrupt",
     },
   };

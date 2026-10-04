@@ -2577,7 +2577,9 @@ export class BridgeRunner {
     }
     const requestId = typeof event.requestId === "string" ? event.requestId.trim() : "";
     const reason = typeof event.reason === "string" ? event.reason.trim() : "";
-    const targetReplyTo = this.normalizeReplyTarget(event.targetReplyTo);
+    // No target (`/stop`): interrupt whatever turn is running right now.
+    const targetReplyTo =
+      this.normalizeReplyTarget(event.targetReplyTo) || (this.runningTurn ? this.activeTurnReplyTo : "");
     if (!targetReplyTo) {
       return false;
     }

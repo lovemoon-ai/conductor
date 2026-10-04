@@ -1116,7 +1116,8 @@ export class ConductorClient {
         : typeof data.targetReplyTo === 'string'
           ? data.targetReplyTo.trim()
           : '';
-    if (!taskId || !targetReplyTo) {
+    // An empty target interrupts whatever turn is running (`/stop`).
+    if (!taskId) {
       return false;
     }
 
