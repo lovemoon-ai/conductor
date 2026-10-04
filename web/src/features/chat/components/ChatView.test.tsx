@@ -836,6 +836,28 @@ describe('ChatView', () => {
     });
   });
 
+  it('ignores another /stop while the last one is still unanswered', async () => {
+    const stopMessage = { ...makeMessage('msg-stop-1', '/stop'), role: 'user' as const };
+    chatState = { ...chatState, messagesByTask: { 'task-1': [stopMessage] } };
+    useChatStoreMock.mockImplementation(() => chatState);
+
+    const view = renderWithChatMenu(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('chat-menu-command-stop'));
+    await act(async () => {});
+    expect(sendMessageMock).not.toHaveBeenCalled();
+
+    chatState = {
+      ...chatState,
+      messagesByTask: { 'task-1': [stopMessage, makeMessage('msg-stopped', 'codex 已停止。', { reply_to: 'msg-stop-1' })] },
+    };
+    view.unmount();
+    renderWithChatMenu(<ChatView taskId="task-1" />);
+    fireEvent.click(screen.getByTestId('chat-menu-command-stop'));
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith('task-1', { content: '/stop', role: 'user' });
+    });
+  });
+
   it('auto-dismisses the composer feedback notice after 5 seconds', async () => {
     vi.useFakeTimers();
     sendMessageMock.mockRejectedValueOnce(new Error('network down'));
@@ -1039,4 +1061,334 @@ describe('ChatView', () => {
     expect(screen.queryByTestId('scroll-to-bottom')).not.toBeInTheDocument();
   });
 
+  describe('quick-jump question nav', () => {
+    const makeUserMessage = (id: string, content = `user-${id}`) => ({
+      ...makeMessage(id, content),
+      role: 'user' as const,
+    });
+
+    const getNav = (root: HTMLElement) =>
+      root.querySelector('nav[aria-label="Jump to question"]') as HTMLElement | null;
+
+    it('stays hidden on initial render', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const nav = getNav(view.container);
+      expect(nav).not.toBeNull();
+      expect(nav!.className).toContain('opacity-0');
+      expect(nav!.className).toContain('pointer-events-none');
+      // Hidden buttons must be out of the tab order so keyboard users don't
+      // hit invisible focus stops.
+      const firstDot = nav!.querySelector('button') as HTMLButtonElement;
+      expect(firstDot.tabIndex).toBe(-1);
+    });
+
+    it('becomes visible after the user scrolls upward', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      // Settle the direction baseline at the bottom of the conversation
+      // (where the user lands after the initial restore), then scroll up.
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(500);
+      fireEvent.scroll(scrollContainer);
+
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-100');
+      expect(nav.className).toContain('pointer-events-auto');
+      const firstDot = nav.querySelector('button') as HTMLButtonElement;
+      expect(firstDot.tabIndex).toBe(0);
+    });
+
+    it('hides again after the user scrolls downward', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1'), makeUserMessage('u2')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(400);
+      fireEvent.scroll(scrollContainer);
+      expect(getNav(view.container)!.className).toContain('opacity-100');
+
+      metrics.setScrollTop(700);
+      fireEvent.scroll(scrollContainer);
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-0');
+      expect(nav.className).toContain('pointer-events-none');
+    });
+
+    it('does not surface the nav when there is at most one user message', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [makeUserMessage('u1'), makeMessage('a1')],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(200);
+      fireEvent.scroll(scrollContainer);
+
+      // The component still renders a single dot (count > 0) but the
+      // visibility flag is gated on `count > 1`, so it must stay hidden
+      // regardless of scroll direction.
+      const nav = getNav(view.container)!;
+      expect(nav.className).toContain('opacity-0');
+    });
+
+    it('marks the clicked dot as active and scrolls the container when a jump is requested', () => {
+      chatState = {
+        ...chatState,
+        messagesByTask: {
+          'task-1': [
+            makeUserMessage('u1'),
+            makeUserMessage('u2'),
+            makeUserMessage('u3'),
+          ],
+        },
+      };
+
+      const view = render(<ChatView taskId="task-1" />);
+      const scrollContainer = view.container.querySelector('.webapp-scrollbar') as HTMLDivElement;
+      const metrics = mockScrollMetrics(scrollContainer, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 0,
+      });
+
+      // Reach a state a real user can actually be in: scrolled up far enough
+      // that the nav is visible and interactive. Without this, fireEvent
+      // would dispatch through a `pointer-events-none` element, which
+      // bypasses real-world hit testing and weakens the test.
+      metrics.setScrollTop(800);
+      fireEvent.scroll(scrollContainer);
+      metrics.setScrollTop(400);
+      fireEvent.scroll(scrollContainer);
+
+      const nav = view.container.querySelector(
+        'nav[aria-label="Jump to question"]',
+      ) as HTMLElement;
+      expect(nav.className).toContain('opacity-100');
+      const dots = nav.querySelectorAll('button');
+      expect(dots.length).toBe(3);
+      expect((dots[0] as HTMLButtonElement).tabIndex).toBe(0);
+
+      const scrollTopBeforeClick = metrics.getScrollTop();
+      fireEvent.click(dots[1] as HTMLElement);
+
+      // Active-dot rendering reflects the click.
+      const activeSpan = (dots[1] as HTMLElement).querySelector('span') as HTMLElement;
+      expect(activeSpan.className).toContain('h-3');
+      expect(activeSpan.className).toContain('w-3');
+      const inactiveSpan = (dots[0] as HTMLElement).querySelector('span') as HTMLElement;
+      expect(inactiveSpan.className).toContain('h-1.5');
+      expect(inactiveSpan.className).toContain('w-1.5');
+
+      // The container also actually scrolled. In jsdom getBoundingClientRect
+      // returns zeros, so the jump math collapses to
+      //   nextScrollTop = clamp(scrollTopBeforeClick + 0 - QUESTION_JUMP_TOP_PADDING_PX)
+      // which is enough to confirm scrollTop moved (and to the expected
+      // value), without depending on layout assumptions. The padding
+      // constant lives in ChatView.tsx; mirroring its current value here
+      // keeps this test independent of that import surface.
+      const QUESTION_JUMP_TOP_PADDING_PX = 12;
+      expect(metrics.getScrollTop()).toBe(
+        scrollTopBeforeClick - QUESTION_JUMP_TOP_PADDING_PX,
+      );
+    });
+  });
+
+  describe('persistent task rounds', () => {
+    const startTaskRoundMock = vi.fn().mockResolvedValue({ id: 'task-1' });
+
+    const usePersistentTask = (status: string, persistent: Record<string, unknown>) => {
+      const state = {
+        ...tasksState,
+        tasks: [{ id: 'task-1', status, taskType: 'ai_task', metadata: { persistent: { enabled: true, ...persistent } } }],
+        startTaskRound: startTaskRoundMock,
+        endTaskRound: vi.fn(),
+      };
+      useTasksStoreMock.mockImplementation((selector) => selector(state));
+    };
+
+    beforeEach(() => {
+      // Earlier tests in this file leave fake timers installed, which stalls waitFor.
+      vi.useRealTimers();
+      startTaskRoundMock.mockClear();
+    });
+
+    it('collapses earlier rounds behind their summary and expands them on click', () => {
+      usePersistentTask('running', { round: 2 });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r1-user', 'release 0.13.0'), role: 'user' },
+        { ...makeMessage('r1-end', 'summarize', { kind: 'persistent_round_end', round: 1 }), role: 'user' },
+        makeMessage('r1-summary', 'Released 0.13.0\nNext: 0.14.0', { reply_to: 'r1-end' }),
+        makeMessage('r2-start', 'Round 2 · codex on mac-mini', {
+          synthetic: true,
+          kind: 'persistent_round_start',
+          round: 2,
+          backend_type: 'codex',
+        }),
+        { ...makeMessage('r2-user', 'release 0.14.0'), role: 'user' },
+      ];
+
+      render(<ChatView taskId="task-1" />);
+
+      const headers = screen.getAllByTestId('persistent-round-header');
+      expect(headers).toHaveLength(2);
+      expect(headers[0]).toHaveTextContent('Round 1');
+      expect(headers[0]).toHaveTextContent('Released 0.13.0');
+      expect(headers[1]).toHaveTextContent('Round 2');
+      expect(screen.queryByTestId('message-r1-user')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('message-r2-start')).not.toBeInTheDocument();
+      expect(screen.getByTestId('message-r2-user')).toBeInTheDocument();
+
+      fireEvent.click(headers[0]);
+      expect(screen.getByTestId('message-r1-user')).toBeInTheDocument();
+      expect(screen.getByTestId('message-r1-summary')).toBeInTheDocument();
+    });
+
+    it('holds sends until the AI has replied to the round summary request', () => {
+      usePersistentTask('running', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'r2-end' });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r2-end', 'summarize', { kind: 'persistent_round_end', round: 2 }), role: 'user' },
+      ];
+
+      const view = render(<ChatView taskId="task-1" />);
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Writing the round summary');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+
+      chatState.messagesByTask['task-1'] = [
+        ...chatState.messagesByTask['task-1'],
+        makeMessage('r2-summary', 'Released 0.14.0', { reply_to: 'r2-end' }),
+      ];
+      view.rerender(<ChatView taskId="task-1" />);
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Round ended');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+    });
+
+    it('starts a new round when sending after the round ended', async () => {
+      usePersistentTask('killed', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z' });
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Round 2');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+      fireEvent.click(screen.getByTestId('send-button'));
+
+      await waitFor(() => {
+        expect(startTaskRoundMock).toHaveBeenCalledWith('task-1', { content: 'hello', expectedRound: 2 });
+      });
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+    });
+
+    it('starts a round from the New round dialog through the same path', async () => {
+      usePersistentTask('running', { round: 3 });
+      render(<ChatView taskId="task-1" />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'New round' }));
+      fireEvent.click(screen.getByTestId('new-round-dialog-start'));
+
+      await waitFor(() => {
+        expect(startTaskRoundMock).toHaveBeenCalledWith('task-1', {
+          content: 'from dialog',
+          backendType: 'codex',
+          expectedRound: 3,
+        });
+      });
+      expect(clearRuntimeMock).toHaveBeenCalledWith('task-1');
+    });
+
+    it('keeps waiting while the summary reply is still streaming', () => {
+      usePersistentTask('running', { round: 2, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'r2-end' });
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r2-end', 'summarize', { kind: 'persistent_round_end', round: 2 }), role: 'user' },
+        makeMessage('r2-partial', 'Released', { reply_to: 'r2-end' }),
+      ];
+      runtimeState = { ...runtimeState, byTask: { 'task-1': { replyInProgress: true, replyTo: 'r2-end' } } };
+      useRuntimeStoreMock.mockImplementation((selector) => selector(runtimeState));
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.getByTestId('persistent-round-bar')).toHaveTextContent('Writing the round summary');
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('true');
+    });
+
+    it('never locks the composer of a task that is no longer persistent', () => {
+      usePersistentTask('running', { enabled: false, roundEndedAt: '2026-09-17T00:00:00.000Z', roundEndMessageId: 'gone' });
+
+      render(<ChatView taskId="task-1" />);
+
+      expect(screen.queryByTestId('persistent-round-bar')).not.toBeInTheDocument();
+      expect(screen.getByTestId('send-disabled')).toHaveTextContent('false');
+    });
+
+    it('does not date a round whose start is on an older page, and leaves collapsed questions out of the nav', () => {
+      usePersistentTask('running', { round: 2 });
+      chatState.historyStateByTask['task-1'] = { hasMoreBefore: true, oldestMessageId: 'r1-user-a' };
+      chatState.messagesByTask['task-1'] = [
+        { ...makeMessage('r1-user-a', 'first question'), role: 'user' },
+        { ...makeMessage('r1-user-b', 'second question'), role: 'user' },
+        makeMessage('r2-start', 'Round 2 · codex on mac-mini', {
+          synthetic: true,
+          kind: 'persistent_round_start',
+          round: 2,
+          backend_type: 'codex',
+        }),
+        { ...makeMessage('r2-user-a', 'third question'), role: 'user' },
+        { ...makeMessage('r2-user-b', 'fourth question'), role: 'user' },
+      ];
+
+      const view = render(<ChatView taskId="task-1" />);
+
+      const headers = screen.getAllByTestId('persistent-round-header');
+      expect(headers[0].textContent).toMatch(/^▸Round 1$/);
+      const nav = view.container.querySelector('nav[aria-label="Jump to question"]');
+      expect(nav?.querySelectorAll('button')).toHaveLength(2);
+      // With older rounds collapsed the list may not overflow, so the history hint must be clickable.
+      fireEvent.click(screen.getByRole('button', { name: 'Scroll to top to load older messages' }));
+      expect(fetchMessagesMock).toHaveBeenCalledWith('task-1', { beforeId: 'r1-user-a' });
+    });
+  });
 });

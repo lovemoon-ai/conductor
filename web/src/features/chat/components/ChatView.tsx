@@ -195,6 +195,7 @@ type ChatViewUiAction =
   | { type: 'settleInsert' };
 
 const EMPTY_MESSAGES: Message[] = [];
+const isStopCommand = (content: unknown) => typeof content === 'string' && /^\/stop$/i.test(content.trim());
 // Bare slash commands fire acts on; the ⋯ menu sends them as chat messages.
 const SLASH_COMMANDS = ['/stop', '/clear', '/compact'] as const;
 const CHAT_MENU_ITEM_CLASS_NAME = 'flex min-h-9 w-full items-center rounded px-2 text-left hover:bg-paper disabled:opacity-40 disabled:hover:bg-transparent';
@@ -365,6 +366,15 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     (runtimeReplyTo === roundEndMessageId ||
       !messages.some((message) => message.role !== 'user' && message.metadata?.reply_to === roundEndMessageId)),
   );
+  // The latest message is a `/stop` fire has not confirmed yet; another would only queue a second confirmation.
+  const stopUnanswered = useMemo(() => {
+    const lastUser = [...messages].reverse().find((message) => message.role === 'user');
+    return Boolean(
+      lastUser &&
+      isStopCommand(lastUser.content) &&
+      !messages.some((message) => message.role !== 'user' && getMessageReplyTarget(message) === lastUser.id),
+    );
+  }, [messages]);
   const interruptedReplyTargets = useMemo(() => {
     const targets = new Set<string>();
     messages.forEach((message) => {
@@ -735,6 +745,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
 
   const handleSend = async (content: string, files: File[] = []) => {
     let attachmentsUploaded = false;
+    if (stopUnanswered && !files.length && isStopCommand(content)) {
+      return;
+    }
     if (restartPending) {
       dispatchUiState({
         type: 'setComposerFeedback',

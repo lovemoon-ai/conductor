@@ -114,8 +114,9 @@ export async function findRetriedMessage(taskId: string, clientMessageId?: strin
 
 /** appendUserMessageToTask plus the send rules above; non-user messages pass straight through. */
 export async function deliverUserMessage(input: AppendInput): Promise<StoredMessage> {
-  const stop = isStopCommand(input.content);
-  if (String(input.role ?? "sdk").trim().toLowerCase() === "user") {
+  const isUser = String(input.role ?? "sdk").trim().toLowerCase() === "user";
+  const stop = isUser && isStopCommand(input.content);
+  if (isUser) {
     const task = await db.task.findFirst({
       where: { id: input.taskId, project: { userId: input.userId } },
       select: { id: true, status: true, metadata: true, achievedAt: true },

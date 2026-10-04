@@ -3916,6 +3916,8 @@ export class BridgeRunner {
   }) {
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
+    // Lets a target-less interrupt (`/stop`) reach this turn.
+    this.activeTurnReplyTo = replyTarget;
     // Only this turn's own streamed replies may carry its usage.
     this.lastStreamedReplyIds.clear();
     const startedAt = Date.now();
@@ -3990,6 +3992,11 @@ export class BridgeRunner {
         this.copilotLog(`${logTag} turn interrupted by stop_task elapsedMs=${Date.now() - startedAt}`);
         return;
       }
+      const interruptInfo = this.remoteInterruptsByReplyTo.get(replyTarget);
+      if (interruptInfo && this.isTurnInterruptedError(error)) {
+        await this.handleInterruptedTurn(replyTarget, interruptInfo);
+        return;
+      }
       if (
         await this.settleCodexCheckpointUnavailableAfterStream(replyTarget, errorMessage, {
           markProcessed: false,
@@ -4003,6 +4010,9 @@ export class BridgeRunner {
       await this.reportError(`${errorLabel}执行失败: ${errorMessage}`);
     } finally {
       this.copilotLog(`${logTag} turn end elapsedMs=${Date.now() - startedAt}`);
+      this.activeTurnReplyTo = "";
+      this.clearInterruptRetryForReplyTarget(replyTarget);
+      this.remoteInterruptsByReplyTo.delete(replyTarget);
       this.runningTurn = false;
       this.scheduleRuntimeHeartbeat();
     }
