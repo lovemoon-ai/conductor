@@ -69,7 +69,7 @@ import {
   normalizeRuntimeBackendAlias,
   normalizeRuntimeBackendName,
 } from "./runtime-backends.js";
-import { resolveClaudeCommandForRoot } from "@love-moon/ai-sdk";
+import { buildClaudeRootSandboxNotice, claudeCommandNeedsRootSandbox } from "@love-moon/ai-sdk";
 import {
   PACKAGE_NAME,
   buildUpgradeCommand,
@@ -574,15 +574,20 @@ export function ensureNodePtySpawnHelperExecutable(deps = {}) {
 }
 
 // A tool-preset PTY task runs the configured allow_cli_list command through a
-// login shell, bypassing ai-sdk entirely. claude refuses to start as root with
-// `--dangerously-skip-permissions`, so rewrite the command the same way the
-// ai-sdk session rewrites its permission mode — one shared root check, so the
-// two paths cannot drift.
-export function resolvePtyToolPresetCommand(cliCommand, env = process.env) {
+// login shell, bypassing ai-sdk entirely. The command is never rewritten: as
+// root without IS_SANDBOX=1, claude refuses `--dangerously-skip-permissions`
+// and exits, so print the same IS_SANDBOX hint the chat path shows, right in
+// the terminal before claude's own error.
+export function resolvePtyToolPresetCommand(cliCommand, env = process.env, options = {}) {
   if (inferBuiltInRuntimeBackendFromCommand(cliCommand) !== "claude") {
     return cliCommand;
   }
-  return resolveClaudeCommandForRoot(cliCommand, env);
+  if (!claudeCommandNeedsRootSandbox(cliCommand, env)) {
+    return cliCommand;
+  }
+  const notice = buildClaudeRootSandboxNotice({ configFile: options.configFile });
+  const quoted = `'${notice.replace(/'/g, "'\\''")}'`;
+  return `printf '%s\\n\\n' ${quoted} >&2; ${cliCommand}`;
 }
 
 export function isSafeTaskWorktreeRoot(projectWorkspacePath, worktreeRoot) {
@@ -990,6 +995,21 @@ function buildPtyTaskEnv(baseEnv = process.env, launchEnv = {}) {
   };
 }
 
+const CLAUDE_ROOT_OPT_OUT_ENV_KEYS = ["IS_SANDBOX", "CLAUDE_CODE_BUBBLEWRAP"];
+
+function pickClaudeRootOptOutEnv(configEnv) {
+  const picked = {};
+  if (!configEnv || typeof configEnv !== "object") {
+    return picked;
+  }
+  for (const key of CLAUDE_ROOT_OPT_OUT_ENV_KEYS) {
+    if (configEnv[key] !== undefined && configEnv[key] !== null) {
+      picked[key] = String(configEnv[key]);
+    }
+  }
+  return picked;
+}
+
 // Module-level so the PTY launch wiring is directly testable: the tool-preset
 // branch has to hand the *child's* env to the root check, and that seam is
 // exactly where a bug hid before (the check read the daemon's own process.env,
@@ -1038,9 +1058,17 @@ export function buildPtyLaunchSpec(launchConfig, fallbackCwd, deps = {}) {
     if (!cliCommand) {
       throw new Error(`Unsupported tool preset: ${toolPreset}`);
     }
-    const launchCommand = resolvePtyToolPresetCommand(cliCommand, buildPtyTaskEnv(baseEnv, env));
+    // The PTY child inherits the daemon env, not the config's `envs:` block,
+    // yet the root hint tells users to set `envs.IS_SANDBOX: "1"`. Forward
+    // just claude's root opt-outs so that advice works for terminal tasks too.
+    // launch_config.env still wins, matching the spawned env.
+    const isClaudePreset = inferBuiltInRuntimeBackendFromCommand(cliCommand) === "claude";
+    const launchEnv = isClaudePreset ? { ...pickClaudeRootOptOutEnv(deps.configEnv), ...env } : env;
+    const launchCommand = resolvePtyToolPresetCommand(cliCommand, buildPtyTaskEnv(baseEnv, launchEnv), {
+      configFile: deps.configFile,
+    });
     if (launchCommand !== cliCommand) {
-      log(`[pty] Adjusted ${toolPreset} command for root: ${launchCommand}`);
+      log(`[pty] ${toolPreset} runs as root without IS_SANDBOX=1; claude will refuse bypassPermissions`);
     }
     return {
       entrypointType,
@@ -1049,7 +1077,7 @@ export function buildPtyLaunchSpec(launchConfig, fallbackCwd, deps = {}) {
       args: ["-lc", launchCommand],
       shell: preferredShell,
       cwd,
-      env,
+      env: launchEnv,
       cols,
       rows,
     };
@@ -5564,6 +5592,8 @@ export function startDaemon(config = {}, deps = {}) {
   function resolvePtyLaunchSpec(launchConfig, fallbackCwd) {
     return buildPtyLaunchSpec(launchConfig, fallbackCwd, {
       allowCliList: ALLOW_CLI_LIST,
+      configEnv: userConfig?.envs,
+      configFile: effectiveConfigPath,
       supportedBackends: SUPPORTED_BACKENDS,
       existsSync: existsSyncFn,
       log,

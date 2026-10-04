@@ -139,9 +139,9 @@ export function buildRemoteWorktreeSessionOptions({
         ...(sessionOptions.mcpServers || {}),
         [MCP_SERVER_NAME]: { type: "stdio", command: execPath, args },
       },
-      // Under the default bypassPermissions a root install is downgraded to
-      // acceptEdits, which would deny every remote_* call headless. A mode the
-      // user chose on purpose is left alone rather than widened.
+      // Pre-approve the remote_* tools under the default bypassPermissions so
+      // they keep working if claude ever runs in a prompting mode headless. A
+      // mode the user chose on purpose is left alone rather than widened.
       ...(mode === undefined || mode === "bypassPermissions"
         ? { allowedTools: [...new Set([...allowed, `mcp__${MCP_SERVER_NAME}`])] }
         : {}),

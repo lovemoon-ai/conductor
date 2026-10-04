@@ -3,7 +3,8 @@ export { BUILT_IN_BACKENDS } from "./built-in-backends.js";
 export { PROVIDER_MEDIA_CAPABILITIES } from "./media-adapters.js";
 export {
   isClaudeRootPermissionRestricted,
-  resolveClaudeCommandForRoot,
+  buildClaudeRootSandboxNotice,
+  claudeCommandNeedsRootSandbox,
   resolveClaudePermissionPolicy,
 } from "./providers/claude-agent-sdk-session.js";
 export { appendContextFilesToPrompt, normalizeContextFiles } from "./context-files.js";

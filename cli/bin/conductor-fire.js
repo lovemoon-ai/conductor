@@ -2309,6 +2309,7 @@ export class BridgeRunner {
       });
       this.sessionAnnouncementSent = true;
       this.copilotLog(hasRealSessionId ? `session announced id=${sessionId}` : "session announced without id");
+      await this.reportBackendNotices();
       await this.reportRuntimeStatus(
         {
           state: this.useSessionFileReplyStream ? undefined : "WAIT_READY",
@@ -3978,6 +3979,30 @@ export class BridgeRunner {
       this.copilotLog(`${logTag} turn end elapsedMs=${Date.now() - startedAt}`);
       this.runningTurn = false;
       this.scheduleRuntimeHeartbeat();
+    }
+  }
+
+  // Provider-level warnings the user has to act on (e.g. claude refusing
+  // bypassPermissions as root without IS_SANDBOX=1). Sent right after the
+  // "session started" line so the reason is visible before the turn fails.
+  async reportBackendNotices() {
+    const snapshot =
+      typeof this.backendSession?.getSnapshot === "function" ? this.backendSession.getSnapshot() : null;
+    const notices = Array.isArray(snapshot?.notices)
+      ? snapshot.notices.filter((notice) => typeof notice === "string" && notice.trim())
+      : [];
+    for (const notice of notices) {
+      try {
+        await this.conductor.sendMessage(this.taskId, notice, {
+          severity: "warning",
+          backend: this.backendName,
+          cli_args: this.cliArgs,
+          synthetic: true,
+        });
+        this.copilotLog(`backend notice sent: ${sanitizeForLog(notice, 120)}`);
+      } catch (error) {
+        log(`Failed to send backend notice: ${error?.message || error}`);
+      }
     }
   }
 
