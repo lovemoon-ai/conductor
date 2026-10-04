@@ -18,6 +18,83 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.17.0] - 2026-10-04
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.17.0`
+- `@love-moon/conductor-sdk` `0.17.0`
+- `@love-moon/ai-sdk` `0.17.0`
+- `@love-moon/app-sdk` `0.17.0`
+- `@love-moon/chat-web` `0.17.0`
+
+### Changes
+
+### Minor Changes
+
+- 88e1ae0: Support `/stop` in task chats. A bare `/stop` message, sent from the web, the
+  CLI or a channel, makes the server interrupt the AI's running turn right away
+  instead of waiting for fire to read the message once that turn ends. When fire
+  does read the queued `/stop`, it posts a confirmation and does not send it to
+  the model. `/stop` also drops every message queued before it (except the
+  server's end-of-round summary request); resend what you still want. The server
+  targets the reply it knows is running, so older fires stop it too;
+  `interrupt_turn` no longer needs a reply target, and without one fire
+  interrupts the turn it is running, including the initial prompt and pre_prompt
+  turns. In the web chat, the ⋯ menu gains `/stop`, `/clear` and `/compact`,
+  which send those commands as messages, and Interrupt (Esc) sends `/stop`,
+  ignored while an earlier `/stop` is unanswered. The Interrupt action is gone
+  from the message toolbar.
+
+### Patch Changes
+
+- 79ca552: Claude no longer switches to `acceptEdits` mode when the daemon runs as root.
+  That fallback looked like it worked, but in a headless task it silently refused
+  every shell command (ssh, rsync, ...) and every read outside the project. Claude
+  now keeps `bypassPermissions` everywhere. As root without `IS_SANDBOX=1`, the
+  chat shows a warning right after "session started" telling you to add
+  `envs: { IS_SANDBOX: "1" }` to the conductor config (or run the daemon as a
+  regular user). Terminal tasks print the same hint. An `IS_SANDBOX` set in config
+  `envs` now also reaches terminal (PTY) claude tasks. `conductor config` always
+  writes `--dangerously-skip-permissions` for claude.
+- c0c1489: `conductor task speak <text> [-o FILE|-]` saves Doubao text-to-speech as an
+  .mp3 — the same voice the web chat's new voice-conversation mode reads replies with.
+- 39ee057: `conductor update` and the daemon updater compile node-pty against the headers
+  the running Node ships, instead of downloading them from nodejs.org, so an
+  update no longer needs that host to be reachable. `conductor update` also stops
+  an npm install that has not finished after 15 minutes instead of waiting on a
+  stalled registry connection forever.
+- b09b28a: Remove `conductor task create --remote-worktree <host>`; passing it now fails
+  with a pointer to the replacement. Running the AI on one daemon while the code
+  lives on another is done only through a global AI backend:
+  `--global-backend <backend>@<host>` (add `--worktree` for a worktree on the
+  code's daemon). Note the host changes meaning: `--remote-worktree` named the
+  daemon holding the code, `--global-backend` names the daemon running the AI, so
+  create the task in the project on the code's daemon. The server refuses a caller-supplied
+  `launch_config.remoteWorktree`.
+
+  `conductor task create --global-backend` now takes `<backend>@<host>`, the same
+  form as `conductor issue start` and the web UI. The older `<host>:<backend>` is
+  still accepted.
+
+- 68fe7b9: Add `conductor task preview <id> <path>`: open a temporary link to a file on the
+  task's daemon (HTML with its CSS/JS/images, Markdown, images, video), the same
+  preview the chat opens when you click a file link in an AI reply or shows in
+  place for `![](picture.png)` / `![](recording.mp4)`. The link expires after
+  5 idle minutes (30 minutes at most) and only reaches the file's own directory.
+
+  The daemon advertises a new `remote_file_preview` capability; previews need a
+  daemon of this version or later. `conductor config` now writes
+  `remote_file: true` explicitly into a new config file (the default was already
+  on; set it to `false` to decline file transfers and previews).
+
+- Updated dependencies [d088b31]
+- Updated dependencies [79ca552]
+- Updated dependencies [ccbfeeb]
+- Updated dependencies [88e1ae0]
+  - @love-moon/ai-sdk@0.17.0
+  - @love-moon/conductor-sdk@0.17.0
+
 ## [0.16.0] - 2026-09-30
 
 ### Released packages

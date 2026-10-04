@@ -1,5 +1,31 @@
 # @love-moon/ai-sdk
 
+## 0.17.0
+
+### Patch Changes
+
+- d088b31: Claude tasks keep one Claude process per session, with its input left open
+  between turns, instead of starting a new one-shot process for every turn.
+  Background subagents now run to completion: before, claude killed them 10
+  minutes after the main agent's turn ended, so long multi-agent tasks went quiet
+  until the user sent another message. When they finish, Claude's follow-up reply
+  is posted to the chat without waiting for a user message. Subagent narration is
+  no longer posted as a task reply.
+- 79ca552: Claude no longer switches to `acceptEdits` mode when the daemon runs as root.
+  That fallback looked like it worked, but in a headless task it silently refused
+  every shell command (ssh, rsync, ...) and every read outside the project. Claude
+  now keeps `bypassPermissions` everywhere. As root without `IS_SANDBOX=1`, the
+  chat shows a warning right after "session started" telling you to add
+  `envs: { IS_SANDBOX: "1" }` to the conductor config (or run the daemon as a
+  regular user). Terminal tasks print the same hint. An `IS_SANDBOX` set in config
+  `envs` now also reaches terminal (PTY) claude tasks. `conductor config` always
+  writes `--dangerously-skip-permissions` for claude.
+- ccbfeeb: Kimi Code tasks no longer kill background subagents after 12 minutes. `kimi -p`
+  stays silent while it waits for a task it launched with `run_in_background`,
+  and the session's idle deadline used to treat that silence as a stuck turn and
+  terminate kimi together with the task. Once a turn launches a background task,
+  the deadline now waits for kimi to exit on its own.
+
 ## 0.16.0
 
 ### Patch Changes
