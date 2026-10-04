@@ -64,6 +64,7 @@ import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
 import {
+  isGlobalBackendAgentHost,
   readTaskGlobalBackend,
   resolveCrossDaemonRemoteBinding,
 } from "@/lib/tasks/global-backend";
@@ -407,8 +408,12 @@ export async function POST(
         ) ?? preferredManualFireDaemonHost
       )
       : sourceAgentHost;
+  // RFC 0041: a global-backend task's AI stays on its own daemon even when the
+  // task is filed on a project bound to the code's daemon.
+  const isGlobalBackendSource = isGlobalBackendAgentHost(sourceTask, sourceAgentHost);
   const shouldUseProjectDaemonBinding = Boolean(
     projectDaemonHost &&
+    !isGlobalBackendSource &&
     !useAgentHostOverride &&
     !isRefreshSessionRequest &&
     !(requestedRestartMode === "refresh_session" && isManualFireTask),

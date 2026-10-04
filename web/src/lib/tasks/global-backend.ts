@@ -24,6 +24,8 @@ import {
   resolveRemoteTarget,
 } from "./remote-worktree";
 import {
+  parseRemoteWorkspaceLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
   parseTaskWorktreeLaunchConfig,
   type RemoteWorkspaceLaunchConfig,
   type RemoteWorktreeLaunchConfig,
@@ -188,6 +190,23 @@ export const readTaskGlobalBackend = (metadata: unknown): GlobalAiBackend | null
   const host = normalizeOptionalString(raw?.host);
   const backend = normalizeOptionalString(raw?.backend);
   return host && backend ? { host, backend } : null;
+};
+
+/**
+ * A global-backend task whose AI runs on `agentHost` while its code is reached
+ * over `conductor remote` (a remote worktree / workspace). Such a task may be
+ * filed on a project bound to the code's daemon — "New task from this" on
+ * another daemon keeps the source project — so `agentHost` legitimately
+ * differs from `project.daemonHost` and must not be forced back onto it.
+ */
+export const isGlobalBackendAgentHost = (
+  task: { metadata: unknown; launchConfig?: unknown },
+  agentHost: string | null,
+): boolean => {
+  if (!agentHost || readTaskGlobalBackend(task.metadata)?.host !== agentHost) return false;
+  return Boolean(
+    parseRemoteWorktreeLaunchConfig(task.launchConfig) ?? parseRemoteWorkspaceLaunchConfig(task.launchConfig),
+  );
 };
 
 const isWithinDir = (root: string, target: string): boolean => {
