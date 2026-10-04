@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { BridgeRunner, isClearCommand } from "../bin/conductor-fire.js";
+import { BridgeRunner, isClearCommand, isStopCommand } from "../bin/conductor-fire.js";
 
 let uniqueTaskCounter = 0;
 function uniqueTaskId() {
@@ -304,5 +304,31 @@ describe("BridgeRunner.dispatchBackendTurn /clear", () => {
     assert.deepEqual(oldSession.calls.runTurn, ["/clear"]);
     assert.equal(oldSession.calls.close, 0);
     assert.equal(freshSessions.length, 0);
+  });
+});
+
+describe("BridgeRunner.dispatchBackendTurn /stop", () => {
+  it("matches only a bare /stop", () => {
+    assert.equal(isStopCommand(" /STOP \n"), true);
+    assert.equal(isStopCommand("/stop now"), false);
+    assert.equal(isStopCommand("/stopwatch"), false);
+  });
+
+  it("confirms a queued /stop without running a model turn", async () => {
+    const { runner, conductor, oldSession } = buildRunner();
+    const progress = [];
+
+    const result = await runner.dispatchBackendTurn("/stop", {
+      replyTo: "msg-stop",
+      onProgress: (payload) => progress.push(payload),
+    });
+
+    assert.equal(oldSession.calls.runTurn.length, 0);
+    assert.equal(oldSession.calls.close, 0);
+    assert.equal(result.text, "claude 已停止。");
+    assert.deepEqual(conductor.sent.map((entry) => [entry.content, entry.metadata.reply_to]), [
+      ["claude 已停止。", "msg-stop"],
+    ]);
+    assert.equal(progress.at(-1).reply_in_progress, false);
   });
 });

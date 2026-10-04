@@ -18,7 +18,6 @@ import { PERSISTENT_ROUND_END_KIND, readPersistentTaskState } from '@/shared/uti
 import { LoadingSpinner } from '@/components/common/LoadingSpinner';
 import { InlineNotice } from '@/components/common/InlineNotice';
 import { QuestionNav } from '@/components/common/QuestionNav';
-import { getApiClient } from '@/shared/api/client';
 import { useReadingSize } from '@/features/workspace/preferences';
 import { ReadingSettings } from '@/features/workspace/WorkspaceControls';
 import type { CSSProperties } from 'react';
@@ -179,7 +178,6 @@ type ComposerFeedback = {
 
 interface ChatViewUiState {
   composerFeedback: ComposerFeedback | null;
-  interruptPending: boolean;
   insertPending: boolean;
   latestSentReplyTo: string | null;
   awaitingRuntimeReply: boolean;
@@ -188,22 +186,21 @@ interface ChatViewUiState {
 
 type ChatViewUiAction =
   | { type: 'clearTaskNotReadyFeedback' }
-  | { type: 'interruptRequested' }
   | { type: 'insertRequested' }
   | { type: 'recordSentMessage'; replyTo: string }
   | { type: 'runtimeReplyStarted' }
   | { type: 'runtimeReplyStopped' }
   | { type: 'setComposerFeedback'; feedback: ComposerFeedback | null }
   | { type: 'setRestartPending'; value: boolean }
-  | { type: 'settleInterrupt' }
   | { type: 'settleInsert' };
 
 const EMPTY_MESSAGES: Message[] = [];
+// Bare slash commands fire acts on; the ⋯ menu sends them as chat messages.
+const SLASH_COMMANDS = ['/stop', '/clear', '/compact'] as const;
 const CHAT_MENU_ITEM_CLASS_NAME = 'flex min-h-9 w-full items-center rounded px-2 text-left hover:bg-paper disabled:opacity-40 disabled:hover:bg-transparent';
 
 const INITIAL_CHAT_VIEW_UI_STATE: ChatViewUiState = {
   composerFeedback: null,
-  interruptPending: false,
   insertPending: false,
   latestSentReplyTo: null,
   awaitingRuntimeReply: false,
@@ -216,8 +213,6 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
       return state.composerFeedback?.code === 'task_not_ready'
         ? { ...state, composerFeedback: null }
         : state;
-    case 'interruptRequested':
-      return state.interruptPending ? state : { ...state, interruptPending: true };
     case 'insertRequested':
       return state.insertPending ? state : { ...state, insertPending: true };
     case 'recordSentMessage':
@@ -232,7 +227,6 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
         : state;
     case 'runtimeReplyStopped':
       if (
-        !state.interruptPending &&
         !state.insertPending &&
         !state.latestSentReplyTo &&
         !state.awaitingRuntimeReply
@@ -241,7 +235,6 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
       }
       return {
         ...state,
-        interruptPending: false,
         insertPending: false,
         latestSentReplyTo: null,
         awaitingRuntimeReply: false,
@@ -254,10 +247,6 @@ const chatViewUiReducer = (state: ChatViewUiState, action: ChatViewUiAction): Ch
       return state.restartPending === action.value
         ? state
         : { ...state, restartPending: action.value };
-    case 'settleInterrupt':
-      return state.interruptPending
-        ? { ...state, interruptPending: false }
-        : state;
     case 'settleInsert':
       return state.insertPending
         ? { ...state, insertPending: false }
@@ -274,8 +263,6 @@ export function ChatView(props: ChatViewProps) {
 function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps) {
   const [readingSize] = useReadingSize();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const interruptTimeoutRef = useRef<number | null>(null);
-  const interruptPendingRef = useRef(false);
   const insertTimeoutRef = useRef<number | null>(null);
   const previousRuntimeReplyInProgressRef = useRef(false);
   const previousMessageCountRef = useRef(0);
@@ -286,7 +273,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const shouldStickToBottomRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
   const previousWebSocketStatusRef = useRef<'connected' | 'connecting' | 'disconnected' | null>(null);
-  const pendingInterruptReplyToRef = useRef<string | null>(null);
   const messageInputRef = useRef<MessageInputHandle>(null);
   const messages = useChatStore((state) => state.messagesByTask[taskId] ?? EMPTY_MESSAGES);
   const historyState = useChatStore((state) => state.historyStateByTask[taskId]);
@@ -401,16 +387,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   const activeInterruptReplyTo = activeInterruptCandidate && !interruptedReplyTargets.has(activeInterruptCandidate)
     ? activeInterruptCandidate
     : '';
-  const pendingInterruptReplyTo = pendingInterruptReplyToRef.current;
-  const hasPendingInterruptConfirmation = useMemo(() => (
-    Boolean(
-      uiState.interruptPending
-      && pendingInterruptReplyTo
-      && messages.some((message) => isInterruptConfirmationMessage(message, pendingInterruptReplyTo))
-    )
-  ), [messages, pendingInterruptReplyTo, uiState.interruptPending]);
   const restartPending = uiState.restartPending;
-  const interruptPending = uiState.interruptPending;
   const insertPending = uiState.insertPending;
   const composerFeedback = uiState.composerFeedback;
   const visibleComposerFeedback = useMemo(() => (
@@ -420,25 +397,17 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     task &&
     (task.taskType ?? 'ai_task') === 'ai_task' &&
     task.status === 'running' &&
-    !restartPending &&
-    !interruptPending,
+    !restartPending,
   );
   const interruptEnabled = Boolean(isTaskRunning && activeInterruptReplyTo && !restartPending);
   const insertEnabled = Boolean(
-    isTaskRunning && activeInterruptReplyTo && !restartPending && !interruptPending && !insertPending,
+    isTaskRunning && activeInterruptReplyTo && !restartPending && !insertPending,
   );
   const showEmptyStateRestart = Boolean(
     task &&
     (task.taskType ?? 'ai_task') === 'ai_task' &&
     task.status === 'running',
   );
-  const clearInterruptTimeout = useCallback(() => {
-    if (interruptTimeoutRef.current === null) {
-      return;
-    }
-    window.clearTimeout(interruptTimeoutRef.current);
-    interruptTimeoutRef.current = null;
-  }, []);
 
   const scrollWriteTimerRef = useRef<number | null>(null);
   const pendingScrollWriteRef = useRef<(() => void) | null>(null);
@@ -596,17 +565,12 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
 
   useEffect(() => (
     () => {
-      clearInterruptTimeout();
       if (insertTimeoutRef.current !== null) {
         window.clearTimeout(insertTimeoutRef.current);
         insertTimeoutRef.current = null;
       }
     }
-  ), [clearInterruptTimeout]);
-
-  useEffect(() => {
-    interruptPendingRef.current = interruptPending;
-  }, [interruptPending]);
+  ), []);
 
   useEffect(() => {
     const previousStatus = previousWebSocketStatusRef.current;
@@ -754,20 +718,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       return;
     }
 
-    clearInterruptTimeout();
-    pendingInterruptReplyToRef.current = null;
     dispatchUiState({ type: 'runtimeReplyStopped' });
-  }, [clearInterruptTimeout, runtimeReplyInProgress]);
-
-  useEffect(() => {
-    if (!hasPendingInterruptConfirmation) {
-      return;
-    }
-
-    clearInterruptTimeout();
-    pendingInterruptReplyToRef.current = null;
-    dispatchUiState({ type: 'settleInterrupt' });
-  }, [clearInterruptTimeout, hasPendingInterruptConfirmation]);
+  }, [runtimeReplyInProgress]);
 
   const startRound = async (input: Omit<StartTaskRoundInput, 'expectedRound'>) => {
     dispatchUiState({ type: 'setComposerFeedback', feedback: null });
@@ -782,22 +734,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   };
 
   const handleSend = async (content: string, files: File[] = []) => {
-    if (!files.length && /^\/stop$/i.test(content.trim())) {
-      await handleInterrupt(true);
-      return;
-    }
     let attachmentsUploaded = false;
-    if (interruptPending) {
-      dispatchUiState({
-        type: 'setComposerFeedback',
-        feedback: {
-          variant: 'warning',
-          message: 'Wait for the current interrupt to finish before sending another message.',
-        },
-      });
-      if (files.length) throw new Error('Interrupt in progress');
-      return;
-    }
     if (restartPending) {
       dispatchUiState({
         type: 'setComposerFeedback',
@@ -915,16 +852,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
   }, [fetchProjects, fetchTask, taskId]);
 
   const handleRestart = useCallback(async () => {
-    if (interruptPending) {
-      dispatchUiState({
-        type: 'setComposerFeedback',
-        feedback: {
-          variant: 'warning',
-          message: 'Wait for the current interrupt to finish before restarting the AI session.',
-        },
-      });
-      return;
-    }
     if (!restartEnabled) {
       return;
     }
@@ -956,81 +883,13 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     } finally {
       dispatchUiState({ type: 'setRestartPending', value: false });
     }
-  }, [clearRuntime, interruptPending, restartEnabled, restartTask, taskId]);
+  }, [clearRuntime, restartEnabled, restartTask, taskId]);
 
-  // `anyTurn` (the `/stop` command): with no known reply target, ask the fire
-  // host to interrupt whatever turn it is running.
-  const handleInterrupt = useCallback(async (anyTurn = false) => {
-    if (restartPending) {
-      dispatchUiState({
-        type: 'setComposerFeedback',
-        feedback: {
-          variant: 'warning',
-          message: 'Wait for the task restart to finish before interrupting another reply.',
-        },
-      });
-      return;
-    }
-    if (!activeInterruptReplyTo && anyTurn) {
-      try {
-        dispatchUiState({ type: 'setComposerFeedback', feedback: null });
-        await getApiClient().post(`/tasks/${taskId}/interrupt`, {});
-      } catch {
-        dispatchUiState({
-          type: 'setComposerFeedback',
-          feedback: { variant: 'warning', message: 'Nothing to stop: the AI is not running a turn.' },
-        });
-      }
-      return;
-    }
-    if (!activeInterruptReplyTo) {
-      dispatchUiState({
-        type: 'setComposerFeedback',
-        feedback: {
-          variant: 'warning',
-          message: 'The current reply is not ready to interrupt yet. Try again in a moment.',
-        },
-      });
-      return;
-    }
-
-    try {
-      dispatchUiState({ type: 'setComposerFeedback', feedback: null });
-      dispatchUiState({ type: 'interruptRequested' });
-      pendingInterruptReplyToRef.current = activeInterruptReplyTo;
-      clearInterruptTimeout();
-      const api = getApiClient();
-      await api.post(`/tasks/${taskId}/interrupt`, {
-        target_reply_to: activeInterruptReplyTo,
-      });
-      interruptTimeoutRef.current = window.setTimeout(() => {
-        interruptTimeoutRef.current = null;
-        if (!interruptPendingRef.current) {
-          return;
-        }
-        pendingInterruptReplyToRef.current = null;
-        dispatchUiState({ type: 'settleInterrupt' });
-        dispatchUiState({
-          type: 'setComposerFeedback',
-          feedback: {
-            variant: 'warning',
-            message: 'Interrupt request was not confirmed. You can try again.',
-          },
-        });
-      }, INTERRUPT_CONFIRMATION_TIMEOUT_MS);
-    } catch {
-      clearInterruptTimeout();
-      pendingInterruptReplyToRef.current = null;
-      dispatchUiState({ type: 'settleInterrupt' });
-      dispatchUiState({
-        type: 'setComposerFeedback',
-        feedback: {
-          variant: 'error',
-          message: 'Failed to interrupt the current reply. Please try again in a moment.',
-        },
-      });
-    }
-  }, [activeInterruptReplyTo, clearInterruptTimeout, restartPending, taskId]);
+  // Interrupt and the ⋯ menu's slash commands send the command as a chat
+  // message; the server and fire act on it (`/stop` interrupts immediately).
+  const sendSlashCommand = (command: string) => {
+    void handleSend(command).catch(() => undefined);
+  };
 
   const handleResend = useCallback((content: string) => {
     messageInputRef.current?.resend(content);
@@ -1041,7 +900,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     if (!trimmed) {
       return;
     }
-    if (restartPending || interruptPending || insertPending) {
+    if (restartPending || insertPending) {
       dispatchUiState({
         type: 'setComposerFeedback',
         feedback: {
@@ -1097,7 +956,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
     }
-  }, [activeInterruptReplyTo, insertMessage, insertPending, interruptPending, isTaskRunning, restartPending, taskId]);
+  }, [activeInterruptReplyTo, insertMessage, insertPending, isTaskRunning, restartPending, taskId]);
 
   const handleScroll = () => {
     persistScrollPosition(undefined, true);
@@ -1259,9 +1118,6 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                     message={message}
                     onResend={handleResend}
                     onSchedule={handleScheduleMessage}
-                    onInterrupt={handleInterrupt}
-                    interruptEnabled={interruptEnabled}
-                    interruptPending={interruptPending}
                   />
                 );
                 if (qIdx == null) {
@@ -1381,12 +1237,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             onInsert={(content) => {
               void handleInsert(content);
             }}
-            onInterrupt={() => {
-              void handleInterrupt();
-            }}
-            sendDisabled={(!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || interruptPending || restartPending || roundActionPending}
+            onInterrupt={() => sendSlashCommand('/stop')}
+            sendDisabled={(!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || restartPending || roundActionPending}
             interruptEnabled={interruptEnabled}
-            interruptPending={interruptPending}
             insertEnabled={insertEnabled}
             insertPending={insertPending}
             autoFocus={autoFocusComposer}
@@ -1407,6 +1260,19 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               <button type="button" data-menu-item onClick={() => setIsPersistentDialogOpen(true)} className={CHAT_MENU_ITEM_CLASS_NAME}>
                 Next round
               </button>
+              {SLASH_COMMANDS.map((command) => (
+                <button
+                  key={command}
+                  type="button"
+                  data-menu-item
+                  data-testid={`chat-menu-command-${command.slice(1)}`}
+                  disabled={!isTaskRunning || isRoundIdle || restartPending}
+                  onClick={() => sendSlashCommand(command)}
+                  className={CHAT_MENU_ITEM_CLASS_NAME}
+                >
+                  {command}
+                </button>
+              ))}
             </>
           ) : null}
         </ReadingSettings>,

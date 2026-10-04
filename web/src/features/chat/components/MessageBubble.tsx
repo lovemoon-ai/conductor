@@ -12,9 +12,6 @@ interface MessageBubbleProps {
   message: Message;
   onResend?: (content: string) => void;
   onSchedule?: (message: Message) => void;
-  onInterrupt?: () => void;
-  interruptEnabled?: boolean;
-  interruptPending?: boolean;
 }
 
 const formatBytes = (value: number) => {
@@ -34,9 +31,6 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   onResend,
   onSchedule,
-  onInterrupt,
-  interruptEnabled = false,
-  interruptPending = false,
 }: MessageBubbleProps) {
   useLayoutEffect(() => {
     observeReplyTiming(message, 'committed');
@@ -127,14 +121,6 @@ export const MessageBubble = memo(function MessageBubble({
     setIsToolbarOpen(false);
   };
 
-  const interruptTurn = () => {
-    if (!interruptEnabled || interruptPending) {
-      return;
-    }
-    onInterrupt?.();
-    setIsToolbarOpen(false);
-  };
-
   const closeToolbar = () => {
     setIsToolbarOpen(false);
   };
@@ -177,11 +163,6 @@ export const MessageBubble = memo(function MessageBubble({
   // Each toolbar button gets a short single-word caption beneath it so the
   // action of every icon is legible at a glance.
   const actionLabelClassName = 'text-[10px] leading-none text-muted';
-  const interruptActionLabel = interruptPending
-    ? 'Interrupt pending'
-    : interruptEnabled
-      ? 'Interrupt current reply'
-      : 'No reply to interrupt';
   const renderAction = (
     key: string,
     label: string,
@@ -285,31 +266,6 @@ export const MessageBubble = memo(function MessageBubble({
           )}
         </button>,
       )}
-      {onInterrupt
-        ? renderAction(
-          'interrupt',
-          'Interrupt',
-          <button
-            type="button"
-            data-testid="message-bubble-interrupt-button"
-            aria-label={interruptActionLabel}
-            title={interruptActionLabel}
-            disabled={!interruptEnabled || interruptPending}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              interruptTurn();
-            }}
-            className={actionButtonClassName}
-          >
-            <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8l5-5z" />
-              <path d="M9 9l6 6" />
-              <path d="M15 9l-6 6" />
-            </svg>
-          </button>,
-        )
-        : null}
     </>
   );
 

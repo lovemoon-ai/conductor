@@ -1648,6 +1648,10 @@ export function formatCompactReply(backendName, compact, instructions = "") {
  * Per-message `/clear` detector. Only a bare `/clear` (case-insensitive)
  * counts: anything after it is more likely an instruction for the model.
  */
+export function isStopCommand(content) {
+  return typeof content === "string" && /^\/stop$/i.test(content.trim());
+}
+
 export function isClearCommand(content) {
   return typeof content === "string" && /^\/clear$/i.test(content.trim());
 }
@@ -3666,6 +3670,9 @@ export class BridgeRunner {
     if (!hasAttachmentInputs && this.createFreshBackendSession && isClearCommand(content)) {
       return this.runClearCommand(options);
     }
+    if (!hasAttachmentInputs && isStopCommand(content)) {
+      return this.runStopCommand(options);
+    }
 
     if (willRunGoal) {
       const goalResult = await this.runWithTurnUsage(() =>
@@ -3849,6 +3856,24 @@ export class BridgeRunner {
         await this.sendSessionStreamMessage({ text, replyTo });
       } catch (error) {
         log(`[clear] failed to post confirmation: ${error?.message || error}`);
+      }
+    }
+    return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };
+  }
+
+  /**
+   * `/stop`: the server already interrupted the running turn when the message
+   * arrived (fire only reads it once that turn ends), so just confirm it
+   * instead of sending it to the model.
+   */
+  async runStopCommand({ onProgress, replyTo = "" } = {}) {
+    const text = `${this.backendName} 已停止。`;
+    onProgress?.({ phase: "turn_completed", reply_in_progress: false, status_done_line: text });
+    if (this.useSessionFileReplyStream && !this.stopped) {
+      try {
+        await this.sendSessionStreamMessage({ text, replyTo });
+      } catch (error) {
+        log(`[stop] failed to post confirmation: ${error?.message || error}`);
       }
     }
     return { text, items: [], usage: null, provider: this.backendName, events: [], metadata: {} };

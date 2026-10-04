@@ -5,6 +5,7 @@ import {
 import { db } from "@/lib/db";
 import { startPersistentRound } from "@/lib/tasks/persistent-round";
 import { normalizeOptionalString, normalizeTaskStatus, parseJsonObject } from "@/lib/tasks/task-config";
+import { interruptRunningTurn, isStopCommand } from "@/lib/tasks/stop-command";
 import { readPersistentTaskState } from "@/shared/utils/persistent-task";
 
 /**
@@ -113,6 +114,7 @@ export async function findRetriedMessage(taskId: string, clientMessageId?: strin
 
 /** appendUserMessageToTask plus the send rules above; non-user messages pass straight through. */
 export async function deliverUserMessage(input: AppendInput): Promise<StoredMessage> {
+  const stop = isStopCommand(input.content);
   if (String(input.role ?? "sdk").trim().toLowerCase() === "user") {
     const task = await db.task.findFirst({
       where: { id: input.taskId, project: { userId: input.userId } },
@@ -122,7 +124,8 @@ export async function deliverUserMessage(input: AppendInput): Promise<StoredMess
     if (task && !task.achievedAt) {
       const retried = await findRetriedMessage(task.id, input.clientMessageId);
       if (retried) return retried;
-      const roundMessage = await startRoundIfPersistentIdle({ ...input, task });
+      // `/stop` never starts a round.
+      const roundMessage = stop ? null : await startRoundIfPersistentIdle({ ...input, task });
       if (roundMessage) return roundMessage;
       if (NOT_RUNNING_STATUSES.has(normalizeTaskStatus(task.status))) {
         throw conflict("TASK_NOT_RUNNING", "task_not_running", "Only running ai_task accepts new messages");
@@ -130,5 +133,8 @@ export async function deliverUserMessage(input: AppendInput): Promise<StoredMess
       await assertNoSessionRefreshPending(task.id);
     }
   }
-  return (await appendUserMessageToTask(input)).message;
+  const { message } = await appendUserMessageToTask(input);
+  // The message is stored; a failed interrupt must not fail the send.
+  if (stop) await interruptRunningTurn(input.userId, input.taskId).catch(() => false);
+  return message;
 }
