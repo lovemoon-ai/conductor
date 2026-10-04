@@ -330,6 +330,31 @@ export async function handleTranscribe(argv, deps) {
   return print(deps, argv, data, String(data?.text ?? ""));
 }
 
+/** Text to speech (the web voice mode's reply voice); saves an .mp3. */
+export async function handleSpeak(argv, deps) {
+  const text = trimmed(argv.text);
+  if (!text) throw argsError("Text is required");
+  const http = await buildHttp(deps);
+  if (argv.dryRun) {
+    return sendOrPreview(http, argv, deps, "POST", apiPath("speech", "synthesize"), { text, format: "mp3" }).then(() => EXIT.OK);
+  }
+  const response = await http.download(apiPath("speech", "synthesize"), { body: { text, format: "mp3" } });
+  let bytes;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    // Synthesis failed mid-stream: never save a truncated file as success.
+    throw new Error(`Speech synthesis was interrupted: ${error?.message || String(error)}`);
+  }
+  if (argv.output === "-") {
+    deps.stdout.write(bytes);
+    return EXIT.OK;
+  }
+  const target = path.resolve(deps.cwd || process.cwd(), argv.output ? String(argv.output) : "speech.mp3");
+  fs.writeFileSync(target, bytes);
+  return print(deps, argv, { path: target, bytes: bytes.length }, `Saved ${bytes.length} bytes to ${target}`);
+}
+
 // ---- persistent tasks (RFC 0039) -----------------------------------------
 
 export async function handlePersistent(argv, deps) {

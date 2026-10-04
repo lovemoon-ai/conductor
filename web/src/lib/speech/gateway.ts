@@ -8,7 +8,10 @@ import {
   normalizeSpeechSampleRate,
   parseSpeechControlMessage,
 } from "@/lib/speech/gateway-protocol";
-import { checkSpeechRateLimit } from "@/lib/speech/rate-limit";
+import { chargeSpeechAudioBytes, checkSpeechRateLimit } from "@/lib/speech/rate-limit";
+import { openVolcAsrStream, type VolcAsrStream } from "@/lib/speech/volc-asr";
+import { isVolcSpeechConfigured } from "@/lib/speech/volc-protocol";
+import { prewarmVolcTts } from "@/lib/speech/volc-tts";
 import {
   MAX_AUDIO_BYTES,
   normalizeLanguageTag,
@@ -64,6 +67,14 @@ export const setupSpeechGateway = (): WebSocketServer => {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_AUDIO_BYTES });
 
   wss.on("connection", async (socket, request) => {
+    // Clients send `start` as soon as the socket opens; hold frames that
+    // arrive while the token is still being checked instead of dropping them.
+    const earlyMessages: Array<[RawData, boolean]> = [];
+    const holdEarlyMessage = (raw: RawData, isBinary: boolean) => {
+      earlyMessages.push([raw, isBinary]);
+    };
+    socket.on("message", holdEarlyMessage);
+
     const token = extractToken(request);
     if (!token) {
       sendEnvelope(socket, { type: "error", payload: { message: "Token required" } });
@@ -99,6 +110,10 @@ export const setupSpeechGateway = (): WebSocketServer => {
     let lastPartialStartedAt = 0;
     let lastPartialText = "";
     let partialGeneration = 0;
+    // Doubao streaming ASR when configured; the GLM re-transcribe loop otherwise.
+    let volcStream: VolcAsrStream | null = null;
+    let volcError = "";
+    let volcErrorSent = false;
 
     const sendError = (message: string, extra: Record<string, unknown> = {}) => {
       sendEnvelope(socket, { type: "error", payload: { message, ...extra } });
@@ -196,6 +211,35 @@ export const setupSpeechGateway = (): WebSocketServer => {
       }, waitMs);
     };
 
+    /**
+     * Upstream ASR failed: tell the client now, with what was heard so far,
+     * instead of letting it send a silently truncated message on finish.
+     */
+    const reportVolcError = () => {
+      if (volcErrorSent) return;
+      volcErrorSent = true;
+      sendError("speech transcription failed", {
+        detail: volcError,
+        ...(lastPartialText ? { text: lastPartialText } : {}),
+      });
+    };
+
+    const finishVolcTranscription = async (stream: VolcAsrStream) => {
+      const text = await stream.finish();
+      if (volcError) {
+        if (text) lastPartialText = text;
+        reportVolcError();
+        return;
+      }
+      sendEnvelope(socket, { type: "result", payload: { text } });
+      console.info("speech_stream_ok", {
+        engine: "volc",
+        audio_bytes: byteCount,
+        transcript_chars: text.length,
+        elapsed_ms: Date.now() - connectedAt,
+      });
+    };
+
     const finishTranscription = async () => {
       if (finishing) return;
       finishing = true;
@@ -206,7 +250,12 @@ export const setupSpeechGateway = (): WebSocketServer => {
         return;
       }
       if (byteCount <= 0) {
+        volcStream?.cancel();
         sendError("audio required");
+        return;
+      }
+      if (volcStream) {
+        await finishVolcTranscription(volcStream);
         return;
       }
 
@@ -274,6 +323,21 @@ export const setupSpeechGateway = (): WebSocketServer => {
             socket.close(1009, "audio-too-large");
             return;
           }
+          if (volcStream) {
+            // Streamed audio is billed by duration: enforce the hourly byte budget as it arrives.
+            const budget = chargeSpeechAudioBytes(user.id, chunk.length);
+            if (!budget.allowed) {
+              finishing = true;
+              volcStream.cancel();
+              sendError("speech transcription rate limit exceeded", {
+                retry_after_seconds: budget.retryAfterSeconds,
+              });
+              socket.close(1008, "rate-limited");
+              return;
+            }
+            volcStream.sendAudio(chunk);
+            return;
+          }
           chunks.push(chunk);
           schedulePartialTranscription();
           return;
@@ -295,6 +359,47 @@ export const setupSpeechGateway = (): WebSocketServer => {
           sampleRate = normalizeSpeechSampleRate(
             message.payload?.sample_rate ?? message.payload?.sampleRate,
           );
+          if (isVolcSpeechConfigured()) {
+            // Open TTS connections while the user is still talking.
+            if (message.payload?.tts_prewarm === true) prewarmVolcTts();
+            const rateLimit = checkSpeechRateLimit(user.id, 0);
+            if (!rateLimit.allowed) {
+              sendError("speech transcription rate limit exceeded", {
+                retry_after_seconds: rateLimit.retryAfterSeconds,
+              });
+              socket.close(1008, "rate-limited");
+              return;
+            }
+            try {
+              volcStream = openVolcAsrStream({
+                sampleRate,
+                userId: user.id,
+                // `endpoint` = the speaker paused long enough for Doubao to close
+                // the utterance. The web voice mode (tap-to-talk) ignores it;
+                // hands-free clients (e.g. glasses) can end their turn on it.
+                onPartial: (text, endpoint) => {
+                  lastPartialText = text;
+                  sendEnvelope(socket, {
+                    type: "partial",
+                    payload: { text, phase: "listening", endpoint },
+                  });
+                },
+                onError: (message) => {
+                  volcError = message;
+                  console.warn("speech_stream_volc_failed", { error: message });
+                  if (!finishing) reportVolcError();
+                },
+              });
+            } catch (error) {
+              // e.g. a malformed VOLC_ASR_URL: fail this stream clearly.
+              volcError = error instanceof Error ? error.message : String(error);
+              console.warn("speech_stream_volc_failed", { error: volcError });
+              finishing = true;
+              reportVolcError();
+              socket.close(1011, "asr-unavailable");
+              return;
+            }
+          }
           sendEnvelope(socket, {
             type: "ready",
             payload: {
@@ -322,7 +427,11 @@ export const setupSpeechGateway = (): WebSocketServer => {
     socket.on("close", () => {
       socketClosed = true;
       stopPartialTranscription();
+      if (!finishing) volcStream?.cancel();
     });
+
+    socket.off("message", holdEarlyMessage);
+    for (const [raw, isBinary] of earlyMessages.splice(0)) socket.emit("message", raw, isBinary);
   });
 
   console.log(`Speech WebSocket gateway ready at ${SPEECH_WS_PATH}`);

@@ -728,6 +728,40 @@ describe("conductor task send --attach / messages --follow / schedule update", (
     assert.equal(out, "你好\n");
   });
 
+  it("speak POSTs the text and saves the mp3", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-speak-"));
+    const target = path.join(dir, "reply.mp3");
+    const { code, err, calls } = await runWithFetch(main, ["speak", "你好", "-o", target], {
+      "POST /api/speech/synthesize": { status: 200, body: Buffer.from("ID3-bytes"), headers: {} },
+    });
+    assert.equal(code, 0, err);
+    assert.deepEqual(calls[0].body, { text: "你好", format: "mp3" });
+    assert.equal(fs.readFileSync(target, "utf8"), "ID3-bytes");
+  });
+
+  it("speak surfaces a server error", async () => {
+    const { code, calls } = await runWithFetch(main, ["speak", "hi", "-o", "-"], {
+      "POST /api/speech/synthesize": { status: 503, body: { error: "speech synthesis is not configured" } },
+    });
+    assert.notEqual(code, 0);
+    assert.equal(calls.length, 1);
+  });
+
+  it("speak fails without saving when the audio stream breaks mid-body", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-speak-"));
+    const target = path.join(dir, "reply.mp3");
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "Content-Type": "audio/mpeg" }),
+      arrayBuffer: async () => { throw new TypeError("terminated"); },
+    });
+    const { code, err } = await runWithFetch(main, ["speak", "你好", "-o", target], {}, { fetchImpl });
+    assert.notEqual(code, 0);
+    assert.match(err, /interrupted.*terminated/);
+    assert.equal(fs.existsSync(target), false);
+  });
+
   it("transcribe rejects unsupported audio before uploading", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-speech-"));
     const file = path.join(dir, "note.ogg");

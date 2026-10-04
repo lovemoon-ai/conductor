@@ -125,6 +125,7 @@
     "GET /api/search": { "cli": "search" },
     "GET /api/preview/[token]/[...path]": { "cli": "task preview" },
     "GET /api/shared/[token]": { "cli": "task shared" },
+    "POST /api/speech/synthesize": { "cli": "task speak" },
     "POST /api/speech/transcribe": { "cli": "task transcribe" },
 
     "GET /api/tasks": { "cli": "task list" },
