@@ -1,5 +1,9 @@
 # stable: claude backend unusable as root — `bypassPermissions` is refused by Claude Code
 
+> **Superseded 2026-10-04.** The `acceptEdits` downgrade described below made headless claude silently refuse
+> every shell command and every read outside cwd. It has been removed in favour of a chat warning that tells the
+> user to set `envs.IS_SANDBOX: "1"`. See `stable_claude-root-acceptedits-silently-denies-tools-20261004.md`.
+
 - Date: 2026-08-30
 - Severity: P1 (any root-only environment: docker images, CI runners, bare VPS)
 - Component: `modules/ai-sdk/src/providers/claude-agent-sdk-session.js`,

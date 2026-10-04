@@ -32,8 +32,6 @@ const INTERRUPT_GRACE_MS = 10 * 1000;
 const DEFAULT_SETTING_SOURCES = ["user", "project", "local"];
 const PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"]);
 const DEFAULT_PERMISSION_MODE = "bypassPermissions";
-// Auto ("accept edits") mode: the strongest mode claude allows as root.
-const ROOT_PERMISSION_MODE = "acceptEdits";
 
 function waitForever() {
   return new Promise(() => {});
@@ -222,9 +220,8 @@ function normalizePermissionMode(value) {
 // Two different env idioms in that one line, and both are load-bearing:
 // IS_SANDBOX is a *strict* `=== "1"` compare, while CLAUDE_CODE_BUBBLEWRAP goes
 // through claude's loose truthy parser (`1|true|yes|on`, trimmed+lowercased).
-// Do not "helpfully" accept IS_SANDBOX=true here — being more permissive than
-// the gate keeps bypassPermissions and just moves the failure into claude,
-// which is the exact bug we are fixing.
+// Do not "helpfully" accept IS_SANDBOX=true here — claude would still refuse,
+// and the user would get no hint telling them why.
 export function isClaudeRootPermissionRestricted(env = process.env) {
   if (typeof process.getuid !== "function" || process.getuid() !== 0) {
     return false;
@@ -236,63 +233,63 @@ export function isClaudeRootPermissionRestricted(env = process.env) {
   return !["1", "true", "yes", "on"].includes(bubblewrap);
 }
 
-// Root installs (docker, CI, bare VPS) would otherwise fail every turn, so fall
-// back to the closest usable mode instead of dying.
+// The configured mode is used as-is, including on root. We used to downgrade
+// bypassPermissions -> acceptEdits for root, but a headless session has no one
+// to approve prompts, so acceptEdits silently denied every Bash command and
+// every read outside cwd: the task "ran" and could do nothing. Instead we keep
+// the mode and flag `rootSandboxRequired` so the caller can tell the user to
+// opt in with IS_SANDBOX=1 (or run as a regular user).
 export function resolveClaudePermissionPolicy(options = {}, env = process.env) {
-  const requested = normalizePermissionMode(options.permissionMode);
+  const permissionMode = normalizePermissionMode(options.permissionMode);
   // A configured value we don't recognize still falls back to the default (a
   // typo must never take the session down), but the caller reports it so the
   // user finds out their config line is doing nothing.
   const rawMode = typeof options.permissionMode === "string" ? options.permissionMode.trim() : "";
   const invalidMode = rawMode && !PERMISSION_MODES.has(rawMode) ? rawMode : "";
-  if (!isClaudeRootPermissionRestricted(env)) {
-    return {
-      permissionMode: requested,
-      allowDangerouslySkipPermissions:
-        requested === DEFAULT_PERMISSION_MODE || options.allowDangerouslySkipPermissions === true,
-      downgradedFrom: "",
-      invalidMode,
-    };
-  }
-  const permissionMode = requested === DEFAULT_PERMISSION_MODE ? ROOT_PERMISSION_MODE : requested;
+  const rootRestricted = isClaudeRootPermissionRestricted(env);
+  const bypass = permissionMode === DEFAULT_PERMISSION_MODE;
   return {
     permissionMode,
-    allowDangerouslySkipPermissions: false,
-    downgradedFrom: permissionMode === requested ? "" : requested,
+    // A non-bypass mode the user picked on purpose never needs the escape
+    // flag, and as root it would only trip claude's gate.
+    allowDangerouslySkipPermissions:
+      bypass || (options.allowDangerouslySkipPermissions === true && !rootRestricted),
+    rootSandboxRequired: bypass && rootRestricted,
     invalidMode,
   };
 }
 
-// The PTY / tool-preset path in the daemon hands a configured allow_cli_list
-// command straight to a shell, so it never reaches the session class above and
-// never sees resolveClaudePermissionPolicy. Rewrite the command string there
-// too, or a root box keeps failing in terminal tasks after the SDK path is fixed.
-export function resolveClaudeCommandForRoot(commandLine, env = process.env) {
+// True when a configured claude command line would hit claude's root gate:
+// it asks for bypass (the flag, or `--permission-mode bypassPermissions`) and
+// the process env doesn't opt out.
+export function claudeCommandNeedsRootSandbox(commandLine, env = process.env) {
   const command = typeof commandLine === "string" ? commandLine : "";
-  if (!command.trim() || !isClaudeRootPermissionRestricted(env)) {
-    return command;
+  if (!command.trim()) {
+    return false;
   }
-  // Also drop a valueless `--permission-mode` (end of string, or immediately
-  // followed by another flag). Without this the append branch below would emit
-  // `--permission-mode --permission-mode acceptEdits`, and claude reads the
-  // flag name as the mode and `acceptEdits` as a positional prompt.
-  const stripped = command
-    .replace(/\s*--dangerously-skip-permissions(?=\s|$)/g, "")
-    .replace(/\s*--permission-mode=(?=\s|$)/g, "")
-    .replace(/\s*--permission-mode(?=\s+-|\s*$)/g, "")
-    .trim();
-  const configuredMode = extractLongFlagFromCommandLine(stripped, "permission-mode");
-  if (!configuredMode) {
-    return `${stripped} --permission-mode ${ROOT_PERMISSION_MODE}`;
-  }
-  if (configuredMode === DEFAULT_PERMISSION_MODE) {
-    return stripped.replace(
-      /(--permission-mode[=\s]+)bypassPermissions(?=\s|$)/,
-      `$1${ROOT_PERMISSION_MODE}`,
-    );
-  }
-  // Any other configured mode is already root-safe; leave it verbatim.
-  return stripped;
+  const bypass = /(^|\s)--dangerously-skip-permissions(?=\s|$)/.test(command)
+    || extractLongFlagFromCommandLine(command, "permission-mode") === DEFAULT_PERMISSION_MODE;
+  return bypass && isClaudeRootPermissionRestricted(env);
+}
+
+// User-facing hint shown in the task chat (and the PTY terminal) when claude
+// is about to be started as root in bypass mode without IS_SANDBOX=1.
+export function buildClaudeRootSandboxNotice({ configFile } = {}) {
+  const configPath = typeof configFile === "string" && configFile.trim()
+    ? configFile.trim()
+    : "~/.conductor/config.yaml";
+  return [
+    "⚠️ 当前 conductor 以 root 用户运行 claude。Claude Code 禁止 root 使用 bypassPermissions（--dangerously-skip-permissions），本会话的请求会直接失败。",
+    "",
+    `如果这台机器是隔离环境（容器 / 虚机），请在 ${configPath} 中加入下面的配置，然后重启 daemon：`,
+    "",
+    "```yaml",
+    "envs:",
+    "  IS_SANDBOX: \"1\"",
+    "```",
+    "",
+    "注意值必须是字符串 \"1\"。设置后 claude 会以 root 身份直接执行命令、不再请求确认；如果不是隔离环境，建议改用普通用户运行 daemon。",
+  ].join("\n");
 }
 
 function normalizeText(value) {
@@ -482,11 +479,17 @@ export class ClaudeAgentSdkSession extends EventEmitter {
           + `(valid: ${[...PERMISSION_MODES].join(", ")})`,
       );
     }
-    if (this.permissionPolicy.downgradedFrom) {
+    // Shown to the user by fire as a chat message (see getSnapshot().notices):
+    // claude will refuse to start, and a daemon log line alone is invisible.
+    this.notices = [];
+    if (this.permissionPolicy.rootSandboxRequired) {
       this.trace(
-        `permission mode ${this.permissionPolicy.downgradedFrom} -> ${this.permissionPolicy.permissionMode} `
-          + `(claude rejects ${this.permissionPolicy.downgradedFrom} as root; set IS_SANDBOX=1 to keep it)`,
+        "WARN running as root without IS_SANDBOX=1; claude will refuse bypassPermissions "
+          + "(set envs.IS_SANDBOX: \"1\" in the conductor config, or run as a regular user)",
       );
+      this.notices.push(buildClaudeRootSandboxNotice({
+        configFile: options.configFile || this.env.CONDUCTOR_CONFIG || process.env.CONDUCTOR_CONFIG,
+      }));
     }
   }
 
@@ -531,6 +534,7 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
       capabilities: this.getCapabilities(),
+      notices: [...this.notices],
     };
   }
 

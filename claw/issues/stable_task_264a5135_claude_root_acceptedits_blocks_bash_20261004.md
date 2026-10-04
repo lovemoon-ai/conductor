@@ -81,7 +81,10 @@ Choose one:
    already isolated" environments (containers). It is a deliberate opt-out of claude's root safety check, so only do it
    on a box you accept treating as a sandbox.
 
-## Fix direction (product side, not implemented here)
+## Fix direction (product side)
+
+Implemented: the downgrade is removed and a chat warning is shown instead; see
+`claw/lessons/stable_claude-root-acceptedits-silently-denies-tools-20261004.md`.
 
 - **Make the failure visible instead of silent.** When the policy downgrades for root, emit a user-visible sdk
   message or warning on the task (not just a daemon log line), for example: "claude is running as root in acceptEdits

@@ -1822,6 +1822,86 @@ describe("conductor-fire backends", () => {
     assert.equal(sentMessages.length, 1, "second session event must NOT re-announce");
   });
 
+  it("sends backend notices (claude root IS_SANDBOX hint) as a chat warning after session started", async () => {
+    const sentMessages = [];
+    const notice = '⚠️ root ... envs:\n  IS_SANDBOX: "1"';
+    const runner = new BridgeRunner({
+      backendSession: {
+        ensureSessionInfo: async () => ({ backend: "claude", sessionId: "sess-root-1", model: "claude" }),
+        getSessionInfo: () => null,
+        getSnapshot: () => ({ notices: [notice, "", null] }),
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "sess-root-1",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        bindTaskSession: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-root-notice",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+    });
+
+    await runner.announceBackendSession();
+
+    assert.equal(sentMessages.length, 2, JSON.stringify(sentMessages));
+    assert.match(sentMessages[0].content, /claude session started: sess-root-1/);
+    assert.equal(sentMessages[1].content, notice);
+    assert.equal(sentMessages[1].metadata?.severity, "warning");
+    assert.equal(sentMessages[1].metadata?.synthetic, true);
+
+    // A second announce on the same session must not repeat the warning.
+    await runner.announceBackendSession();
+    assert.equal(sentMessages.length, 2);
+  });
+
+  it("sends no extra message when the backend has no notices", async () => {
+    const sentMessages = [];
+    const runner = new BridgeRunner({
+      backendSession: {
+        ensureSessionInfo: async () => ({ backend: "claude", sessionId: "sess-2", model: "claude" }),
+        getSessionInfo: () => null,
+        getSnapshot: () => ({ notices: [] }),
+        getSessionUsageSummary: async () => null,
+        close: async () => {},
+        runTurn: async () => ({ text: "", usage: null, items: [], metadata: {} }),
+        threadId: "sess-2",
+        threadOptions: { model: "claude" },
+      },
+      conductor: {
+        receiveMessages: async () => ({ messages: [] }),
+        sendRuntimeStatus: async () => ({}),
+        ackMessages: async () => ({}),
+        bindTaskSession: async () => ({}),
+        sendMessage: async (taskId, content, metadata) => {
+          sentMessages.push({ taskId, content, metadata });
+          return {};
+        },
+      },
+      taskId: "task-no-notice",
+      pollIntervalMs: 500,
+      initialPrompt: "",
+      includeInitialImages: false,
+      cliArgs: [],
+      backendName: "claude",
+    });
+
+    await runner.announceBackendSession();
+    assert.equal(sentMessages.length, 1);
+  });
+
   it("announces session started without id when real session id is unavailable", async () => {
     const sentMessages = [];
     const sentRuntimeStatuses = [];
