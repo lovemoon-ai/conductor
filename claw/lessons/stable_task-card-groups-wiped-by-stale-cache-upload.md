@@ -30,7 +30,9 @@ store also ignored the in-flight hydration GET, so the bad snapshot stuck.
   no groups". That would have sent us down the legacy-migration path and
   uploaded the local cache anyway. The store now has `serverLoaded`, set only
   after a successful GET/PATCH or a realtime snapshot. `TaskList` waits on it,
-  stays local-only meanwhile, and retries the load every 15 s.
+  stays local-only meanwhile, and retries the load every 15 s with an
+  interval until one succeeds. A one-shot timeout keyed on those flags fires
+  only once, because a failed retry leaves the flags unchanged.
 - When the server has no global scope yet (legacy per-project scopes only), the
   sync effect now uploads the consolidated union itself. Before, it relied on the
   save effect, which never fires if the local groups already equal the union.

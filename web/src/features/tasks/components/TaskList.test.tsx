@@ -1182,7 +1182,7 @@ describe('TaskList', () => {
           JSON.stringify([{ id: 'stale-group', taskIds: ['task-1', 'task-2'], activeIndex: 0, labels: {} }]),
         );
 
-        render(<TaskList viewMode="list" projectFilter={null} />);
+        const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
         await act(async () => {
           await Promise.resolve();
         });
@@ -1198,12 +1198,34 @@ describe('TaskList', () => {
         expect(document.querySelector('[data-task-tab-card]')).toBeNull();
         expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
 
-        // The load is retried until the server answers.
+        // The load is retried every 15 s, also after a retry fails again
+        // (the mock leaves serverLoaded false, i.e. every retry fails).
         hydrateTaskCardGroupsMock.mockClear();
         act(() => {
           vi.advanceTimersByTime(15_000);
         });
-        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledWith('user-1');
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(1);
+        expect(hydrateTaskCardGroupsMock).toHaveBeenLastCalledWith('user-1');
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(2);
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(3);
+
+        // Once a load succeeds the retries stop.
+        taskCardGroupsSyncState = {
+          ...taskCardGroupsSyncState,
+          serverLoaded: true,
+          snapshot: { version: 1, revision: 5, scopes: { 'projects:all': [] } },
+        };
+        rerender(<TaskList viewMode="list" projectFilter={null} onOpenTask={() => undefined} />);
+        act(() => {
+          vi.advanceTimersByTime(45_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(3);
       } finally {
         vi.useRealTimers();
       }

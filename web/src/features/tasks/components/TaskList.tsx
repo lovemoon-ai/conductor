@@ -606,13 +606,15 @@ function TaskListComponent({
   }, [hydrateTaskCardGroups, userId]);
 
   // A failed load leaves the groups local-only (nothing is uploaded); retry
-  // until the server answers so this device rejoins the sync.
+  // until the server answers so this device rejoins the sync. An interval, not
+  // a one-shot timer: a failed retry leaves hydrated/serverLoaded unchanged,
+  // so nothing would re-arm a timeout.
   useEffect(() => {
     if (!userId || !taskCardGroupsHydrated || taskCardGroupsServerLoaded) return;
-    const timer = setTimeout(() => {
+    const timer = setInterval(() => {
       void hydrateTaskCardGroups(userId);
     }, TASK_CARD_GROUPS_RELOAD_RETRY_MS);
-    return () => clearTimeout(timer);
+    return () => clearInterval(timer);
   }, [hydrateTaskCardGroups, taskCardGroupsHydrated, taskCardGroupsServerLoaded, userId]);
 
   // Server scopes are authoritative, including an empty-array tombstone. Tab
