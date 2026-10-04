@@ -7,10 +7,13 @@ import { ChatMenuSlotContext } from '../chat-menu-slot';
 import { requestTaskRuntimeStatus, useRuntimeStore } from '@/features/realtime';
 import { useProjectsStore } from '@/features/projects';
 import { useTasksStore } from '@/features/tasks';
+import { useAuthStore } from '@/features/auth';
 import { useWebSocketStore } from '@/features/realtime';
 import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
+import { useVoiceConversation } from '../voice/useVoiceConversation';
+import { VoiceModeButton, VoiceRecordingBar, VoiceStatus } from '../voice/VoiceControls';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
 import { NewRoundDialog, PersistentTaskSettingsDialog } from '@/features/tasks/components/PersistentTaskDialogs';
 import { formatRelativeTime } from '@/features/tasks/utils/resume-sessions';
@@ -781,7 +784,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     }
   };
 
-  const handleSend = async (content: string, files: File[] = []) => {
+  /** Resolves `false` when the message was not sent and the composer shows why. */
+  const handleSend = async (content: string, files: File[] = []): Promise<boolean> => {
     let attachmentsUploaded = false;
     if (interruptPending) {
       dispatchUiState({
@@ -792,7 +796,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
       if (files.length) throw new Error('Interrupt in progress');
-      return;
+      return false;
     }
     if (restartPending) {
       dispatchUiState({
@@ -803,7 +807,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
       if (files.length) throw new Error('Restart in progress');
-      return;
+      return false;
     }
     if (isRoundIdle) {
       if (files.length) {
@@ -829,7 +833,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         });
         throw new Error('Failed to start a new round');
       }
-      return;
+      return true;
     }
     if (!isTaskRunning) {
       dispatchUiState({
@@ -846,7 +850,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
         },
       });
       if (files.length) throw new Error('Task is not ready');
-      return;
+      return false;
     }
 
     try {
@@ -862,6 +866,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       });
       if (files.length) clearUploadedAttachmentCache(taskId, files);
       dispatchUiState({ type: 'recordSentMessage', replyTo: message.id });
+      return true;
     } catch {
       if (attachmentsUploaded) clearUploadedAttachmentCache(taskId, files);
       // The send (including its bounded auto-retry for the startup fire-owner
@@ -877,6 +882,21 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
       throw new Error('Failed to upload attachments or send message');
     }
   };
+
+  const sendBlocked = (!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || interruptPending || restartPending || roundActionPending;
+  const userToken = useAuthStore((state) => state.session?.userToken);
+  const voice = useVoiceConversation({
+    taskId,
+    messages,
+    replyInProgress: runtimeReplyInProgress,
+    userToken,
+    onSend: async (text) => {
+      const sent = await handleSend(text);
+      if (!sent) messageInputRef.current?.appendDraft(text);
+      return sent;
+    },
+    onKeepText: (text) => messageInputRef.current?.appendDraft(text),
+  });
 
   const handleEndRound = async () => {
     setRoundActionPending(true);
@@ -1356,17 +1376,28 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               {visibleComposerFeedback.message}
             </InlineNotice>
           ) : null}
+          <VoiceStatus phase={voice.phase} error={voice.error} onExit={voice.stop} />
           <MessageInput
             ref={messageInputRef}
             taskId={taskId}
-            onSend={handleSend}
+            onSend={async (content, files) => { await handleSend(content, files); }}
+            voiceControl={<VoiceModeButton phase={voice.phase} onClick={voice.toggle} disabled={sendBlocked} />}
+            voiceOverlay={voice.phase === 'starting' || voice.phase === 'recording' || voice.phase === 'recognizing' ? (
+              <VoiceRecordingBar
+                phase={voice.phase}
+                partial={voice.partial}
+                since={voice.recordingSince}
+                subscribeLevel={voice.subscribeLevel}
+                onCancel={voice.cancel}
+              />
+            ) : undefined}
             onInsert={(content) => {
               void handleInsert(content);
             }}
             onInterrupt={() => {
               void handleInterrupt();
             }}
-            sendDisabled={(!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || interruptPending || restartPending || roundActionPending}
+            sendDisabled={sendBlocked}
             interruptEnabled={interruptEnabled}
             interruptPending={interruptPending}
             insertEnabled={insertEnabled}

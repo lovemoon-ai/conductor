@@ -3,7 +3,11 @@ const MIN_SPEECH_SAMPLE_RATE = 8_000;
 const MAX_SPEECH_SAMPLE_RATE = 48_000;
 
 export type SpeechControlMessage =
-  | { type: "start"; payload?: { language?: unknown; sample_rate?: unknown; sampleRate?: unknown } }
+  | {
+      type: "start";
+      /** `tts_prewarm`: the client will want a spoken reply (web voice mode). */
+      payload?: { language?: unknown; sample_rate?: unknown; sampleRate?: unknown; tts_prewarm?: unknown };
+    }
   | { type: "finish" }
   | { type: "cancel" };
 

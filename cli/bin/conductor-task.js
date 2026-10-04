@@ -24,6 +24,7 @@
  *   rename <id> <title> | pin <id> | unpin <id> | labels <id> [<label-id>...] [--clear]
  *   move <id> [<project>] [--back] | share <id> | unshare <id> | shared <token|link>
  *   transcribe <audio.wav|mp3> [--language <tag>]
+ *   speak <text> [-o FILE|-]
  *   persistent <id> [--enable|--disable] [--instructions ...] [--summary ...]
  *   round end <id> | round start <id> [<message>] [--backend] [--daemon-host] [--worktree inherit|new|none]
  *   cleanup-worktree <id> | terminal open|close|show <id>
@@ -945,6 +946,14 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .positional("file", { type: "string", demandOption: true })
           .option("language", { type: "string", describe: "Language hint, e.g. zh or en" }),
         run(extra.handleTranscribe),
+      )
+      .command(
+        "speak <text>",
+        "Text to speech as .mp3 (the web voice mode's reply voice)",
+        (cmd) => cmd
+          .positional("text", { type: "string", demandOption: true })
+          .option("output", { alias: "o", type: "string", describe: "Output file (default speech.mp3), or - for stdout" }),
+        run(extra.handleSpeak),
       )
       .command(
         "persistent <id>",

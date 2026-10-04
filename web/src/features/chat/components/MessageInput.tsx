@@ -1,6 +1,6 @@
 'use client';
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, type ReactNode, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { CatchphrasePopover } from '@/features/catchphrases/components/CatchphrasePopover';
 import { readFromClipboard } from '@/lib/clipboard';
@@ -40,6 +40,10 @@ interface MessageInputProps {
   insertEnabled?: boolean;
   insertPending?: boolean;
   autoFocus?: boolean;
+  /** Voice-conversation toggle, rendered next to the send controls. */
+  voiceControl?: ReactNode;
+  /** Shown in place of the text area while recording a voice message (the typed draft is kept). */
+  voiceOverlay?: ReactNode;
 }
 
 // How long (ms) a single send-button click waits for a possible second click
@@ -55,6 +59,11 @@ export interface MessageInputHandle {
    * No-op when the user has already started a new draft (don't clobber it).
    */
   restoreDraft: (content: string) => void;
+  /**
+   * Add text to the composer without sending, after anything already typed
+   * (e.g. a voice message that could not be sent), so neither is lost.
+   */
+  appendDraft: (content: string) => void;
   /** The current composer text, e.g. to schedule it from the chat menu. */
   getDraft: () => string;
 }
@@ -149,6 +158,8 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
   insertEnabled = false,
   insertPending = false,
   autoFocus = false,
+  voiceControl,
+  voiceOverlay,
 }: MessageInputProps, ref) {
   const [content, setContent] = useState(() => readStoredDraft(taskId));
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -423,6 +434,11 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       }
       updateContent(nextContent);
       moveCaretToEnd(nextContent);
+    },
+    appendDraft: (extra: string) => {
+      const next = content.trim() ? `${content.replace(/\s+$/, '')}\n${extra}` : extra;
+      updateContent(next);
+      moveCaretToEnd(next);
     },
     getDraft: () => content,
   }), [handleResend, content, moveCaretToEnd, updateContent]);
@@ -751,9 +767,11 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
           ) : null}
           {fileError ? <p className="mb-2 text-xs text-red-600">{fileError}</p> : null}
           <div className={isSendOnNextLine ? 'flex flex-col gap-2' : 'flex items-center gap-2'}>
+            {voiceOverlay ? null : (
             <button type="button" aria-label="Add attachment" title="Attach files" data-testid="message-input-attach-button" disabled={attachDisabled} onClick={openAttachPicker} className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted hover:bg-border/50 disabled:opacity-40">
               <svg aria-hidden="true" viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9" /></svg>
             </button>
+            )}
             <textarea
               ref={textareaRef}
               aria-label="Message input"
@@ -767,11 +785,15 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
               disabled={disabled}
               rows={1}
               data-testid="message-input-textarea"
+              style={voiceOverlay ? { display: 'none' } : undefined}
               className={`block min-w-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed text-ink placeholder:text-muted outline-none disabled:cursor-not-allowed disabled:opacity-60 ${isInputScrollable ? 'overflow-y-auto' : 'overflow-hidden'
                 } ${isSendOnNextLine ? 'w-full' : 'w-full flex-1'
                 }`}
             />
+            {voiceOverlay}
             <div className={isSendOnNextLine ? 'flex w-full items-center justify-end gap-2' : 'flex shrink-0 items-center gap-2'}>
+              {voiceControl}
+              {voiceOverlay ? null : (<>
               {/* Desktop-only: one-click send of the system clipboard contents. */}
               <button
                 type="button"
@@ -810,6 +832,7 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
                   <path d="M4 3l12 7-12 7V3z" />
                 </svg>
               </button>
+              </>)}
             </div>
           </div>
         </div>

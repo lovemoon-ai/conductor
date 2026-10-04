@@ -84,3 +84,35 @@ export const checkSpeechRateLimit = (
 export const resetSpeechTranscribeRateLimitsForTest = () => {
   speechRateLimitBuckets.clear();
 };
+
+/**
+ * Charge streamed audio against the hourly byte budget as it arrives (the
+ * request itself was counted by checkSpeechRateLimit at stream start).
+ * Refused bytes are not charged.
+ */
+export const chargeSpeechAudioBytes = (
+  userId: string,
+  bytes: number,
+  now = Date.now(),
+): SpeechRateLimitResult => {
+  const { maxBytesPerWindow } = getRateLimitConfig();
+  const bucket: SpeechRateLimitBucket = speechRateLimitBuckets.get(userId) ?? {
+    requestWindowStartedAt: now,
+    requestCount: 0,
+    byteWindowStartedAt: now,
+    byteCount: 0,
+  };
+  if (now - bucket.byteWindowStartedAt >= BYTE_WINDOW_MS) {
+    bucket.byteWindowStartedAt = now;
+    bucket.byteCount = 0;
+  }
+  speechRateLimitBuckets.set(userId, bucket);
+  if (bucket.byteCount + bytes > maxBytesPerWindow) {
+    return {
+      allowed: false,
+      retryAfterSeconds: secondsUntilReset(now, bucket.byteWindowStartedAt, BYTE_WINDOW_MS),
+    };
+  }
+  bucket.byteCount += bytes;
+  return { allowed: true };
+};
