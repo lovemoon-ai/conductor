@@ -248,6 +248,10 @@ function TaskListComponent({
   const skipGroupSaveRef = useRef(false);
   const lastSyncedGroupsKeyRef = useRef<string | null>(null);
   const attemptedLegacySyncScopesRef = useRef(new Set<string>());
+  // True once the server snapshot has been folded into `groups` for the current
+  // user/scope. Until then `groups` is only this browser's cache, which may be
+  // stale (or empty) — uploading it would overwrite cards made on other devices.
+  const serverGroupsAppliedRef = useRef(false);
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
@@ -586,6 +590,7 @@ function TaskListComponent({
     }
     skipGroupSaveRef.current = true;
     lastSyncedGroupsKeyRef.current = null;
+    serverGroupsAppliedRef.current = false;
     groupIdCounterRef.current = maxTaskCardGroupIdCounter(loaded);
     setGroups(loaded);
     setEditingTab(null);
@@ -607,6 +612,8 @@ function TaskListComponent({
     const scopes = syncedGroupsSnapshot.scopes;
     const migrationKey = `${userId}:${LIST_CARD_GROUPS_SCOPE}`;
     const hasServerScopes = Object.keys(scopes).length > 0;
+
+    serverGroupsAppliedRef.current = true;
 
     if (!hasServerScopes) {
       if (attemptedLegacySyncScopesRef.current.has(migrationKey)) return;
@@ -643,19 +650,30 @@ function TaskListComponent({
     ]);
     // A server global scope is authoritative → mark it synced to suppress the
     // echo upload. When it is still absent, the folded union carries local-only
-    // / legacy cards not yet under the global scope, so leave the sync marker
-    // clear and let the save effect upload the merged result.
-    if (hasGlobalScope) {
-      lastSyncedGroupsKeyRef.current = taskCardGroupsSyncKey(consolidated);
-    }
+    // / legacy cards not yet under the global scope, so upload it explicitly
+    // (the local `groups` may already equal it, in which case the save effect
+    // would never fire).
+    const consolidatedKey = taskCardGroupsSyncKey(consolidated);
+    const shouldUploadConsolidated =
+      !hasGlobalScope && lastSyncedGroupsKeyRef.current !== consolidatedKey;
+    lastSyncedGroupsKeyRef.current = consolidatedKey;
     setGroups((current) => {
       const next = mergeSyncedTaskCardGroups(current, consolidated);
       if (JSON.stringify(next) === JSON.stringify(current)) return current;
-      if (hasGlobalScope) skipGroupSaveRef.current = true;
+      skipGroupSaveRef.current = true;
       groupIdCounterRef.current = maxTaskCardGroupIdCounter(next);
       saveTaskCardGroups(groupsStorageKey, next);
       return next;
     });
+    if (shouldUploadConsolidated) {
+      // activeIndex is device-local and never synced.
+      const uploadGroups = consolidated.map((group) => ({ ...group, activeIndex: 0 }));
+      void saveTaskCardGroupsScope(userId, LIST_CARD_GROUPS_SCOPE, uploadGroups).then((saved) => {
+        if (!saved && lastSyncedGroupsKeyRef.current === consolidatedKey) {
+          lastSyncedGroupsKeyRef.current = null;
+        }
+      });
+    }
   }, [
     groupsStorageKey,
     saveTaskCardGroupsScope,
@@ -670,7 +688,10 @@ function TaskListComponent({
       return;
     }
     saveTaskCardGroups(groupsStorageKey, groups);
-    if (!userId) return;
+    // Never push before the server snapshot has been applied: on a fresh load
+    // `groups` is just this browser's (possibly stale or empty) cache, and the
+    // upload would replace — and broadcast — every other device's cards.
+    if (!userId || !serverGroupsAppliedRef.current) return;
     const syncKey = taskCardGroupsSyncKey(groups);
     if (lastSyncedGroupsKeyRef.current === syncKey) return;
     lastSyncedGroupsKeyRef.current = syncKey;
@@ -1078,7 +1099,9 @@ function TaskListComponent({
     }
   };
 
-  // Tab gestures: click = select, press-and-hold = rename, double-click = un-merge.
+  // Tab gestures: click = select, press-and-hold = rename. Un-merging lives in
+  // the card's ⋯ actions menu ("Ungroup") — a double-click was too easy to hit
+  // by accident while switching tabs.
   const handleTabPointerDown = (
     event: ReactPointerEvent<HTMLDivElement>,
     groupId: string,
@@ -1101,12 +1124,6 @@ function TaskListComponent({
       return;
     }
     handleSelectTab(groupId, taskId);
-  };
-
-  const handleTabDoubleClick = (groupId: string, taskId: string) => {
-    clearTabLongPress();
-    longPressFiredRef.current = false;
-    handleEjectTab(groupId, taskId);
   };
 
   const beginTabEdit = (groupId: string, taskId: string, currentLabel: string) => {
@@ -1132,7 +1149,7 @@ function TaskListComponent({
     setEditingTab((current) => (current && current.taskId === taskId ? null : current));
   };
 
-  const renderTaskItem = (task: Task) => {
+  const renderTaskItem = (task: Task, groupId?: string) => {
     const projectEntry = projectMap.get(resolveTaskDisplayProjectId(task) ?? '');
     // Resolve the per-card daemon via the same fallback chain used by the filter
     // helpers so, e.g., Default-Project tasks still render their daemon chip.
@@ -1163,6 +1180,7 @@ function TaskListComponent({
         onFilterByBackend={onFilterByBackend}
         onFilterByLabel={onFilterByLabel}
         isMergeDragging={draggingTaskId === task.id}
+        onUngroup={groupId ? (taskId) => handleEjectTab(groupId, taskId) : undefined}
       />
     );
   };
@@ -1488,7 +1506,7 @@ function TaskListComponent({
                 <div
                   role="tablist"
                   aria-label="Merged task tabs"
-                  title="Click to open · hold to rename · double-click to unmerge"
+                  title="Click to open · hold to rename · ⋯ menu → Ungroup to unmerge"
                   className="relative z-[1] -mb-px ml-2 flex flex-wrap items-end gap-0.5 pl-1"
                 >
                   {group.taskIds.map((taskId) => {
@@ -1509,7 +1527,6 @@ function TaskListComponent({
                         onPointerLeave={clearTabLongPress}
                         onPointerCancel={clearTabLongPress}
                         onClick={() => handleTabClick(group.id, taskId)}
-                        onDoubleClick={() => handleTabDoubleClick(group.id, taskId)}
                         className={`flex shrink-0 cursor-pointer select-none items-center rounded-t-[10px] border border-[var(--border-default)] px-3 py-1.5 text-xs transition-colors ${
                           isActiveTab
                             ? 'border-b-transparent bg-[var(--task-card-surface,var(--surface-panel))] font-semibold text-[var(--accent)]'
@@ -1544,7 +1561,7 @@ function TaskListComponent({
                   })}
                 </div>
                 <div data-task-tab-card-body={group.id} className="relative">
-                  {renderTaskItem(activeTask)}
+                  {renderTaskItem(activeTask, group.id)}
                   {isDropTarget ? <DropHighlight /> : null}
                 </div>
               </div>

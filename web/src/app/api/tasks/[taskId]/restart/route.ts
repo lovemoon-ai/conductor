@@ -475,6 +475,30 @@ export async function POST(
     );
   }
 
+  // Where the successor's *code* lives, as opposed to `agent_host` (where its
+  // AI runs). By default a successor keeps working on the source task's code:
+  // the source's remote worktree/workspace host (RFC 0041 global backend) or
+  // the daemon the source ran on. `code_host` naming another daemon moves the
+  // work there: the AI must then run on that same daemon, and the successor
+  // starts from that daemon's own project path (or a fresh workspace).
+  const requestedCodeHost = normalizeOptionalString(normalizedBody.code_host ?? normalizedBody.codeHost);
+  const sourceCodeHost =
+    parseRemoteWorktreeLaunchConfig(sourceLaunchConfig)?.host ??
+    parseRemoteWorkspaceLaunchConfig(sourceLaunchConfig)?.host ??
+    sourceRunHost;
+  const isCodeMoveRequest = Boolean(requestedCodeHost) && requestedCodeHost !== sourceCodeHost;
+  if (requestedCodeHost && (isRefreshSessionRequest || requestedStrategy !== "new_task")) {
+    return NextResponse.json({ error: "code_host requires strategy new_task" }, { status: 400 });
+  }
+  if (isCodeMoveRequest && requestedCodeHost !== restartAgentHost) {
+    return NextResponse.json(
+      {
+        error: `A global AI can only continue on the source task's code${sourceCodeHost ? ` (${sourceCodeHost})` : ""}; to move the work to ${requestedCodeHost}, run its AI there too`,
+      },
+      { status: 409 },
+    );
+  }
+
   const requestId = randomUUID();
   const now = new Date();
 
@@ -910,7 +934,7 @@ export async function POST(
   //      workspace dir of its own, exactly like a brand-new task; the
   //      conversation still transfers through resume_context_url.
   const isCrossDaemonOverride =
-    useAgentHostOverride && restartAgentHost !== sourceRunHost;
+    isCodeMoveRequest || (useAgentHostOverride && restartAgentHost !== sourceRunHost);
   const sourceCwd = normalizeOptionalString(sourceLaunchConfig?.cwd);
   const successorCwd = sourceCwd ?? projectWorkspacePath ?? null;
   // A remote worktree (RFC 0038) describes another machine, so it survives a
@@ -923,7 +947,7 @@ export async function POST(
   // (RFC 0041). Falls back to the target's own path when that is not possible
   // (source daemon offline, old CLI, shared daemon).
   const crossDaemonRemoteBinding =
-    isCrossDaemonOverride && !sourceRemoteWorktree && !sourceRemoteWorkspace
+    isCrossDaemonOverride && !isCodeMoveRequest && !sourceRemoteWorktree && !sourceRemoteWorkspace
       ? await resolveCrossDaemonRemoteBinding({
           userId: user.id,
           tokenScope: user.tokenScope ?? null,
@@ -949,7 +973,11 @@ export async function POST(
       : isCrossDaemonOverride && !sourceRemoteWorktree && sourceRemoteWorkspace?.host === restartAgentHost
         ? { cwd: sourceRemoteWorkspace.workspacePath }
         : null;
-  const successorLaunchConfig: JsonObject = isCrossDaemonOverride
+  const successorLaunchConfig: JsonObject = isCodeMoveRequest
+    // The work moves to the AI's own daemon: nothing from the source machine
+    // (local paths or remote bindings) applies there.
+    ? {}
+    : isCrossDaemonOverride
     ? homecomingLaunchConfig ??
       (sourceRemoteWorktree
         ? { remoteWorktree: sourceRemoteWorktree }
@@ -962,7 +990,7 @@ export async function POST(
       };
   if (crossDaemonRemoteBinding) {
     successorMetadata.globalBackend = { host: restartAgentHost, backend: targetBackend };
-  } else if (homecomingLaunchConfig) {
+  } else if (homecomingLaunchConfig || isCodeMoveRequest) {
     delete successorMetadata.globalBackend;
   }
   // A successor whose code lives on another daemon gets the same operating

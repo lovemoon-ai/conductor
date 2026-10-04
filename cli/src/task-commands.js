@@ -102,6 +102,10 @@ export async function handleRestart(argv, deps) {
   if (trimmed(argv.backend)) body.backend_type = trimmed(argv.backend);
   if (argv.refreshSession) body.restart_mode = "refresh_session";
   if (trimmed(argv.daemonHost)) body.agent_host = trimmed(argv.daemonHost);
+  if (trimmed(argv.codeHost)) {
+    if (argv.strategy !== "new_task") throw argsError("--code-host requires --strategy new_task");
+    body.code_host = trimmed(argv.codeHost);
+  }
   if (trimmed(argv.firstMessage)) {
     if (argv.strategy !== "new_task") throw argsError("--first-message requires --strategy new_task");
     body.first_message = trimmed(argv.firstMessage);

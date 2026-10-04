@@ -156,6 +156,28 @@ describe('TaskItem', () => {
     expect(pushMock).not.toHaveBeenCalled();
   });
 
+  it('offers Ungroup in the actions menu only for a task inside a tab group', () => {
+    const task = { id: 'task-grouped', title: 'Grouped', status: 'killed' as const, projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null };
+    const { rerender } = render(<TaskItem
+      task={task}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.queryByRole('button', { name: 'Ungroup task' })).not.toBeInTheDocument();
+
+    const onUngroup = vi.fn();
+    rerender(<TaskItem
+      task={task}
+      isUnread={false} isSelected={false} selectionMode={false} onToggleSelect={() => {}}
+      onUngroup={onUngroup}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ungroup task' }));
+    expect(onUngroup).toHaveBeenCalledWith('task-grouped');
+    // The menu closes after ungrouping, and nothing navigates.
+    expect(screen.queryByRole('button', { name: 'Delete task' })).not.toBeInTheDocument();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
   it('does not reveal actions when the card is swiped sideways', () => {
     render(<TaskItem
       task={{ id: 'task-no-swipe', title: 'Stay put', status: 'killed', projectId: null, createdAt: FIXED_DATE.toISOString(), updatedAt: null }}
