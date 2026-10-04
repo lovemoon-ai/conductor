@@ -453,6 +453,12 @@ export interface RestartTaskInput {
   restartMode?: "refresh_session";
   /** Explicit daemon override for the new_task path (`agent_host`). */
   agentHost?: string;
+  /**
+   * new_task only (`code_host`): the daemon holding the successor's code.
+   * Omitted = the source task's code. Another daemon moves the work there and
+   * must equal `agentHost`.
+   */
+  codeHost?: string;
   /** new_task only: replaces the default "resume from the source transcript" first message. */
   firstMessage?: string;
 }

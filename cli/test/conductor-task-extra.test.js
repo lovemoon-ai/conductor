@@ -75,6 +75,22 @@ describe("conductor task lifecycle verbs", () => {
     assert.deepEqual(calls[0].body, { restart_mode: "refresh_session" });
   });
 
+  it("restart --code-host sends code_host with new_task", async () => {
+    const { code, calls } = await runWithFetch(
+      main,
+      ["restart", "t1", "--strategy", "new_task", "--daemon-host", "l20", "--code-host", "l20"],
+      { "POST /api/tasks/t1/restart": { mode: "new_task", task: { id: "t2", status: "init", title: "Fix" } } },
+    );
+    assert.equal(code, 0);
+    assert.deepEqual(calls[0].body, { strategy: "new_task", agent_host: "l20", code_host: "l20" });
+  });
+
+  it("restart --code-host without new_task is an args error", async () => {
+    const { code, calls } = await runWithFetch(main, ["restart", "t1", "--code-host", "l20"], {});
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
+  });
+
   it("restart --first-message without new_task is an args error", async () => {
     const { code, calls } = await runWithFetch(main, ["restart", "t1", "--first-message", "hi"], {});
     assert.equal(code, 2);

@@ -42,6 +42,21 @@ vi.mock('../store', () => ({
     selector({ restartTask: restartTaskMock }),
 }));
 
+let globalBackendsState = {
+  backends: [] as Array<{ host: string; backend: string }>,
+  hydrated: true,
+  hydrate: vi.fn(async () => {}),
+};
+
+vi.mock('@/features/user-preferences/global-ai-backends', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/user-preferences/global-ai-backends')>();
+  return {
+    ...actual,
+    useGlobalAiBackendsStore: (selector: (state: typeof globalBackendsState) => unknown) =>
+      selector(globalBackendsState),
+  };
+});
+
 vi.mock('@/components/common/FeedbackProvider', () => ({
   useToast: () => ({
     pushToast: pushToastMock,
@@ -61,6 +76,7 @@ describe('RestartTaskControls', () => {
     projectsState = {
       projects: [],
     };
+    globalBackendsState = { backends: [], hydrated: true, hydrate: vi.fn(async () => {}) };
     pushMock.mockReset();
     replaceMock.mockReset();
     restartTaskMock.mockReset();
@@ -315,6 +331,7 @@ describe('RestartTaskControls', () => {
         backendType: 'codex',
         strategy: 'new_task',
         agentHost: 'daemon-2',
+        codeHost: 'daemon-2',
       });
     });
   });
@@ -499,6 +516,7 @@ describe('RestartTaskControls', () => {
         backendType: 'codex',
         strategy: 'new_task',
         agentHost: 'daemon-1',
+        codeHost: 'daemon-1',
       });
     });
   });
@@ -718,6 +736,7 @@ describe('RestartTaskControls', () => {
         backendType: 'claude',
         strategy: 'new_task',
         agentHost: 'daemon-2',
+        codeHost: 'daemon-2',
       });
     });
   });
@@ -815,6 +834,7 @@ describe('RestartTaskControls', () => {
         backendType: 'codex',
         strategy: 'new_task',
         agentHost: 'daemon-2',
+        codeHost: 'daemon-2',
       });
     });
   });
@@ -868,6 +888,7 @@ describe('RestartTaskControls', () => {
         backendType: 'codex',
         strategy: 'new_task',
         agentHost: 'daemon-b',
+        codeHost: 'daemon-b',
       });
     });
   });
@@ -921,6 +942,7 @@ describe('RestartTaskControls', () => {
         backendType: 'codex',
         strategy: 'new_task',
         agentHost: 'daemon-p',
+        codeHost: 'daemon-p',
       });
     });
   });
@@ -1015,6 +1037,198 @@ describe('RestartTaskControls', () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-1');
+    });
+  });
+
+  describe('global AI in the Backend dropdown', () => {
+    const REMOTE_CAPS = ['remote_exec', 'remote_file'];
+    const GLOBAL_CAPS = ['global_backend_v1'];
+    const baseTask = {
+      id: 'task-1',
+      title: 'Stopped Task',
+      taskType: 'ai_task',
+      status: 'killed',
+      agentHost: 'daemon-1',
+      backendType: 'codex',
+      sessionId: 'sess-1',
+      createdAt: FIXED_DATE.toISOString(),
+    } as const;
+    const remoteSource = {
+      ...baseTask,
+      launchConfig: {
+        remoteWorkspace: { host: 'ubuntu', projectId: 'p-u', repoRoot: '/r', workspacePath: '/r' },
+      },
+    };
+
+    it('keeps Daemon on the code and runs the AI on the chosen global backend', async () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: REMOTE_CAPS },
+          { host: 'gpu-box', supportedBackends: ['codex', 'claude'], capabilities: GLOBAL_CAPS },
+        ],
+      };
+      globalBackendsState = {
+        ...globalBackendsState,
+        backends: [{ host: 'gpu-box', backend: 'claude' }, { host: 'daemon-1', backend: 'codex' }],
+      };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      // Daemon lists where the code lives; global AIs appear under Backend only,
+      // minus the code daemon itself.
+      expect(screen.getByLabelText('Daemon')).toHaveValue('daemon-1');
+      expect(screen.queryByRole('option', { name: /@ daemon-1/ })).not.toBeInTheDocument();
+      const globalOption = screen.getByRole('option', { name: 'claude @ gpu-box' }) as HTMLOptionElement;
+      expect(globalOption).toBeEnabled();
+
+      fireEvent.change(screen.getByLabelText('Backend'), { target: { value: globalOption.value } });
+      expect(screen.getByText(/AI runs on gpu-box and works on daemon-1/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+      await waitFor(() => {
+        expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+          backendType: 'claude',
+          strategy: 'new_task',
+          agentHost: 'gpu-box',
+        });
+      });
+    });
+
+    it('greys out a global AI when the code daemon cannot be driven remotely', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'] },
+          { host: 'gpu-box', supportedBackends: ['claude'], capabilities: GLOBAL_CAPS },
+        ],
+      };
+      globalBackendsState = { ...globalBackendsState, backends: [{ host: 'gpu-box', backend: 'claude' }] };
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      expect(
+        screen.getByRole('option', { name: /claude @ gpu-box — daemon-1 does not support conductor remote/ }),
+      ).toBeDisabled();
+    });
+
+    it('defaults a global-backend source to its code daemon and its global AI', async () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: GLOBAL_CAPS },
+          { host: 'ubuntu', supportedBackends: ['codex'], capabilities: REMOTE_CAPS },
+        ],
+      };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+      render(<RestartTaskControls open onClose={() => {}} task={remoteSource} />);
+
+      expect(screen.getByLabelText('Daemon')).toHaveValue('ubuntu');
+      expect(screen.getByRole('option', { name: 'ubuntu (current)' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Backend')).toHaveDisplayValue('codex @ daemon-1');
+
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+      await waitFor(() => {
+        // Same AI daemon as the source: no override, the server keeps the remote workspace.
+        expect(restartTaskMock).toHaveBeenCalledWith('task-1', { backendType: 'codex', strategy: 'new_task' });
+      });
+    });
+
+    it('brings a global-backend source home when a local backend of the code daemon is picked', async () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: GLOBAL_CAPS },
+          { host: 'ubuntu', supportedBackends: ['codex'], capabilities: REMOTE_CAPS },
+        ],
+      };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+      render(<RestartTaskControls open onClose={() => {}} task={remoteSource} />);
+
+      fireEvent.change(screen.getByLabelText('Backend'), { target: { value: 'codex' } });
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+      await waitFor(() => {
+        expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+          backendType: 'codex',
+          strategy: 'new_task',
+          agentHost: 'ubuntu',
+        });
+      });
+    });
+    it('moves a global-AI task to its AI daemon when the code daemon is offline', async () => {
+      agentsState = {
+        agents: [{ host: 'daemon-1', supportedBackends: ['codex'], capabilities: GLOBAL_CAPS }],
+      };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+      render(<RestartTaskControls open onClose={() => {}} task={remoteSource} />);
+
+      expect(screen.getByLabelText('Daemon')).toHaveValue('');
+      expect(screen.getByRole('button', { name: 'New task' })).toHaveAttribute(
+        'title',
+        'Code daemon ubuntu is offline — select a daemon for the new task',
+      );
+
+      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-1' } });
+      expect(screen.getByText(/different machine than the source task/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+      await waitFor(() => {
+        // daemon-1 is both where the AI ran and auto-resolution's pick, but a
+        // move always names it: the server requires code_host === agent_host.
+        expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+          backendType: 'codex',
+          strategy: 'new_task',
+          agentHost: 'daemon-1',
+          codeHost: 'daemon-1',
+        });
+      });
+    });
+
+    it('explains when a global-AI task falls back to an AI on its code daemon', () => {
+      agentsState = {
+        agents: [
+          // The source AI daemon is online but too old to drive remote code.
+          { host: 'daemon-1', supportedBackends: ['codex'] },
+          { host: 'ubuntu', supportedBackends: ['codex'], capabilities: REMOTE_CAPS },
+        ],
+      };
+
+      render(<RestartTaskControls open onClose={() => {}} task={remoteSource} />);
+
+      expect(screen.getByLabelText('Daemon')).toHaveValue('ubuntu');
+      expect(screen.getByLabelText('Backend')).toHaveValue('codex');
+      expect(screen.getByText(/source task's AI \(codex @ daemon-1\) can't take this task/)).toBeInTheDocument();
+      expect(screen.getByText(/will run on ubuntu itself/)).toBeInTheDocument();
+    });
+
+    it('points at global AI when the work is moved to another daemon', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'] },
+          { host: 'daemon-2', supportedBackends: ['codex'] },
+        ],
+      };
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-2' } });
+
+      expect(
+        screen.getByText(/choose daemon-1 here and pick that AI under Backend \(add daemon-2 under Settings → Global AI backends first\)/),
+      ).toBeInTheDocument();
+    });
+
+    it('locks the Backend picker for a task that cannot restart', () => {
+      agentsState = {
+        agents: [{ host: 'daemon-1', supportedBackends: ['codex'] }],
+      };
+
+      render(<RestartTaskControls open onClose={() => {}} task={{ ...baseTask, status: 'init' }} />);
+
+      expect(screen.getByLabelText('Backend')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'New task' })).toHaveAttribute(
+        'title',
+        'Only running or stopped tasks can restart',
+      );
     });
   });
 });

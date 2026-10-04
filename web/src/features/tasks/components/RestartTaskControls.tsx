@@ -13,6 +13,11 @@ import {
 } from '@/lib/tasks/restart';
 import { Dialog } from '@/components/common/Dialog';
 import { useToast } from '@/components/common/FeedbackProvider';
+import {
+  globalAiBackendKey,
+  useGlobalAiBackendsStore,
+  type GlobalAiBackend,
+} from '@/features/user-preferences/global-ai-backends';
 
 interface RestartTaskControlsProps {
   task: Task;
@@ -30,6 +35,39 @@ interface RestartTaskControlsProps {
 
 const isConductorFireHost = (host: string | null | undefined): boolean =>
   typeof host === 'string' && host.startsWith('conductor-fire-');
+
+const GLOBAL_OPTION_PREFIX = 'global:';
+// Advertised by a daemon that can run a global-backend task's AI (RFC 0041).
+const GLOBAL_BACKEND_CAPABILITY = 'global_backend_v1';
+
+// A daemon can hold code a global AI works on only if that AI can drive it
+// with `conductor remote exec` and `conductor remote cp`. Same predicate as the
+// Create task dialog and the API.
+const supportsRemoteWorkspace = (capabilities: string[] | undefined): boolean =>
+  Array.isArray(capabilities)
+  && ['remote_exec', 'remote_file'].every((required) =>
+    capabilities.some((capability) => capability.trim().toLowerCase() === required));
+
+const readRecord = (value: unknown): Record<string, unknown> | null => {
+  if (typeof value === 'string') {
+    try {
+      return readRecord(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+};
+
+/** Host of the source's remote worktree / workspace (RFC 0038 / 0041), if its code lives on another daemon. */
+const readRemoteCodeHost = (launchConfig: unknown): string => {
+  const config = readRecord(launchConfig);
+  for (const key of ['remoteWorktree', 'remote_worktree', 'remoteWorkspace', 'remote_workspace']) {
+    const host = readRecord(config?.[key])?.host;
+    if (typeof host === 'string' && host.trim()) return host.trim();
+  }
+  return '';
+};
 
 const isRestartableStatus = (status: Task['status']): boolean =>
   status === 'running' || status === 'completed' || status === 'killed' || status === 'unknown';
@@ -98,32 +136,47 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       : restartSourceHost && daemonOptions.includes(restartSourceHost)
         ? restartSourceHost
         : '';
+  // RFC 0041: a global-backend source keeps its code on another daemon (a
+  // remote worktree / workspace); its AI ran on `restartSourceHost`.
+  const sourceRemoteCodeHost = useMemo(() => readRemoteCodeHost(task.launchConfig), [task.launchConfig]);
+  // "Daemon" in this dialog means where the code lives, like the Create task
+  // dialog; the Backend dropdown then picks the AI — one of that daemon's own
+  // backends, or a global AI on another daemon that works on it remotely.
+  const sourceCodeHost = sourceRemoteCodeHost || restartSourceHost;
+  const isGlobalBackendSource = Boolean(sourceRemoteCodeHost) && sourceRemoteCodeHost !== restartSourceHost;
+  const defaultCodeHost = sourceRemoteCodeHost
+    ? (daemonOptions.includes(sourceRemoteCodeHost) ? sourceRemoteCodeHost : '')
+    : autoResolvedDaemonHost;
   const effectiveSelectedDaemonHost =
     selectedDaemonHost && daemonOptions.includes(selectedDaemonHost)
       ? selectedDaemonHost
-      : autoResolvedDaemonHost;
-  const isCrossDaemonSelection = Boolean(
-    effectiveSelectedDaemonHost && effectiveSelectedDaemonHost !== restartSourceHost,
-  );
+      : defaultCodeHost;
+  // Picking a daemon other than the one holding the source task's code moves
+  // the work there: its AI runs on it too and starts from its own project copy.
+  const isCodeMove = Boolean(effectiveSelectedDaemonHost && effectiveSelectedDaemonHost !== sourceCodeHost);
+
+  const globalBackends = useGlobalAiBackendsStore((state) => state.backends);
+  const globalBackendsHydrated = useGlobalAiBackendsStore((state) => state.hydrated);
+  const hydrateGlobalBackends = useGlobalAiBackendsStore((state) => state.hydrate);
+  useEffect(() => {
+    if (open && !globalBackendsHydrated) void hydrateGlobalBackends();
+  }, [open, globalBackendsHydrated, hydrateGlobalBackends]);
 
   // A stale explicit choice must not silently survive a close/reopen.
   useEffect(() => {
     if (open) {
       setSelectedDaemonHost('');
+      setSelectedBackend('');
       setFirstMessage('');
     }
   }, [open]);
-  const selectedAgent = useMemo(
+  const codeAgent = useMemo(
     () => agents.find((agent) => agent.host === effectiveSelectedDaemonHost) ?? null,
     [agents, effectiveSelectedDaemonHost],
   );
-  // Older daemons ignore a custom first message, so the field is only live for
-  // daemons that advertise it; the server rejects it otherwise.
-  const supportsFirstMessage = Boolean(selectedAgent?.capabilities?.includes(RESTART_FIRST_MESSAGE_CAPABILITY));
-  const effectiveFirstMessage = supportsFirstMessage ? firstMessage.trim() : '';
   const supportedBackends = useMemo(
-    () => (Array.isArray(selectedAgent?.supportedBackends) ? selectedAgent.supportedBackends : []),
-    [selectedAgent],
+    () => (Array.isArray(codeAgent?.supportedBackends) ? codeAgent.supportedBackends : []),
+    [codeAgent],
   );
   const backendOptions = useMemo(
     () => getCompatibleRestartBackends(currentBackend, supportedBackends),
@@ -131,7 +184,66 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   );
   const currentBackendSupported = currentBackend ? backendOptions.includes(currentBackend) : false;
 
-  const defaultBackend = useMemo(() => {
+  // Global AIs from settings, minus the code daemon itself (its backends are
+  // already listed). A global-backend source's own AI is always offered so the
+  // successor can stay where it was even if settings changed since.
+  const globalBackendOptions = useMemo(() => {
+    const entries: GlobalAiBackend[] = [...globalBackends];
+    if (isGlobalBackendSource && restartSourceHost && currentBackend) {
+      const sourceEntry = { host: restartSourceHost, backend: currentBackend };
+      if (!entries.some((entry) => globalAiBackendKey(entry) === globalAiBackendKey(sourceEntry))) {
+        entries.unshift(sourceEntry);
+      }
+    }
+    return entries
+      .filter((entry) => entry.host !== effectiveSelectedDaemonHost && !isConductorFireHost(entry.host))
+      .map((entry) => {
+        const aiAgent = agents.find((agent) => agent.host === entry.host && !agent.shared) ?? null;
+        const aiBackends = Array.isArray(aiAgent?.supportedBackends) ? aiAgent.supportedBackends : [];
+        const disabledReason = !effectiveSelectedDaemonHost
+          ? 'select a daemon first'
+          : isCodeMove
+            ? `a global AI continues on the source task's code — pick ${sourceCodeHost || 'its daemon'}`
+            : !aiAgent
+              ? `${entry.host} is offline`
+              : !getCompatibleRestartBackends(currentBackend, aiBackends).includes(entry.backend)
+                ? `${entry.backend} is not available on ${entry.host}`
+                : !(aiAgent.capabilities ?? []).includes(GLOBAL_BACKEND_CAPABILITY)
+                  ? `upgrade conductor on ${entry.host} to use it as a global backend`
+                  : !supportsRemoteWorkspace(codeAgent?.capabilities)
+                    ? `${effectiveSelectedDaemonHost} does not support conductor remote; upgrade its daemon`
+                    : null;
+        return {
+          value: `${GLOBAL_OPTION_PREFIX}${globalAiBackendKey(entry)}`,
+          entry,
+          label: `${entry.backend} @ ${entry.host}`,
+          disabledReason,
+        };
+      });
+  }, [
+    agents,
+    codeAgent,
+    currentBackend,
+    effectiveSelectedDaemonHost,
+    globalBackends,
+    isCodeMove,
+    isGlobalBackendSource,
+    restartSourceHost,
+    sourceCodeHost,
+  ]);
+  const enabledGlobalOptions = useMemo(
+    () => globalBackendOptions.filter((option) => !option.disabledReason),
+    [globalBackendOptions],
+  );
+
+  const defaultBackendValue = useMemo(() => {
+    // A global-backend source keeps its AI where it ran by default.
+    if (isGlobalBackendSource) {
+      const sourceOption = enabledGlobalOptions.find(
+        (option) => option.entry.host === restartSourceHost && option.entry.backend === currentBackend,
+      );
+      if (sourceOption) return sourceOption.value;
+    }
     if (currentBackendSupported) {
       return currentBackend;
     }
@@ -139,13 +251,45 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       return backendOptions[0] || '';
     }
     return currentBackend;
-  }, [backendOptions, currentBackend, currentBackendSupported]);
-  const effectiveSelectedBackend =
-    selectedBackend && backendOptions.includes(selectedBackend)
+  }, [
+    backendOptions,
+    currentBackend,
+    currentBackendSupported,
+    enabledGlobalOptions,
+    isGlobalBackendSource,
+    restartSourceHost,
+  ]);
+  // A global-backend source whose AI daemon cannot take the successor (offline,
+  // too old, backend gone) falls back to the code daemon's own backends; say so
+  // instead of silently moving the AI.
+  const unavailableSourceAiOption = isGlobalBackendSource && !isCodeMove
+    ? globalBackendOptions.find(
+      (option) => option.entry.host === restartSourceHost
+        && option.entry.backend === currentBackend
+        && option.disabledReason,
+    ) ?? null
+    : null;
+  const effectiveBackendValue =
+    selectedBackend && (backendOptions.includes(selectedBackend)
+      || enabledGlobalOptions.some((option) => option.value === selectedBackend))
       ? selectedBackend
-      : defaultBackend;
+      : defaultBackendValue;
+  const selectedGlobalBackend =
+    enabledGlobalOptions.find((option) => option.value === effectiveBackendValue) ?? null;
+  const effectiveSelectedBackend = selectedGlobalBackend ? selectedGlobalBackend.entry.backend : effectiveBackendValue;
+  // The daemon the successor's AI runs on.
+  const aiHost = selectedGlobalBackend ? selectedGlobalBackend.entry.host : effectiveSelectedDaemonHost;
+  const selectedAgent = useMemo(
+    () => agents.find((agent) => agent.host === aiHost) ?? null,
+    [agents, aiHost],
+  );
+  // Older daemons ignore a custom first message, so the field is only live for
+  // daemons that advertise it; the server rejects it otherwise.
+  const supportsFirstMessage = Boolean(selectedAgent?.capabilities?.includes(RESTART_FIRST_MESSAGE_CAPABILITY));
+  const effectiveFirstMessage = supportsFirstMessage ? firstMessage.trim() : '';
 
-  const disabledReason = useMemo(() => {
+  // Reasons that no daemon/backend choice can fix; they lock the pickers too.
+  const taskIneligibleReason = useMemo(() => {
     if ((task.taskType ?? 'ai_task') !== 'ai_task') {
       return 'Only AI tasks support restart';
     }
@@ -161,11 +305,21 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     if (!isRestartableStatus(task.status)) {
       return 'Only running or stopped tasks can restart';
     }
+    return null;
+  }, [currentBackend, sourceAgentHost, task.sessionId, task.status, task.taskType]);
+
+  const disabledReason = useMemo(() => {
+    if (taskIneligibleReason) {
+      return taskIneligibleReason;
+    }
     // Note: Fire tasks can always create new tasks; in-place restart is handled by the backend based on strategy
     if (daemonOptions.length === 0) {
       return 'No daemon online';
     }
-    if (!selectedAgent) {
+    if (!codeAgent) {
+      if (sourceRemoteCodeHost && !daemonOptions.includes(sourceRemoteCodeHost)) {
+        return `Code daemon ${sourceRemoteCodeHost} is offline — select a daemon for the new task`;
+      }
       if (projectDaemonCandidate && !daemonOptions.includes(projectDaemonCandidate)) {
         return `Project daemon ${projectDaemonCandidate} is offline — select a daemon to run the new task`;
       }
@@ -173,10 +327,10 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
         ? `Source daemon ${restartSourceHost} is offline — select a daemon to run the new task`
         : 'Select a daemon to run the new task';
     }
-    if (backendOptions.length === 0) {
+    if (backendOptions.length === 0 && enabledGlobalOptions.length === 0) {
       return 'No compatible backend available on the selected daemon';
     }
-    if (!effectiveSelectedBackend) {
+    if (!effectiveSelectedBackend || !selectedAgent) {
       return 'Select a backend first';
     }
     if (!canCreateSuccessorTask(currentBackend, effectiveSelectedBackend)) {
@@ -185,16 +339,17 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     return null;
   }, [
     backendOptions.length,
+    codeAgent,
     currentBackend,
     daemonOptions,
     effectiveSelectedBackend,
+    enabledGlobalOptions.length,
     projectDaemonCandidate,
     restartSourceHost,
     selectedAgent,
     sourceAgentHost,
-    task.sessionId,
-    task.status,
-    task.taskType,
+    sourceRemoteCodeHost,
+    taskIneligibleReason,
   ]);
 
   const navigateToTask = (nextTaskId: string) => {
@@ -222,18 +377,22 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       // dispatches to exactly what the UI shows, and any target other than
       // the source machine goes through the cross-daemon path-drop guard
       // (making the warning below always truthful).
+      // A move always names the AI daemon too: the server requires
+      // code_host === agent_host for it.
       const agentHostOverride =
-        effectiveSelectedDaemonHost &&
-        !(
-          effectiveSelectedDaemonHost === autoResolvedDaemonHost &&
-          effectiveSelectedDaemonHost === restartSourceHost
-        )
-          ? effectiveSelectedDaemonHost
+        aiHost &&
+        (isCodeMove || !(
+          aiHost === autoResolvedDaemonHost &&
+          aiHost === restartSourceHost
+        ))
+          ? aiHost
           : undefined;
       const result = await restartTask(task.id, {
         backendType: effectiveSelectedBackend,
         strategy: 'new_task',
         ...(agentHostOverride ? { agentHost: agentHostOverride } : {}),
+        // Only a move needs it: by default the server keeps the source's code.
+        ...(isCodeMove ? { codeHost: effectiveSelectedDaemonHost } : {}),
         ...(effectiveFirstMessage ? { firstMessage: effectiveFirstMessage } : {}),
       });
       if (onCreatedTask) {
@@ -279,16 +438,22 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             ) : null}
             {daemonOptions.map((host) => (
               <option key={host} value={host}>
-                {host === restartSourceHost ? `${host} (current)` : host}
+                {host === sourceCodeHost ? `${host} (current)` : host}
               </option>
             ))}
             {!daemonOptions.length ? <option value="">No daemon online</option> : null}
           </select>
-          {isCrossDaemonSelection ? (
+          <p className="text-xs text-muted">
+            Where the code lives. To run the AI on another daemon, keep this and pick a global AI under Backend.
+          </p>
+          {isCodeMove ? (
             <p className="text-xs text-muted">
-              The AI runs on a different machine than the source task and keeps working on the source task&apos;s files
-              through remote tools when both daemons support it; otherwise it starts from that daemon&apos;s own project
-              path, or a fresh workspace.
+              The work moves to a different machine than the source task: the new task runs on{' '}
+              {effectiveSelectedDaemonHost} and starts from its own copy of the project (or a fresh workspace), not the
+              source task&apos;s files. The conversation carries over.{' '}
+              {sourceCodeHost
+                ? `To keep working on the source files with an AI on ${effectiveSelectedDaemonHost} instead, choose ${sourceCodeHost} here and pick that AI under Backend${globalBackends.some((entry) => entry.host === effectiveSelectedDaemonHost) ? '' : ` (add ${effectiveSelectedDaemonHost} under Settings → Global AI backends first)`}.`
+                : null}
             </p>
           ) : null}
         </div>
@@ -299,9 +464,9 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
           </label>
           <select
             id={`restart-backend-${task.id}`}
-            value={effectiveSelectedBackend}
+            value={effectiveBackendValue}
             onChange={(event) => setSelectedBackend(event.target.value)}
-            disabled={Boolean(disabledReason) || isSubmitting}
+            disabled={Boolean(taskIneligibleReason) || !codeAgent || isSubmitting}
             className="w-full rounded-xl border border-border bg-paper px-3 py-2 text-sm text-ink disabled:cursor-not-allowed disabled:opacity-60"
           >
             {backendOptions.map((backend) => (
@@ -309,8 +474,36 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
                 {backend}
               </option>
             ))}
-            {!backendOptions.length && currentBackend ? <option value={currentBackend}>{currentBackend}</option> : null}
+            {!backendOptions.length && currentBackend && !selectedGlobalBackend ? (
+              <option value={currentBackend}>{currentBackend}</option>
+            ) : null}
+            {globalBackendOptions.length > 0 ? (
+              <optgroup label="Global">
+                {globalBackendOptions.map((option) => (
+                  <option
+                    key={option.value}
+                    value={option.value}
+                    disabled={Boolean(option.disabledReason)}
+                    title={option.disabledReason ?? undefined}
+                  >
+                    {option.disabledReason ? `${option.label} — ${option.disabledReason}` : option.label}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
+          {selectedGlobalBackend ? (
+            <p className="text-xs text-muted">
+              AI runs on {selectedGlobalBackend.entry.host} and works on {effectiveSelectedDaemonHost} through conductor
+              remote.
+            </p>
+          ) : unavailableSourceAiOption && effectiveSelectedDaemonHost ? (
+            <p className="text-xs text-muted">
+              The source task&apos;s AI ({unavailableSourceAiOption.label}) can&apos;t take this task:{' '}
+              {unavailableSourceAiOption.disabledReason}. The new task&apos;s AI will run on {effectiveSelectedDaemonHost}{' '}
+              itself.
+            </p>
+          ) : null}
         </div>
 
         <div className="space-y-2">

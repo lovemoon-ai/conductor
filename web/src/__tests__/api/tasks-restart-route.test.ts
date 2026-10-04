@@ -459,6 +459,58 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect(initial).toContain(lastPayload().resume_context_url);
     });
 
+    it("code_host on the AI daemon moves the work there instead of binding the source remotely", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/project/app",
+        repoRoot: "/repo/project",
+      } as any);
+
+      const response = await restartOn({ code_host: "daemon-2" });
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-2");
+      // No source paths and no remote binding: daemon-2 resolves its own path.
+      expect(lastCreate().data.launchConfig ?? null).toBeNull();
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
+    });
+
+    it("code_host equal to the source daemon keeps the global-AI remote binding", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.project.findFirst).mockResolvedValue({
+        id: "proj-1",
+        userId: "user-1",
+        daemonHost: "daemon-1",
+        workspacePath: "/repo/project/app",
+        repoRoot: "/repo/project",
+      } as any);
+
+      const response = await restartOn({ code_host: "daemon-1" });
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-2");
+      expect(JSON.parse(lastCreate().data.launchConfig).remoteWorkspace.host).toBe("daemon-1");
+    });
+
+    it("rejects code_host on a third daemon the AI does not run on", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        ...agents(),
+        { id: "agent-3", host: "daemon-3", supportedBackends: ["codex"], capabilities: TARGET_CAPS },
+      ] as any);
+
+      const response = await restartOn({ code_host: "daemon-3" });
+
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body.error).toMatch(/^code_host must equal agent_host to move the work to daemon-3/);
+      // An ordinary local task: no "global AI" wording.
+      expect(body.error).not.toMatch(/global AI/);
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
     it("wraps a user-set first message and co-owns a source worktree as a remote worktree", async () => {
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
       vi.mocked(db.task.findFirst).mockResolvedValue(

@@ -10,7 +10,14 @@ import {
 type TaskCardGroupsSyncState = {
   ownerUserId: string | null;
   snapshot: TaskCardGroupsSyncSnapshot;
+  /** The first load attempt finished (successfully or not). */
   hydrated: boolean;
+  /**
+   * `snapshot` reflects the server: a GET or PATCH succeeded, or a realtime
+   * snapshot arrived. Stays false after a failed load, whose empty snapshot
+   * must never be mistaken for "the server has no groups".
+   */
+  serverLoaded: boolean;
   loading: boolean;
   error: string | null;
   hydrate: (userId: string) => Promise<void>;
@@ -32,6 +39,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
   ownerUserId: null,
   snapshot: emptySnapshot(),
   hydrated: false,
+  serverLoaded: false,
   loading: false,
   error: null,
 
@@ -39,7 +47,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
     if (get().ownerUserId !== userId) {
       mutationSequence += 1;
       storeGeneration += 1;
-      set({ ownerUserId: userId, snapshot: emptySnapshot(), hydrated: false, loading: false, error: null });
+      set({ ownerUserId: userId, snapshot: emptySnapshot(), hydrated: false, serverLoaded: false, loading: false, error: null });
     }
     const sequenceAtStart = mutationSequence;
     const generationAtStart = storeGeneration;
@@ -53,6 +61,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
         return {
           snapshot: mutationSequence === sequenceAtStart ? snapshot : state.snapshot,
           hydrated: true,
+          serverLoaded: true,
           loading: false,
           error: null,
         };
@@ -68,7 +77,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
     if (get().ownerUserId !== userId) {
       mutationSequence += 1;
       storeGeneration += 1;
-      set({ ownerUserId: userId, snapshot: emptySnapshot(), hydrated: false, loading: false, error: null });
+      set({ ownerUserId: userId, snapshot: emptySnapshot(), hydrated: false, serverLoaded: false, loading: false, error: null });
     }
     mutationSequence += 1;
     const generationAtStart = storeGeneration;
@@ -83,6 +92,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
       set((state) => ({
         snapshot: snapshot.revision >= state.snapshot.revision ? snapshot : state.snapshot,
         hydrated: true,
+        serverLoaded: true,
         loading: false,
         error: null,
       }));
@@ -105,6 +115,7 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
         ownerUserId: userId ?? state.ownerUserId,
         snapshot,
         hydrated: true,
+        serverLoaded: true,
         loading: false,
         error: null,
       };
@@ -114,6 +125,6 @@ export const useTaskCardGroupsSyncStore = create<TaskCardGroupsSyncState>()((set
   reset: () => {
     mutationSequence += 1;
     storeGeneration += 1;
-    set({ ownerUserId: null, snapshot: emptySnapshot(), hydrated: false, loading: false, error: null });
+    set({ ownerUserId: null, snapshot: emptySnapshot(), hydrated: false, serverLoaded: false, loading: false, error: null });
   },
 }));

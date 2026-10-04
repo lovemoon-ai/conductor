@@ -37,6 +37,7 @@ let authState: { session: { user: { id: string } } | null };
 let taskCardGroupsSyncState: {
   snapshot: { version: 1; revision: number; scopes: Record<string, unknown[]> };
   hydrated: boolean;
+  serverLoaded: boolean;
   hydrate: typeof hydrateTaskCardGroupsMock;
   saveScope: typeof saveTaskCardGroupsScopeMock;
 };
@@ -111,6 +112,7 @@ vi.mock('./TaskItem', () => ({
     projectName?: string | null;
     projectDaemonHost?: string | null;
     onToggleSelect?: (taskId: string) => void;
+    onUngroup?: (taskId: string) => void;
   }) => {
     taskItemMock(props);
     return (
@@ -121,6 +123,13 @@ vi.mock('./TaskItem', () => ({
           aria-label={`Select ${props.task.title}`}
           onClick={() => props.onToggleSelect?.(props.task.id)}
         />
+        {props.onUngroup ? (
+          <button
+            type="button"
+            aria-label={`Ungroup ${props.task.title}`}
+            onClick={() => props.onUngroup?.(props.task.id)}
+          />
+        ) : null}
       </div>
     );
   },
@@ -164,6 +173,7 @@ describe('TaskList', () => {
     taskCardGroupsSyncState = {
       snapshot: { version: 1, revision: 0, scopes: {} },
       hydrated: false,
+      serverLoaded: false,
       hydrate: hydrateTaskCardGroupsMock,
       saveScope: saveTaskCardGroupsScopeMock,
     };
@@ -1024,7 +1034,7 @@ describe('TaskList', () => {
       }
     });
 
-    it('renames a tab via long-press and unmerges via double-click', () => {
+    it('renames a tab via long-press and unmerges via the ⋯ menu Ungroup action', () => {
       vi.useFakeTimers();
       try {
         render(<TaskList viewMode="list" projectFilter={null} />);
@@ -1046,8 +1056,14 @@ describe('TaskList', () => {
         fireEvent.keyDown(input, { key: 'Enter' });
         expect(tabCard.querySelector('[data-task-tab="task-2"]')?.textContent).toContain('Design');
 
-        // Double-click a tab → unmerge; only one tab remains → the card dissolves.
+        // Double-clicking a tab no longer unmerges (too easy to hit by accident).
         fireEvent.doubleClick(tabCard.querySelector('[data-task-tab="task-1"]') as HTMLElement);
+        expect(document.querySelector('[data-task-tab-card]')).not.toBeNull();
+
+        // Ungroup from the active card's ⋯ menu → only one tab remains → the card dissolves.
+        const ungroupButton = tabCard.querySelector('button[aria-label^="Ungroup "]') as HTMLElement;
+        expect(ungroupButton).not.toBeNull();
+        fireEvent.click(ungroupButton);
         expect(document.querySelector('[data-task-tab-card]')).toBeNull();
         expect(document.querySelector('[data-task-item-wrapper="task-1"]')).not.toBeNull();
         expect(document.querySelector('[data-task-item-wrapper="task-2"]')).not.toBeNull();
@@ -1078,6 +1094,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: {
           version: 1,
           revision: 4,
@@ -1105,11 +1122,155 @@ describe('TaskList', () => {
       )).toContain('remote-group');
     });
 
+    it('does not upload the local cache before the server snapshot is hydrated', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      // Fresh page load on a second device: the sync store has not fetched the
+      // server snapshot yet and this browser's cache is stale (a card the user
+      // already dissolved, or nothing at all). Pushing it now would overwrite
+      // the groups made on the other device.
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: false,
+        snapshot: { version: 1, revision: 0, scopes: {} },
+      };
+      window.localStorage.setItem(
+        'conductor:task-list-groups:v2:user-1:projects%3Aall',
+        JSON.stringify([{
+          id: 'stale-group',
+          taskIds: ['task-1', 'task-2'],
+          activeIndex: 0,
+          labels: {},
+        }]),
+      );
+
+      const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card="stale-group"]')).not.toBeNull();
+      });
+      expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+      // Hydration lands: the server is authoritative and already dissolved it.
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+        serverLoaded: true,
+        snapshot: { version: 1, revision: 9, scopes: { 'projects:all': [] } },
+      };
+      // TaskList is memoized; a fresh callback prop forces it to re-read the
+      // (mocked) sync store, as a real store subscription would.
+      rerender(<TaskList viewMode="list" projectFilter={null} onOpenTask={() => undefined} />);
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+      });
+      expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+    });
+
+    it('does not upload the local cache when loading the server groups fails', async () => {
+      vi.useFakeTimers();
+      try {
+        authState = { session: { user: { id: 'user-1' } } };
+        // The GET failed: the store reports the load finished (hydrated) but
+        // never read the server, so its snapshot is just the empty default.
+        taskCardGroupsSyncState = {
+          ...taskCardGroupsSyncState,
+          hydrated: true,
+          serverLoaded: false,
+          snapshot: { version: 1, revision: 0, scopes: {} },
+        };
+        window.localStorage.setItem(
+          'conductor:task-list-groups:v2:user-1:projects%3Aall',
+          JSON.stringify([{ id: 'stale-group', taskIds: ['task-1', 'task-2'], activeIndex: 0, labels: {} }]),
+        );
+
+        const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        // The cached card still renders locally, but nothing is pushed to the
+        // server, neither by the legacy migration nor by the save effect.
+        expect(document.querySelector('[data-task-tab-card="stale-group"]')).not.toBeNull();
+        expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+        // A local edit made meanwhile stays local too.
+        const tabCard = document.querySelector('[data-task-tab-card]') as HTMLElement;
+        fireEvent.click(tabCard.querySelector('button[aria-label^="Ungroup "]') as HTMLElement);
+        expect(document.querySelector('[data-task-tab-card]')).toBeNull();
+        expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+        // The load is retried every 15 s, also after a retry fails again
+        // (the mock leaves serverLoaded false, i.e. every retry fails).
+        hydrateTaskCardGroupsMock.mockClear();
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(1);
+        expect(hydrateTaskCardGroupsMock).toHaveBeenLastCalledWith('user-1');
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(2);
+        act(() => {
+          vi.advanceTimersByTime(15_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(3);
+
+        // Once a load succeeds the retries stop.
+        taskCardGroupsSyncState = {
+          ...taskCardGroupsSyncState,
+          serverLoaded: true,
+          snapshot: { version: 1, revision: 5, scopes: { 'projects:all': [] } },
+        };
+        rerender(<TaskList viewMode="list" projectFilter={null} onOpenTask={() => undefined} />);
+        act(() => {
+          vi.advanceTimersByTime(45_000);
+        });
+        expect(hydrateTaskCardGroupsMock).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not overwrite server groups with an empty local cache on load', async () => {
+      authState = { session: { user: { id: 'user-1' } } };
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: false,
+        snapshot: { version: 1, revision: 0, scopes: {} },
+      };
+      window.localStorage.setItem('conductor:task-list-groups:v2:user-1:projects%3Aall', '[]');
+
+      const { rerender } = render(<TaskList viewMode="list" projectFilter={null} />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+
+      taskCardGroupsSyncState = {
+        ...taskCardGroupsSyncState,
+        hydrated: true,
+        serverLoaded: true,
+        snapshot: {
+          version: 1,
+          revision: 12,
+          scopes: { 'projects:all': [{ id: 'remote-group', taskIds: ['task-1', 'task-2'], labels: {} }] },
+        },
+      };
+      // TaskList is memoized; a fresh callback prop forces it to re-read the
+      // (mocked) sync store, as a real store subscription would.
+      rerender(<TaskList viewMode="list" projectFilter={null} onOpenTask={() => undefined} />);
+      await waitFor(() => {
+        expect(document.querySelector('[data-task-tab-card="remote-group"]')).not.toBeNull();
+      });
+      expect(saveTaskCardGroupsScopeMock).not.toHaveBeenCalled();
+    });
+
     it('surfaces a card merged under a specific project in the all-tasks view', async () => {
       authState = { session: { user: { id: 'user-1' } } };
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: {
           version: 1,
           revision: 6,
@@ -1143,6 +1304,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
         snapshot: { version: 1, revision: 2, scopes: { 'projects:project-1': [] } },
       };
       window.localStorage.setItem(
@@ -1174,6 +1336,7 @@ describe('TaskList', () => {
       taskCardGroupsSyncState = {
         ...taskCardGroupsSyncState,
         hydrated: true,
+        serverLoaded: true,
       };
       const legacyKey = 'conductor:task-list-groups:v1:projects%3Aall';
       window.localStorage.setItem(legacyKey, JSON.stringify([{

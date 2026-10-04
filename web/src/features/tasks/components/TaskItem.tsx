@@ -68,6 +68,11 @@ interface TaskItemProps {
   onFilterByLabel?: (labelId: string) => void;
   /** Parent merge drag owns the gesture; close this card's actions menu. */
   isMergeDragging?: boolean;
+  /**
+   * Set when this card is shown inside a merged tab group: the ⋯ actions menu
+   * offers an "Ungroup" button that pulls this task back out of the group.
+   */
+  onUngroup?: (taskId: string) => void;
 }
 
 interface ShareDialogState {
@@ -388,6 +393,14 @@ const MoveToProjectIcon = () => (
   </svg>
 );
 
+const UngroupIcon = () => (
+  <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <rect x="3" y="4" width="8" height="8" rx="1.5" strokeWidth={2} />
+    <rect x="13" y="12" width="8" height="8" rx="1.5" strokeWidth={2} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 4h6a2 2 0 012 2v3M11 20H5a2 2 0 01-2-2v-3" />
+  </svg>
+);
+
 const TerminalIcon = () => (
   <svg className="size-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <rect x="3" y="5" width="18" height="14" rx="2" strokeWidth={2} />
@@ -421,6 +434,7 @@ function TaskItemComponent({
   onFilterByBackend,
   onFilterByLabel,
   isMergeDragging = false,
+  onUngroup,
 }: TaskItemProps) {
   const { push } = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -573,7 +587,8 @@ function TaskItemComponent({
     (showPinAction ? 1 : 0) +
     (showRestartAction ? 1 : 0) +
     (showShareAction ? 1 : 0) +
-    (showAttachedTerminalAction ? 1 : 0);
+    (showAttachedTerminalAction ? 1 : 0) +
+    (onUngroup ? 1 : 0);
   const actionColumns = Math.max(1, Math.ceil(actionButtonCount / 2));
   // When the button count is odd, the bottom-right cell would otherwise be
   // a void. We render a small decorative slot there so the row stays
@@ -1398,6 +1413,23 @@ function TaskItemComponent({
             >
               <MoveToProjectIcon />
               <span className="text-xs">Move</span>
+            </button>
+          ) : null}
+          {onUngroup ? (
+            <button
+              type="button"
+              aria-label="Ungroup task"
+              title="Ungroup (move this task out of the tab group)"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                closeActionsMenu();
+                onUngroup(task.id);
+              }}
+              className={actionButtonClassName('default')}
+            >
+              <UngroupIcon />
+              <span className="text-xs">Ungroup</span>
             </button>
           ) : null}
           {showAttachedTerminalAction ? (

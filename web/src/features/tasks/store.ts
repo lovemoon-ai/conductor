@@ -664,6 +664,9 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         if (typeof input?.agentHost === 'string' && input.agentHost.trim()) {
           body.agent_host = input.agentHost.trim();
         }
+        if (typeof input?.codeHost === 'string' && input.codeHost.trim()) {
+          body.code_host = input.codeHost.trim();
+        }
         if (typeof input?.firstMessage === 'string' && input.firstMessage.trim()) {
           body.first_message = input.firstMessage.trim();
         }
