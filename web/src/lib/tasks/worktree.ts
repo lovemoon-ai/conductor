@@ -206,7 +206,7 @@ export const toRemoteWorktreeCleanupLaunchConfig = (
 // Mirrors cli/src/daemon.js buildTaskWorktreeRoot — keep in sync.
 // Identity must key off the on-disk folder name, not the raw branch, so that
 // two branches that sanitize to the same path are treated as one worktree.
-const sanitizeWorktreeFolderName = (branch: string): string =>
+export const sanitizeWorktreeFolderName = (branch: string): string =>
   branch.replace(/[/\\]/g, "_").replace(/\.\./g, "_");
 
 /**

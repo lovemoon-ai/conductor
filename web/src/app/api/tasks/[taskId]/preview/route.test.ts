@@ -386,4 +386,45 @@ describe("file preview", () => {
     expect((await open("index.html")).status).toBe(200);
     expect(vi.mocked(requestRemoteFile).mock.calls[0][0].agentHost).toBe("macmini");
   });
+
+  it("looks on the code's daemon for a task whose AI runs on a global backend", async () => {
+    // RFC 0041: the AI runs on macmini, but works in ubuntu's project over `conductor remote`.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      agentHost: "macmini",
+      executionHost: "conductor-fire-macmini-task-1",
+      metadata: null,
+      launchConfig: { remoteWorkspace: { host: "ubuntu", projectId: "p", repoRoot: ROOT, workspacePath: ROOT } },
+      project: { daemonHost: "macmini" },
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "a", host: "ubuntu", capabilities: ["remote_file", "remote_file_preview"] },
+      { id: "b", host: "macmini", capabilities: ["remote_file", "remote_file_preview"] },
+    ] as any);
+    const daemon = vi.mocked(requestRemoteFile).getMockImplementation()!;
+    // macmini has only its own scratch file; ubuntu has the project.
+    vi.mocked(requestRemoteFile).mockImplementation(async (request: any) =>
+      request.agentHost === "macmini" && request.args.remotePath !== `${ROOT}/shot.png`
+        ? { ok: true, action: request.action, result: { exists: false, realPath: null } }
+        : daemon(request),
+    );
+
+    // A relative link is the remote workspace's, not the AI's read-only cwd.
+    const opened = await open("assets/app.js");
+    expect(opened.status).toBe(200);
+    const { token, path: name } = await extractJson(opened);
+    expect(vi.mocked(requestRemoteFile).mock.calls[0][0]).toMatchObject({
+      agentHost: "ubuntu",
+      args: { remotePath: `${ROOT}/assets/app.js` },
+    });
+    expect(await (await fetchFile(token, name)).text()).toBe("console.log(1)");
+    expect(vi.mocked(requestRemoteFile).mock.calls.at(-1)![0].agentHost).toBe("ubuntu");
+
+    // Not on the code's daemon: fall back to the AI's own.
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "b", host: "macmini", capabilities: ["remote_file", "remote_file_preview"] },
+    ] as any);
+    vi.mocked(requestRemoteFile).mockClear();
+    expect((await open(`${ROOT}/shot.png`)).status).toBe(200);
+    expect(vi.mocked(requestRemoteFile).mock.calls[0][0].agentHost).toBe("macmini");
+  });
 });

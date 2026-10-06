@@ -9,6 +9,11 @@ import { realtimeHub } from "@/lib/realtime/hub";
 import { requestRemoteFile } from "@/lib/realtime/remote-file";
 import { resolveFireTaskRouting } from "@/lib/tasks/fire-routing";
 import {
+  parseRemoteWorkspaceLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
+  sanitizeWorktreeFolderName,
+} from "@/lib/tasks/worktree";
+import {
   encodePreviewPath,
   previewContentType,
   previewMaxBytes,
@@ -67,6 +72,7 @@ export async function POST(
       agentHost: true,
       executionHost: true,
       metadata: true,
+      launchConfig: true,
       project: { select: { daemonHost: true } },
     },
   });
@@ -75,58 +81,50 @@ export async function POST(
   }
 
   // The files are on the daemon's machine, but a running task's
-  // `executionHost` names its Fire process, which serves no files.
-  const host = resolveFireTaskRouting(task, null).daemonAssociationHost ?? "";
-  const agent = host
-    ? realtimeHub.getAgentsForUser(user.id).find((entry) => entry.host === host)
-    : null;
-  if (!agent) {
-    return NextResponse.json(
-      { error: `daemon ${host || "for this task"} is not connected` },
-      { status: 409 },
-    );
-  }
-  if (!agent.capabilities?.includes(PREVIEW_CAPABILITY)) {
-    return NextResponse.json(
-      {
-        error:
-          `daemon ${host} does not support file preview — either it predates the feature (upgrade it) ` +
-          "or it declined via `remote_file: false` in its config",
-      },
-      { status: 409 },
-    );
-  }
+  // `executionHost` names its Fire process, which serves no files. A global
+  // backend task (RFC 0041) works in another daemon's project over `conductor
+  // remote`, so its files are usually there: ask that daemon first, with
+  // relative paths taken from its workspace, then the AI's own.
+  const aiHost = resolveFireTaskRouting(task, null).daemonAssociationHost ?? "";
+  const worktree = parseRemoteWorktreeLaunchConfig(task.launchConfig);
+  const workspace = parseRemoteWorkspaceLaunchConfig(task.launchConfig);
+  const remote = worktree
+    ? {
+        host: worktree.host,
+        cwd: path.posix.join(worktree.workspacePath, ".conductor", "worktrees", sanitizeWorktreeFolderName(worktree.branch)),
+      }
+    : workspace && { host: workspace.host, cwd: workspace.workspacePath };
+  const requested = parsed.data.path;
+  const candidates = [
+    ...(remote && remote.host !== aiHost
+      ? [{
+          host: remote.host,
+          remotePath: /^[/~]/.test(requested) ? requested : path.posix.join(remote.cwd, requested),
+        }]
+      : []),
+    { host: aiHost, remotePath: requested },
+  ];
 
-  const outcome = await queuePreviewStat(user.id, () =>
-    requestRemoteFile({
-      userId: user.id,
-      agentHost: host,
-      action: "stat",
-      args: { remotePath: parsed.data.path, taskId },
-      timeoutMs: STAT_TIMEOUT_MS,
-    }),
-  );
-  if (!outcome.ok) {
-    const status = outcome.reason === "too_many_inflight" ? 429 : outcome.reason === "remote_error" ? 409 : 503;
-    return NextResponse.json({ error: outcome.message }, { status });
+  let failure: NextResponse | null = null;
+  let found: { host: string; stat: PreviewStat } | null = null;
+  for (const candidate of candidates) {
+    const result = await statOnHost(user.id, candidate.host, candidate.remotePath, taskId);
+    if ("stat" in result) {
+      found = { host: candidate.host, stat: result.stat };
+      break;
+    }
+    failure ??= result.response;
   }
+  if (!found) return failure!;
+  const { host, stat } = found;
 
-  const stat = (outcome.result ?? {}) as {
-    exists?: boolean;
-    isFile?: boolean;
-    sizeBytes?: number | null;
-    realPath?: string | null;
-  };
-  if (!stat.exists || !stat.realPath) {
-    return NextResponse.json({ error: `no such file on ${host}: ${parsed.data.path}` }, { status: 404 });
-  }
   if (!stat.isFile) {
     return NextResponse.json({ error: "only files can be previewed" }, { status: 400 });
   }
 
   // Judge the file by what it really is, not by the name of a symlink to it.
-  const name = path.posix.basename(stat.realPath);
-  const rootPath = path.posix.dirname(stat.realPath);
+  const name = path.posix.basename(stat.realPath!);
+  const rootPath = path.posix.dirname(stat.realPath!);
   const maxBytes = previewMaxBytes(name);
   if (typeof stat.sizeBytes === "number" && stat.sizeBytes > maxBytes) {
     return NextResponse.json(
@@ -158,4 +156,56 @@ export async function POST(
     viewUrl: previewViewUrl(session.token, name),
     expiresAt: new Date(session.expiresAt).toISOString(),
   });
+}
+
+type PreviewStat = {
+  exists?: boolean;
+  isFile?: boolean;
+  sizeBytes?: number | null;
+  realPath?: string | null;
+};
+
+/** Where `remotePath` really is on `host`, or why that daemon cannot say. */
+async function statOnHost(
+  userId: string,
+  host: string,
+  remotePath: string,
+  taskId: string,
+): Promise<{ stat: PreviewStat } | { response: NextResponse }> {
+  const agent = host ? realtimeHub.getAgentsForUser(userId).find((entry) => entry.host === host) : null;
+  if (!agent) {
+    return {
+      response: NextResponse.json({ error: `daemon ${host || "for this task"} is not connected` }, { status: 409 }),
+    };
+  }
+  if (!agent.capabilities?.includes(PREVIEW_CAPABILITY)) {
+    return {
+      response: NextResponse.json(
+        {
+          error:
+            `daemon ${host} does not support file preview — either it predates the feature (upgrade it) ` +
+            "or it declined via `remote_file: false` in its config",
+        },
+        { status: 409 },
+      ),
+    };
+  }
+  const outcome = await queuePreviewStat(userId, () =>
+    requestRemoteFile({
+      userId,
+      agentHost: host,
+      action: "stat",
+      args: { remotePath, taskId },
+      timeoutMs: STAT_TIMEOUT_MS,
+    }),
+  );
+  if (!outcome.ok) {
+    const status = outcome.reason === "too_many_inflight" ? 429 : outcome.reason === "remote_error" ? 409 : 503;
+    return { response: NextResponse.json({ error: outcome.message }, { status }) };
+  }
+  const stat = (outcome.result ?? {}) as PreviewStat;
+  if (!stat.exists || !stat.realPath) {
+    return { response: NextResponse.json({ error: `no such file on ${host}: ${remotePath}` }, { status: 404 }) };
+  }
+  return { stat };
 }
