@@ -6,6 +6,7 @@ import type { Message } from '@/shared/types';
 import { copyToClipboard } from '@/lib/clipboard';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { observeReplyTiming } from '../reply-latency';
+import { toggleMessageSpeech, useMessageSpeakerStore } from '../voice/message-speaker';
 import { formatTurnUsage, placeMessageMeta, useMessageMetaStore, type MetaPlacement } from '../message-meta';
 
 interface MessageBubbleProps {
@@ -39,6 +40,8 @@ export const MessageBubble = memo(function MessageBubble({
   const isActivity = message.role === 'sdk' && message.metadata?.synthetic === true && /^[\w-]+ session started\b/.test(message.content) && !message.attachments?.length;
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [isToolbarOpen, setIsToolbarOpen] = useState(false);
+  const speakStatus = useMessageSpeakerStore((state) => (state.messageId === message.id ? state.status : 'idle'));
+  const canSpeak = !isActivity && message.content.trim() !== '';
   // A tap shows the meta line on whichever side the placement rules pick; hover shows it too.
   const shownMeta = useMessageMetaStore((state) => state.shown[message.id]);
   const [hoverMeta, setHoverMeta] = useState<MetaPlacement>({ side: 'top', floating: false });
@@ -237,6 +240,41 @@ export const MessageBubble = memo(function MessageBubble({
               <path d="M12 7v5l3 2" />
               <path d="M17.5 3.5l3 3" />
             </svg>
+          </button>,
+        )
+        : null}
+      {canSpeak
+        ? renderAction(
+          'speak',
+          speakStatus === 'loading' ? 'Loading' : speakStatus === 'playing' ? 'Stop' : 'Play',
+          <button
+            type="button"
+            data-testid="message-bubble-speak-button"
+            data-speak-status={speakStatus}
+            aria-label={speakStatus === 'idle' ? 'Read message aloud' : 'Stop reading aloud'}
+            title={speakStatus === 'idle' ? 'Read message aloud' : 'Stop reading aloud'}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              toggleMessageSpeech(message.id, message.content);
+            }}
+            className={actionButtonClassName}
+          >
+            {speakStatus === 'idle' ? (
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 5 6 9H3v6h3l5 4V5z" />
+                <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+              </svg>
+            ) : speakStatus === 'loading' ? (
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 animate-spin" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <path d="M12 3a9 9 0 1 0 9 9" />
+              </svg>
+            ) : (
+              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="currentColor">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+              </svg>
+            )}
           </button>,
         )
         : null}

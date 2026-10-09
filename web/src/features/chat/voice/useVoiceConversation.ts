@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { resolveAppWebSocketUrl } from '@/features/realtime';
 import { MIC_SAMPLE_RATE, startMicCapture, type MicCapture } from './mic-capture';
+import { stopMessageSpeech } from './message-speaker';
 import { PcmStreamPlayer } from './pcm-player';
 import { isSpeakableReply, toSpeakableText } from './speakable-text';
 import { TtsPrefetch } from './tts-prefetch';
@@ -33,6 +34,8 @@ type Recording = {
   open: boolean;
   chunks: number;
   finishing: boolean;
+  /** Stopped with "edit": put the transcript into the composer instead of sending it. */
+  edit: boolean;
   done: boolean;
   mic: MicCapture | null;
 };
@@ -182,6 +185,13 @@ export function useVoiceConversation(args: {
       toIdle("Didn't catch anything — tap the mic and try again");
       return;
     }
+    if (rec.edit) {
+      // Stopped to edit: hand the text to the composer; the user sends it themselves.
+      setPartial('');
+      onKeepTextRef.current?.(text.trim());
+      setPhase('idle');
+      return;
+    }
     setPartial(text);
     setPhase('waiting');
     turnStartedRef.current = false;
@@ -208,11 +218,15 @@ export function useVoiceConversation(args: {
     void drainSpeakQueue();
   }, [closeRecording, drainSpeakQueue, setPhase, toIdle]);
 
-  /** Second tap: stop the mic and ask for the final transcript. */
-  const finishRecording = useCallback(() => {
+  /**
+   * Second tap: stop the mic and ask for the final transcript, then send it —
+   * or, with `edit`, put it into the composer so it can be corrected first.
+   */
+  const finishRecording = useCallback((options?: { edit?: boolean }) => {
     const rec = recRef.current;
     if (!rec || rec.finishing) return;
     rec.finishing = true;
+    rec.edit = Boolean(options?.edit);
     rec.mic?.stop();
     rec.mic = null;
     emitLevel(0);
@@ -234,7 +248,7 @@ export function useVoiceConversation(args: {
     setPhase('starting');
     const ws = new WebSocket(speechSocketUrl(userToken));
     ws.binaryType = 'arraybuffer';
-    const rec: Recording = { ws, pending: [], open: false, chunks: 0, finishing: false, done: false, mic: null };
+    const rec: Recording = { ws, pending: [], open: false, chunks: 0, finishing: false, edit: false, done: false, mic: null };
     recRef.current = rec;
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'start', payload: { sample_rate: MIC_SAMPLE_RATE, tts_prewarm: true } }));
@@ -304,6 +318,12 @@ export function useVoiceConversation(args: {
   }, [clearSpeakQueue, closeRecording, setPhase]);
   stopRef.current = stop;
 
+  /** Stop recording without sending: the transcript goes into the input box for editing. */
+  const stopToEdit = useCallback(() => {
+    if (phaseRef.current !== 'recording' && phaseRef.current !== 'starting') return;
+    finishRecording({ edit: true });
+  }, [finishRecording]);
+
   /** ✕ while recording: discard what was said, send nothing. */
   const cancel = useCallback(() => {
     const rec = recRef.current;
@@ -351,6 +371,7 @@ export function useVoiceConversation(args: {
       playerRef.current?.stop();
     }
     clearTurnTimer();
+    stopMessageSpeech(); // a message being read aloud from its menu would talk over the mic
     void startRecording();
   }, [clearSpeakQueue, finishRecording, maybeFinishTurn, startRecording, userToken]);
 
@@ -384,5 +405,5 @@ export function useVoiceConversation(args: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => stop(), [taskId]);
 
-  return { phase, partial, error, toggle, stop, cancel, subscribeLevel, recordingSince };
+  return { phase, partial, error, toggle, stop, cancel, stopToEdit, subscribeLevel, recordingSince };
 }

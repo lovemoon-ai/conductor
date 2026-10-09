@@ -13,6 +13,7 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { useVoiceConversation } from '../voice/useVoiceConversation';
+import { stopMessageSpeech, useMessageSpeakerStore } from '../voice/message-speaker';
 import { VoiceModeButton, VoiceRecordingBar, VoiceStatus } from '../voice/VoiceControls';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
 import { NewRoundDialog, PersistentTaskSettingsDialog } from '@/features/tasks/components/PersistentTaskDialogs';
@@ -852,6 +853,9 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     },
     onKeepText: (text) => messageInputRef.current?.appendDraft(text),
   });
+  // Reading a message aloud from its menu works outside voice mode; stop it when leaving the task.
+  const messageSpeechError = useMessageSpeakerStore((state) => state.error);
+  useEffect(() => () => stopMessageSpeech(), [taskId]);
 
   const handleEndRound = async () => {
     setRoundActionPending(true);
@@ -1264,7 +1268,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
               {visibleComposerFeedback.message}
             </InlineNotice>
           ) : null}
-          <VoiceStatus phase={voice.phase} error={voice.error} onExit={voice.stop} />
+          <VoiceStatus phase={voice.phase} error={voice.error || messageSpeechError} onExit={voice.stop} />
           <MessageInput
             ref={messageInputRef}
             taskId={taskId}
@@ -1277,6 +1281,7 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
                 since={voice.recordingSince}
                 subscribeLevel={voice.subscribeLevel}
                 onCancel={voice.cancel}
+                onStopToEdit={voice.stopToEdit}
               />
             ) : undefined}
             onInsert={(content) => {

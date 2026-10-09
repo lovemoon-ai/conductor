@@ -136,6 +136,32 @@ describe('useVoiceConversation', () => {
     expect(result.current.phase).toBe('waiting');
   });
 
+  it('stop-to-edit puts the transcript into the input box instead of sending it', async () => {
+    const onSend = vi.fn();
+    const onKeepText = vi.fn();
+    const hook = setup(onSend, { onKeepText });
+    const { result } = hook;
+    await act(async () => result.current.toggle());
+    const socket = lastSocket();
+    act(() => socket.open());
+    act(() => socket.receive({ type: 'partial', payload: { text: '跑一下' } }));
+
+    act(() => result.current.stopToEdit());
+    expect(result.current.phase).toBe('recognizing');
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'finish' }));
+    expect(mic.stop).toHaveBeenCalled();
+
+    await act(async () => socket.receive({ type: 'result', payload: { text: '跑一下测试。' } }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onKeepText).toHaveBeenCalledWith('跑一下测试。');
+    expect(result.current.phase).toBe('idle');
+    expect(result.current.partial).toBe('');
+
+    // The next recording sends normally again.
+    await talk(hook, '提交。');
+    expect(onSend).toHaveBeenCalledWith('提交。');
+  });
+
   it('reads new AI replies aloud, then waits for the next tap without reopening the mic', async () => {
     const fetchSpy = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4])));
     vi.stubGlobal('fetch', fetchSpy);

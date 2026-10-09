@@ -48,6 +48,6 @@ describe('VoiceControls', () => {
 
   it('the status line never repeats the transcript', () => {
     render(<VoiceStatus phase="recording" error="" onExit={() => {}} />);
-    expect(screen.getByTestId('voice-status')).toHaveTextContent('Recording · tap ↑ to sendExit voice');
+    expect(screen.getByTestId('voice-status')).toHaveTextContent('Recording · ↑ to send, ✎ to edit firstExit voice');
   });
 });
