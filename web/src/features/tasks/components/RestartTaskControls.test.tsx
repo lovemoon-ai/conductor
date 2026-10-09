@@ -17,7 +17,7 @@ let agentsState = {
   }>,
 };
 let projectsState = {
-  projects: [] as Array<{ id: string; daemonHost?: string | null }>,
+  projects: [] as Array<{ id: string; daemonHost?: string | null; repoRoot?: string | null; worktreeBranch?: string | null }>,
 };
 
 vi.mock('next/navigation', () => ({
@@ -1229,6 +1229,59 @@ describe('RestartTaskControls', () => {
         'title',
         'Only running or stopped tasks can restart',
       );
+    });
+  });
+
+  describe('new worktree', () => {
+    const gitTask = {
+      id: 'task-1',
+      projectId: 'proj-1',
+      title: 'Stopped Task',
+      taskType: 'ai_task',
+      status: 'killed',
+      agentHost: 'daemon-1',
+      backendType: 'codex',
+      sessionId: 'sess-1',
+      createdAt: FIXED_DATE.toISOString(),
+    } as const;
+
+    it('is hidden when the project is not a git repository', () => {
+      projectsState = { projects: [{ id: 'proj-1', daemonHost: 'daemon-1' }] };
+      render(<RestartTaskControls open onClose={() => {}} task={{ ...gitTask }} />);
+      expect(screen.queryByLabelText(/Create a new worktree/)).not.toBeInTheDocument();
+    });
+
+    it('sends newWorktree only when checked on a git project', async () => {
+      projectsState = {
+        projects: [{ id: 'proj-1', daemonHost: 'daemon-1', repoRoot: '/repo', worktreeBranch: 'main' }],
+      };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+      render(<RestartTaskControls open onClose={() => {}} onCreatedTask={() => {}} task={{ ...gitTask }} />);
+
+      const checkbox = screen.getByLabelText(/Create a new worktree/);
+      expect(checkbox).not.toBeChecked();
+      fireEvent.click(checkbox);
+      expect(checkbox).toBeChecked();
+      expect(screen.getByText(/fresh worktree from main/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+      await waitFor(() => expect(restartTaskMock).toHaveBeenCalledTimes(1));
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', expect.objectContaining({ strategy: 'new_task', newWorktree: true }));
+    });
+
+    it('is disabled when the selected daemon does not hold the repository', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'] },
+          { host: 'daemon-2', supportedBackends: ['codex'] },
+        ],
+      };
+      projectsState = { projects: [{ id: 'proj-1', daemonHost: 'daemon-1', repoRoot: '/repo' }] };
+      render(<RestartTaskControls open onClose={() => {}} task={{ ...gitTask }} />);
+
+      fireEvent.change(screen.getByLabelText('Daemon'), { target: { value: 'daemon-2' } });
+      expect(screen.getByLabelText(/Create a new worktree/)).toBeDisabled();
+      expect(screen.getByText(/git repository is on daemon-1/)).toBeInTheDocument();
     });
   });
 });

@@ -275,16 +275,18 @@ describe('TaskDetailPage', () => {
         id: 'group-1',
         taskIds: ['task-2', 'task-3', 'task-5'],
         activeIndex: 0,
-        labels: {},
+        labels: { 'task-5': 'review' },
       }]),
     );
 
     render(<TaskDetailPage />);
 
+    // On mobile each title leads with its task-group tab name (custom or ordinal).
     await waitFor(() => {
       expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
-        titleSwipePreviewLeft: 'Tab B',
-        titleSwipePreviewRight: 'Tab A',
+        title: '[review] Tab C',
+        titleSwipePreviewLeft: '[1] Tab B',
+        titleSwipePreviewRight: '[0] Tab A',
       }));
     });
 
@@ -332,8 +334,9 @@ describe('TaskDetailPage', () => {
 
     await waitFor(() => {
       expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
-        titleSwipePreviewLeft: 'Hidden merged tab',
-        titleSwipePreviewRight: 'Hidden merged tab',
+        title: '[1] Selected merged tab',
+        titleSwipePreviewLeft: '[0] Hidden merged tab',
+        titleSwipePreviewRight: '[0] Hidden merged tab',
       }));
     });
 
@@ -353,6 +356,7 @@ describe('TaskDetailPage', () => {
 
     await waitFor(() => {
       expect(headerMock).toHaveBeenLastCalledWith(expect.objectContaining({
+        title: 'First',
         titleSwipePreviewLeft: 'Third',
         titleSwipePreviewRight: 'Second',
       }));

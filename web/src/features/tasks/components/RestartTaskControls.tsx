@@ -69,6 +69,17 @@ const readRemoteCodeHost = (launchConfig: unknown): string => {
   return '';
 };
 
+/** Project row of the source's remote worktree / workspace (RFC 0038 / 0041), if its code lives on another daemon. */
+const readRemoteCodeProjectId = (launchConfig: unknown): string => {
+  const config = readRecord(launchConfig);
+  for (const key of ['remoteWorktree', 'remote_worktree', 'remoteWorkspace', 'remote_workspace']) {
+    const remote = readRecord(config?.[key]);
+    const projectId = remote?.projectId ?? remote?.project_id;
+    if (typeof projectId === 'string' && projectId.trim()) return projectId.trim();
+  }
+  return '';
+};
+
 const isRestartableStatus = (status: Task['status']): boolean =>
   status === 'running' || status === 'completed' || status === 'killed' || status === 'unknown';
 
@@ -83,6 +94,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   const [selectedBackend, setSelectedBackend] = useState('');
   const [selectedDaemonHost, setSelectedDaemonHost] = useState('');
   const [firstMessage, setFirstMessage] = useState('');
+  const [newWorktree, setNewWorktree] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const sourceAgentHost = typeof task.agentHost === 'string' ? task.agentHost.trim() : '';
@@ -168,6 +180,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
       setSelectedDaemonHost('');
       setSelectedBackend('');
       setFirstMessage('');
+      setNewWorktree(false);
     }
   }, [open]);
   const codeAgent = useMemo(
@@ -288,6 +301,31 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   const supportsFirstMessage = Boolean(selectedAgent?.capabilities?.includes(RESTART_FIRST_MESSAGE_CAPABILITY));
   const effectiveFirstMessage = supportsFirstMessage ? firstMessage.trim() : '';
 
+  // "New worktree" turns the successor into a parallel branch of the work in
+  // a fresh git worktree, next to the source (e.g. another tab of its task
+  // group). Only offered when the project holding the code is a git repo.
+  const sourceRemoteCodeProjectId = useMemo(
+    () => readRemoteCodeProjectId(task.launchConfig),
+    [task.launchConfig],
+  );
+  const codeProject = useMemo(() => {
+    const projectId = (!isCodeMove && sourceRemoteCodeProjectId) || (typeof task.projectId === 'string' ? task.projectId.trim() : '');
+    return projectId ? projects.find((entry) => entry.id === projectId) ?? null : null;
+  }, [isCodeMove, projects, sourceRemoteCodeProjectId, task.projectId]);
+  const codeProjectHasGit = Boolean(codeProject?.repoRoot);
+  const codeProjectDaemonHost = typeof codeProject?.daemonHost === 'string' ? codeProject.daemonHost.trim() : '';
+  // The code stays on another daemon (global AI): the AI creates the worktree
+  // there over conductor remote, which needs a daemon that takes a first message.
+  const isRemoteCodeSuccessor = !isCodeMove && Boolean(effectiveSelectedDaemonHost) && aiHost !== effectiveSelectedDaemonHost;
+  const newWorktreeDisabledReason = !codeProjectHasGit
+    ? null
+    : codeProjectDaemonHost && effectiveSelectedDaemonHost && codeProjectDaemonHost !== effectiveSelectedDaemonHost
+      ? `The project's git repository is on ${codeProjectDaemonHost}; pick that daemon to create a worktree`
+      : isRemoteCodeSuccessor && selectedAgent && !supportsFirstMessage
+        ? `Update daemon ${selectedAgent.host} to start a new task in a remote worktree`
+        : null;
+  const effectiveNewWorktree = codeProjectHasGit && !newWorktreeDisabledReason && newWorktree;
+
   // Reasons that no daemon/backend choice can fix; they lock the pickers too.
   const taskIneligibleReason = useMemo(() => {
     if ((task.taskType ?? 'ai_task') !== 'ai_task') {
@@ -394,6 +432,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
         // Only a move needs it: by default the server keeps the source's code.
         ...(isCodeMove ? { codeHost: effectiveSelectedDaemonHost } : {}),
         ...(effectiveFirstMessage ? { firstMessage: effectiveFirstMessage } : {}),
+        ...(effectiveNewWorktree ? { newWorktree: true } : {}),
       });
       if (onCreatedTask) {
         onCreatedTask(result.task.id);
@@ -505,6 +544,30 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             </p>
           ) : null}
         </div>
+
+        {codeProjectHasGit ? (
+          <div className="space-y-1">
+            <label htmlFor={`restart-new-worktree-${task.id}`} className="flex cursor-pointer items-start gap-3">
+              <input
+                id={`restart-new-worktree-${task.id}`}
+                type="checkbox"
+                checked={effectiveNewWorktree}
+                onChange={(event) => setNewWorktree(event.target.checked)}
+                disabled={Boolean(taskIneligibleReason) || Boolean(newWorktreeDisabledReason) || isSubmitting}
+                className="mt-0.5 size-4 rounded border-border text-[var(--accent)] focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              <span className="min-w-0">
+                <span className="text-sm font-medium text-ink">Create a new worktree</span>
+                <span className="block text-xs text-muted">
+                  {effectiveNewWorktree
+                    ? `Runs on its own branch in a fresh worktree from ${codeProject?.worktreeBranch || 'the project base'}, alongside this task instead of continuing in its workspace. This task's uncommitted changes are not carried over; the conversation is.`
+                    : "Off: the new task continues in this task's workspace."}
+                </span>
+              </span>
+            </label>
+            {newWorktreeDisabledReason ? <p className="text-xs text-muted">{newWorktreeDisabledReason}</p> : null}
+          </div>
+        ) : null}
 
         <div className="space-y-2">
           <label htmlFor={`restart-first-message-${task.id}`} className="text-sm font-medium text-ink">

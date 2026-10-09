@@ -18,6 +18,8 @@ interface TaskDetailPaneProps {
   compactHeader?: boolean;
   showConnectionStatus?: boolean;
   hideHeader?: boolean;
+  /** Header title to show instead of the task's own (e.g. led by its task-group tab name). */
+  headerTitle?: string | null;
   onTitleSwipeLeft?: () => void;
   onTitleSwipeRight?: () => void;
   onTitleSwipeProgress?: (state: TitleSwipeProgress) => void;
@@ -49,6 +51,7 @@ export function TaskDetailPane({
   compactHeader = false,
   showConnectionStatus = false,
   hideHeader = false,
+  headerTitle,
   onTitleSwipeLeft,
   onTitleSwipeRight,
   onTitleSwipeProgress,
@@ -257,7 +260,7 @@ export function TaskDetailPane({
     <>
       {!hideHeader ? (
         <Header
-          title={task.title}
+          title={headerTitle || task.title}
           actions={<div ref={setHeaderChatMenuSlot} className="contents" />}
           showBack={showBack}
           onBack={onBack}

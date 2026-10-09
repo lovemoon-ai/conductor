@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Project, Task } from '@/shared/types';
-import { buildTaskListNavigation } from './task-list-navigation';
+import { buildTaskListNavigation, formatTaskTitleWithTabLabel } from './task-list-navigation';
 
 const makeTask = (id: string, overrides: Partial<Task> = {}): Task => ({
   id,
@@ -27,6 +27,24 @@ const makeProject = (
 ): Project => ({ id, name, daemonHost, metadata } as Project);
 
 describe('buildTaskListNavigation', () => {
+  it('maps each visible grouped task to its tab label for the mobile header', () => {
+    const result = buildTaskListNavigation(
+      [makeTask('task-1'), makeTask('task-2'), makeTask('task-3')],
+      [{
+        id: 'group-1',
+        taskIds: ['task-2', 'task-3'],
+        activeIndex: 0,
+        labels: { 'task-3': 'review' },
+      }],
+    );
+
+    expect(result.tabLabelByTaskId.get('task-2')).toBe('0');
+    expect(result.tabLabelByTaskId.get('task-3')).toBe('review');
+    expect(result.tabLabelByTaskId.has('task-1')).toBe(false);
+    expect(formatTaskTitleWithTabLabel('Fix login', 'review')).toBe('[review] Fix login');
+    expect(formatTaskTitleWithTabLabel('Fix login', undefined)).toBe('Fix login');
+  });
+
   it('emits only the selected task from a merged card at the card row position', () => {
     const result = buildTaskListNavigation(
       [makeTask('task-1'), makeTask('task-2'), makeTask('task-4'), makeTask('task-3')],
