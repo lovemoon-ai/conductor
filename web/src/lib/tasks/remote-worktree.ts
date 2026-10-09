@@ -10,6 +10,8 @@ import { appendTaskPrompt } from "./agent-group";
 import { normalizeOptionalString } from "./task-config";
 import {
   buildInitialWorktreeBranchName,
+  parseRemoteWorkspaceLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
   resolveTaskWorktreeCwdFromLaunchConfig,
   toRemoteWorktreeCleanupLaunchConfig,
   type RemoteWorkspaceLaunchConfig,
@@ -93,6 +95,24 @@ export const resolveRemoteWorktreePaths = (remote: RemoteWorktreeLaunchConfig) =
     worktreeRoot: resolveTaskWorktreeCwdFromLaunchConfig({ ...translated, projectRelativePath: "." })!,
     workDir: resolveTaskWorktreeCwdFromLaunchConfig(translated)!,
   };
+};
+
+/**
+ * Where a task's code really is when its AI reaches it over `conductor remote`
+ * (a remote worktree, RFC 0038, or a remote project directory, RFC 0041): the
+ * daemon holding the files and the directory the AI works in there. Null for
+ * an ordinary task, whose files are on the daemon that runs it.
+ *
+ * Features that touch a task's files (terminal, preview, ...) must use this
+ * host, not the AI's: on a global-backend task they are different machines.
+ */
+export const resolveTaskRemoteCodeLocation = (
+  launchConfig: unknown,
+): { host: string; workDir: string } | null => {
+  const worktree = parseRemoteWorktreeLaunchConfig(launchConfig);
+  if (worktree) return { host: worktree.host, workDir: resolveRemoteWorktreePaths(worktree).workDir };
+  const workspace = parseRemoteWorkspaceLaunchConfig(launchConfig);
+  return workspace ? { host: workspace.host, workDir: workspace.workspacePath } : null;
 };
 
 /** How to drive another daemon over `conductor remote`; identical for both modes. */

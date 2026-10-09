@@ -8,11 +8,7 @@ import { createPreviewSession, queuePreviewStat } from "@/lib/previews/preview-s
 import { realtimeHub } from "@/lib/realtime/hub";
 import { requestRemoteFile } from "@/lib/realtime/remote-file";
 import { resolveFireTaskRouting } from "@/lib/tasks/fire-routing";
-import {
-  parseRemoteWorkspaceLaunchConfig,
-  parseRemoteWorktreeLaunchConfig,
-  sanitizeWorktreeFolderName,
-} from "@/lib/tasks/worktree";
+import { resolveTaskRemoteCodeLocation } from "@/lib/tasks/remote-worktree";
 import {
   encodePreviewPath,
   previewContentType,
@@ -86,20 +82,13 @@ export async function POST(
   // remote`, so its files are usually there: ask that daemon first, with
   // relative paths taken from its workspace, then the AI's own.
   const aiHost = resolveFireTaskRouting(task, null).daemonAssociationHost ?? "";
-  const worktree = parseRemoteWorktreeLaunchConfig(task.launchConfig);
-  const workspace = parseRemoteWorkspaceLaunchConfig(task.launchConfig);
-  const remote = worktree
-    ? {
-        host: worktree.host,
-        cwd: path.posix.join(worktree.workspacePath, ".conductor", "worktrees", sanitizeWorktreeFolderName(worktree.branch)),
-      }
-    : workspace && { host: workspace.host, cwd: workspace.workspacePath };
+  const remote = resolveTaskRemoteCodeLocation(task.launchConfig);
   const requested = parsed.data.path;
   const candidates = [
     ...(remote && remote.host !== aiHost
       ? [{
           host: remote.host,
-          remotePath: /^[/~]/.test(requested) ? requested : path.posix.join(remote.cwd, requested),
+          remotePath: /^[/~]/.test(requested) ? requested : path.posix.join(remote.workDir, requested),
         }]
       : []),
     { host: aiHost, remotePath: requested },

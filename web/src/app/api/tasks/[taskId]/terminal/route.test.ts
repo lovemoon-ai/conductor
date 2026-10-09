@@ -454,6 +454,90 @@ describe("/api/tasks/[taskId]/terminal", () => {
     });
   });
 
+  describe("POST on a task whose code is on another daemon (global backend)", () => {
+    // RFC 0041: the AI runs on macmini (the task is filed on a project bound
+    // there) but reads and writes the project on apex over `conductor remote`.
+    const globalTask = (remote: Record<string, unknown>) => ({
+      ...aiTaskFixture,
+      agentHost: "macmini",
+      launchConfig: JSON.stringify(remote),
+      metadata: JSON.stringify({
+        globalBackend: { host: "macmini", backend: "claude" },
+        daemonName: "macmini",
+        cwd: "/Users/me/clone",
+      }),
+      project: { daemonHost: "macmini", workspacePath: "/Users/me/clone" },
+    });
+    const bothDaemons = [
+      { id: "a", host: "macmini", supportedBackends: ["claude"], capabilities: ["pty_task", "ai_task"] },
+      { id: "b", host: "apex", supportedBackends: ["claude"], capabilities: ["pty_task", "ai_task"] },
+    ];
+    const open = () =>
+      POST(
+        createMockRequest({
+          method: "POST",
+          url: "http://localhost/api/tasks/ai-1/terminal",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "ai-1" }) },
+      );
+
+    beforeEach(async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(bothDaemons as any);
+    });
+
+    it("opens the terminal on the code's daemon, in the project directory", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        globalTask({
+          remoteWorkspace: { host: "apex", projectId: "p-apex", repoRoot: "/data/repo", workspacePath: "/data/repo" },
+        }) as any,
+      );
+      const response = await open();
+      expect(response.status).toBe(201);
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      expect(taskArgs.data.agentHost).toBe("apex");
+      expect(JSON.parse(taskArgs.data.launchConfig).cwd).toBe("/data/repo");
+      const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
+      expect(vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0][0].agentHost).toBe("apex");
+    });
+
+    it("opens the terminal in the remote worktree's work dir", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        globalTask({
+          remoteWorktree: {
+            host: "apex",
+            projectId: "p-apex",
+            repoRoot: "/data/repo",
+            workspacePath: "/data/repo/web",
+            branch: "f5b5cc",
+            baseRef: "main",
+          },
+        }) as any,
+      );
+      const response = await open();
+      expect(response.status).toBe(201);
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      expect(taskArgs.data.agentHost).toBe("apex");
+      expect(JSON.parse(taskArgs.data.launchConfig).cwd).toBe("/data/repo/web/.conductor/worktrees/f5b5cc/web");
+    });
+
+    it("refuses rather than opening on the AI's daemon when the code's daemon is offline", async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([bothDaemons[0]] as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        globalTask({
+          remoteWorkspace: { host: "apex", projectId: "p-apex", repoRoot: "/data/repo", workspacePath: "/data/repo" },
+        }) as any,
+      );
+      const response = await open();
+      expect(response.status).toBe(409);
+      expect((await extractJson(response)).error).toContain("apex");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("GET", () => {
     it("returns 404 when no terminal is attached", async () => {
       const token = createTestToken("user-1");

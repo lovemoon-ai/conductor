@@ -128,6 +128,7 @@ export async function POST(
     userId: user.id,
     aiTaskAgentHost: aiTask.agentHost,
     projectDaemonHost: aiTask.project?.daemonHost ?? null,
+    aiTaskLaunchConfig: aiTask.launchConfig,
   });
   if ("error" in agentResolution) {
     return NextResponse.json({ error: agentResolution.error }, { status: agentResolution.status });
