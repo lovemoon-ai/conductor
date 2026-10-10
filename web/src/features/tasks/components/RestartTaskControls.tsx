@@ -304,6 +304,9 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   // "New worktree" turns the successor into a parallel branch of the work in
   // a fresh git worktree, next to the source (e.g. another tab of its task
   // group). Only offered when the project holding the code is a git repo.
+  // The worktree starts from the project base, so the new task must not load
+  // this task's conversation (it would describe changes the branch lacks):
+  // a first message is required instead, which needs a daemon that takes one.
   const sourceRemoteCodeProjectId = useMemo(
     () => readRemoteCodeProjectId(task.launchConfig),
     [task.launchConfig],
@@ -314,17 +317,15 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
   }, [isCodeMove, projects, sourceRemoteCodeProjectId, task.projectId]);
   const codeProjectHasGit = Boolean(codeProject?.repoRoot);
   const codeProjectDaemonHost = typeof codeProject?.daemonHost === 'string' ? codeProject.daemonHost.trim() : '';
-  // The code stays on another daemon (global AI): the AI creates the worktree
-  // there over conductor remote, which needs a daemon that takes a first message.
-  const isRemoteCodeSuccessor = !isCodeMove && Boolean(effectiveSelectedDaemonHost) && aiHost !== effectiveSelectedDaemonHost;
   const newWorktreeDisabledReason = !codeProjectHasGit
     ? null
     : codeProjectDaemonHost && effectiveSelectedDaemonHost && codeProjectDaemonHost !== effectiveSelectedDaemonHost
       ? `The project's git repository is on ${codeProjectDaemonHost}; pick that daemon to create a worktree`
-      : isRemoteCodeSuccessor && selectedAgent && !supportsFirstMessage
-        ? `Update daemon ${selectedAgent.host} to start a new task in a remote worktree`
+      : selectedAgent && !supportsFirstMessage
+        ? `Update daemon ${selectedAgent.host} to create a new worktree (it needs a first message)`
         : null;
   const effectiveNewWorktree = codeProjectHasGit && !newWorktreeDisabledReason && newWorktree;
+  const missingRequiredFirstMessage = effectiveNewWorktree && !effectiveFirstMessage;
 
   // Reasons that no daemon/backend choice can fix; they lock the pickers too.
   const taskIneligibleReason = useMemo(() => {
@@ -374,8 +375,12 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     if (!canCreateSuccessorTask(currentBackend, effectiveSelectedBackend)) {
       return `Creating a new task from ${currentBackend} to ${effectiveSelectedBackend} is not supported`;
     }
+    if (missingRequiredFirstMessage) {
+      return "Enter a first message — a new worktree does not load this task's conversation";
+    }
     return null;
   }, [
+    missingRequiredFirstMessage,
     backendOptions.length,
     codeAgent,
     currentBackend,
@@ -560,7 +565,7 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
                 <span className="text-sm font-medium text-ink">Create a new worktree</span>
                 <span className="block text-xs text-muted">
                   {effectiveNewWorktree
-                    ? `Runs on its own branch in a fresh worktree from ${codeProject?.worktreeBranch || 'the project base'}, alongside this task instead of continuing in its workspace. This task's uncommitted changes are not carried over; the conversation is.`
+                    ? `Runs on its own branch in a fresh worktree from ${codeProject?.worktreeBranch || 'the project base'}, alongside this task. It starts clean: neither this task's changes nor its conversation are carried over, so describe the work in the first message.`
                     : "Off: the new task continues in this task's workspace."}
                 </span>
               </span>
@@ -571,7 +576,8 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
 
         <div className="space-y-2">
           <label htmlFor={`restart-first-message-${task.id}`} className="text-sm font-medium text-ink">
-            First message <span className="font-normal text-muted">(optional)</span>
+            First message{' '}
+            <span className="font-normal text-muted">{effectiveNewWorktree ? '(required)' : '(optional)'}</span>
           </label>
           <textarea
             id={`restart-first-message-${task.id}`}
@@ -579,7 +585,11 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
             onChange={(event) => setFirstMessage(event.target.value)}
             disabled={!supportsFirstMessage || isSubmitting}
             rows={3}
-            placeholder="Leave empty to have the new task load this task's conversation as background."
+            required={effectiveNewWorktree}
+            aria-required={effectiveNewWorktree}
+            placeholder={effectiveNewWorktree
+              ? 'Describe what the new task should do in its new worktree.'
+              : "Leave empty to have the new task load this task's conversation as background."}
             className="webapp-input w-full resize-y disabled:cursor-not-allowed disabled:opacity-60"
           />
           {selectedAgent && !supportsFirstMessage ? (

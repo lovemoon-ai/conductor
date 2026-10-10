@@ -1204,8 +1204,8 @@ describe('RestartTaskControls', () => {
     it('points at global AI when the work is moved to another daemon', () => {
       agentsState = {
         agents: [
-          { host: 'daemon-1', supportedBackends: ['codex'] },
-          { host: 'daemon-2', supportedBackends: ['codex'] },
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: ['restart_first_message'] },
+          { host: 'daemon-2', supportedBackends: ['codex'], capabilities: ['restart_first_message'] },
         ],
       };
 
@@ -1251,7 +1251,10 @@ describe('RestartTaskControls', () => {
       expect(screen.queryByLabelText(/Create a new worktree/)).not.toBeInTheDocument();
     });
 
-    it('sends newWorktree only when checked on a git project', async () => {
+    it('requires a first message and sends it with newWorktree', async () => {
+      agentsState = {
+        agents: [{ host: 'daemon-1', supportedBackends: ['codex'], capabilities: ['restart_first_message'] }],
+      };
       projectsState = {
         projects: [{ id: 'proj-1', daemonHost: 'daemon-1', repoRoot: '/repo', worktreeBranch: 'main' }],
       };
@@ -1259,14 +1262,39 @@ describe('RestartTaskControls', () => {
       render(<RestartTaskControls open onClose={() => {}} onCreatedTask={() => {}} task={{ ...gitTask }} />);
 
       const checkbox = screen.getByLabelText(/Create a new worktree/);
+      const submit = screen.getByRole('button', { name: 'New task' });
       expect(checkbox).not.toBeChecked();
+      expect(submit).toBeEnabled();
+      expect(screen.getByText('(optional)')).toBeInTheDocument();
+
       fireEvent.click(checkbox);
       expect(checkbox).toBeChecked();
       expect(screen.getByText(/fresh worktree from main/)).toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+      expect(screen.getByText('(required)')).toBeInTheDocument();
+      // No first message: the new worktree would otherwise load the old conversation.
+      expect(submit).toBeDisabled();
+      expect(submit).toHaveAttribute('title', expect.stringMatching(/Enter a first message/));
+      fireEvent.change(screen.getByLabelText(/First message/), { target: { value: '   ' } });
+      expect(submit).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText(/First message/), { target: { value: 'Add a dark mode' } });
+      expect(submit).toBeEnabled();
+      fireEvent.click(submit);
 
       await waitFor(() => expect(restartTaskMock).toHaveBeenCalledTimes(1));
-      expect(restartTaskMock).toHaveBeenCalledWith('task-1', expect.objectContaining({ strategy: 'new_task', newWorktree: true }));
+      expect(restartTaskMock).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        strategy: 'new_task',
+        newWorktree: true,
+        firstMessage: 'Add a dark mode',
+      }));
+    });
+
+    it('is disabled when the daemon cannot take a first message', () => {
+      projectsState = { projects: [{ id: 'proj-1', daemonHost: 'daemon-1', repoRoot: '/repo' }] };
+      render(<RestartTaskControls open onClose={() => {}} task={{ ...gitTask }} />);
+
+      expect(screen.getByLabelText(/Create a new worktree/)).toBeDisabled();
+      expect(screen.getByText(/Update daemon daemon-1 to create a new worktree/)).toBeInTheDocument();
     });
 
     it('is disabled when the selected daemon does not hold the repository', () => {

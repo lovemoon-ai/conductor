@@ -3034,7 +3034,11 @@ describe("/api/tasks/[taskId]/restart", () => {
         }) as any,
       );
 
-      const response = await post({ strategy: "new_task", new_worktree: true });
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+      ] as any);
+
+      const response = await post({ strategy: "new_task", new_worktree: true, first_message: "Add a dark mode" });
       const data = await extractJson(response);
 
       expect(response.status).toBe(200);
@@ -3051,7 +3055,14 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect(launchConfig.worktreeBranch).toEqual(expect.any(String));
       expect(launchConfig.worktreeBranch).not.toBe("abc123");
       const payloadJson = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string;
-      expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(launchConfig);
+      const payload = JSON.parse(payloadJson).payload;
+      expect(payload.target_launch_config).toEqual(launchConfig);
+      // The first message replaces the transcript handoff: the source
+      // conversation is not loaded into a fresh worktree.
+      expect(payload.initial_content).toBe("Add a dark mode");
+      expect(db.message.create).toHaveBeenCalledWith({
+        data: { taskId: createArgs.data.id, role: "user", content: "Add a dark mode" },
+      });
       expect(data.task.launch_config).toEqual(launchConfig);
 
       // A parallel branch does not take over the source's execution-group slot.
@@ -3071,7 +3082,10 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
 
     it("refuses a new worktree for a project that is not a git repository", async () => {
-      const response = await post({ strategy: "new_task", new_worktree: true });
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+      ] as any);
+      const response = await post({ strategy: "new_task", new_worktree: true, first_message: "go" });
 
       expect(response.status).toBe(409);
       expect((await extractJson(response)).error).toMatch(/git-backed project/);
@@ -3082,12 +3096,13 @@ describe("/api/tasks/[taskId]/restart", () => {
       vi.mocked(db.project.findFirst).mockResolvedValue(gitProject as any);
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
         { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
-        { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: [] },
+        { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
       ] as any);
 
       const response = await post({
         strategy: "new_task",
         new_worktree: true,
+        first_message: "go",
         agent_host: "daemon-2",
         code_host: "daemon-2",
       });
@@ -3098,9 +3113,27 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
 
     it("requires strategy new_task and a boolean", async () => {
-      expect((await post({ new_worktree: true })).status).toBe(400);
-      expect((await post({ strategy: "new_task", new_worktree: "yes" })).status).toBe(400);
+      expect((await post({ new_worktree: true, first_message: "go" })).status).toBe(400);
+      expect((await post({ strategy: "new_task", new_worktree: "yes", first_message: "go" })).status).toBe(400);
       expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("requires a first message instead of loading the source conversation", async () => {
+      vi.mocked(db.project.findFirst).mockResolvedValue(gitProject as any);
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+      ] as any);
+
+      for (const body of [
+        { strategy: "new_task", new_worktree: true },
+        { strategy: "new_task", new_worktree: true, first_message: "   " },
+      ]) {
+        const response = await post(body);
+        expect(response.status).toBe(400);
+        expect((await extractJson(response)).error).toMatch(/requires first_message/);
+      }
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
     });
 
     it("gives a global-backend successor a fresh remote worktree on the code's daemon", async () => {
@@ -3134,7 +3167,7 @@ describe("/api/tasks/[taskId]/restart", () => {
         { id: "agent-2", host: "ubuntu", supportedBackends: ["codex"], capabilities: ["remote_exec", "remote_file"] },
       ] as any);
 
-      const response = await post({ strategy: "new_task", new_worktree: true });
+      const response = await post({ strategy: "new_task", new_worktree: true, first_message: "Add a dark mode" });
 
       expect(response.status).toBe(200);
       const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
@@ -3155,6 +3188,8 @@ describe("/api/tasks/[taskId]/restart", () => {
       ).payload;
       expect(payload.initial_content).toContain("[conductor:remote-worktree]");
       expect(payload.initial_content).toContain(launchConfig.remoteWorktree.branch);
+      expect(payload.initial_content).toContain("Add a dark mode");
+      expect(payload.initial_content).not.toContain("handoff");
     });
   });
 });

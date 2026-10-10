@@ -19,7 +19,7 @@
  *   schedule update <id> <schedule-id> [<message>] [--delay|--at|--every ...]
  *   stop <id> | interrupt <id> [--target-reply-to <msg-id>]
  *   restart <id> [--strategy inplace|new_task] [--backend] [--refresh-session]
- *           [--daemon-host <h>] [--code-host <h>] [--first-message <text>] [--new-worktree]
+ *           [--daemon-host <h>] [--code-host <h>] [--first-message <text> [--new-worktree]]
  *   delete <id> --yes [--permanent] | archive <id> | unarchive <id> [--daemon-host <h>]
  *   rename <id> <title> | pin <id> | unpin <id> | labels <id> [<label-id>...] [--clear]
  *   move <id> [<project>] [--back] | share <id> | unshare <id> | shared <token|link>
@@ -876,7 +876,7 @@ export async function main(argvInput = hideBin(process.argv), deps = {}) {
           .option("daemon-host", { type: "string", describe: "Run the restarted AI on this daemon; with --strategy new_task it keeps working on the source task's code remotely when it can (add --code-host <same> to move the work there instead)" })
           .option("code-host", { type: "string", describe: "With --strategy new_task: daemon holding the code (default: the source task's); another daemon moves the work there and needs --daemon-host set to it" })
           .option("first-message", { type: "string", describe: "With --strategy new_task: first message instead of the transcript handoff" })
-          .option("new-worktree", { type: "boolean", default: false, describe: "With --strategy new_task: run the new task in its own fresh git worktree (a parallel branch) instead of the source task's workspace; the source keeps its place in its agent group" }),
+          .option("new-worktree", { type: "boolean", default: false, describe: "With --strategy new_task and --first-message: run the new task in its own fresh git worktree (a parallel branch) instead of the source task's workspace, without loading the source conversation; the source keeps its place in its agent group" }),
         run(extra.handleRestart),
       )
       .command(

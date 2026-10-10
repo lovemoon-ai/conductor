@@ -368,7 +368,10 @@ export async function POST(
   }
   // "New task from this" in a fresh git worktree: the successor becomes a
   // parallel branch of the work (e.g. another tab in the same task card group)
-  // instead of continuing in the source task's workspace.
+  // instead of continuing in the source task's workspace. It starts from the
+  // project base, not the source's files, so it must not load the source
+  // transcript either — that would describe changes it does not have. A first
+  // message is therefore required: it replaces the transcript handoff.
   const rawNewWorktree = normalizedBody.new_worktree ?? normalizedBody.newWorktree;
   if (rawNewWorktree !== undefined && rawNewWorktree !== null && typeof rawNewWorktree !== "boolean") {
     return NextResponse.json({ error: "new_worktree must be a boolean" }, { status: 400 });
@@ -376,6 +379,12 @@ export async function POST(
   const newWorktreeRequested = rawNewWorktree === true;
   if (newWorktreeRequested && (requestedStrategy !== "new_task" || hasExplicitRestartMode)) {
     return NextResponse.json({ error: "new_worktree requires strategy new_task" }, { status: 400 });
+  }
+  if (newWorktreeRequested && !firstMessage) {
+    return NextResponse.json(
+      { error: "new_worktree requires first_message: a new worktree does not load the source task's conversation" },
+      { status: 400 },
+    );
   }
 
   // Explicit daemon override. Lets the caller run the restart on a specific
@@ -1040,13 +1049,8 @@ export async function POST(
       if (remoteDaemonProblem) {
         return NextResponse.json({ error: remoteDaemonProblem.error }, { status: remoteDaemonProblem.status });
       }
-      // The AI itself creates a remote worktree, prompted by initial_content.
-      if (!restartAgentCapabilities.includes(RESTART_FIRST_MESSAGE_CAPABILITY)) {
-        return NextResponse.json(
-          { error: `Daemon ${restartAgentHost} must be updated to start a new task in a remote worktree` },
-          { status: 409 },
-        );
-      }
+      // The AI itself creates a remote worktree, prompted by initial_content
+      // (first_message already required a daemon that takes one).
       freshRemoteWorktree = buildRemoteWorktreeForTarget(target);
       const localClone = normalizeOptionalString(continuedLaunchConfig.cwd);
       successorLaunchConfig = {

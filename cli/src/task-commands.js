@@ -112,6 +112,8 @@ export async function handleRestart(argv, deps) {
   }
   if (argv.newWorktree) {
     if (argv.strategy !== "new_task") throw argsError("--new-worktree requires --strategy new_task");
+    // A fresh worktree does not load the source conversation; the first message replaces it.
+    if (!trimmed(argv.firstMessage)) throw argsError("--new-worktree requires --first-message");
     body.new_worktree = true;
   }
   if (argv.refreshSession && argv.strategy) {
