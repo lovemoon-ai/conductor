@@ -66,6 +66,8 @@ export interface MessageInputHandle {
   appendDraft: (content: string) => void;
   /** The current composer text, e.g. to schedule it from the chat menu. */
   getDraft: () => string;
+  /** Replace the composer text (e.g. voice input continuing it), caret at the end. */
+  setDraft: (content: string) => void;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
@@ -441,6 +443,10 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       moveCaretToEnd(next);
     },
     getDraft: () => content,
+    setDraft: (next: string) => {
+      updateContent(next);
+      moveCaretToEnd(next);
+    },
   }), [handleResend, content, moveCaretToEnd, updateContent]);
 
   const handleSubmit = () => {

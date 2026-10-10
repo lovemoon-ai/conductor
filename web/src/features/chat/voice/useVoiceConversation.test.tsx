@@ -136,7 +136,7 @@ describe('useVoiceConversation', () => {
     expect(result.current.phase).toBe('waiting');
   });
 
-  it('stop-to-edit puts the transcript into the input box instead of sending it', async () => {
+  it('✕ after speaking puts the transcript into the input box instead of sending it', async () => {
     const onSend = vi.fn();
     const onKeepText = vi.fn();
     const hook = setup(onSend, { onKeepText });
@@ -146,7 +146,7 @@ describe('useVoiceConversation', () => {
     act(() => socket.open());
     act(() => socket.receive({ type: 'partial', payload: { text: '跑一下' } }));
 
-    act(() => result.current.stopToEdit());
+    act(() => result.current.cancel());
     expect(result.current.phase).toBe('recognizing');
     expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'finish' }));
     expect(mic.stop).toHaveBeenCalled();
@@ -157,7 +157,7 @@ describe('useVoiceConversation', () => {
     expect(result.current.phase).toBe('idle');
     expect(result.current.partial).toBe('');
 
-    // The next recording sends normally again.
+    // Tapping the mic again records more; ↑ sends it.
     await talk(hook, '提交。');
     expect(onSend).toHaveBeenCalledWith('提交。');
   });
@@ -324,13 +324,13 @@ describe('useVoiceConversation', () => {
     expect(hook.result.current.error).toMatch(/Sign in/);
   });
 
-  it('✕ discards the recording without sending', async () => {
+  it('✕ before anything was heard just stops, sending nothing', async () => {
     const onSend = vi.fn();
-    const hook = setup(onSend);
+    const onKeepText = vi.fn();
+    const hook = setup(onSend, { onKeepText });
     await act(async () => hook.result.current.toggle());
     const socket = lastSocket();
     act(() => socket.open());
-    act(() => socket.receive({ type: 'partial', payload: { text: '说错了' } }));
     expect(hook.result.current.recordingSince).toEqual(expect.any(Number));
     act(() => hook.result.current.cancel());
     expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'cancel' }));
@@ -340,6 +340,7 @@ describe('useVoiceConversation', () => {
     expect(mic.stop).toHaveBeenCalled();
     await act(async () => socket.receive({ type: 'result', payload: { text: '说错了' } }));
     expect(onSend).not.toHaveBeenCalled();
+    expect(onKeepText).not.toHaveBeenCalled();
   });
 
   it('streams the mic level to subscribers and drops it to 0 on send', async () => {

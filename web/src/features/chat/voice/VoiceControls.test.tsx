@@ -31,6 +31,9 @@ describe('VoiceControls', () => {
     expect(screen.getByTestId('voice-transcript')).toHaveTextContent('Listening… start talking');
     rerender(<VoiceRecordingBar phase="recording" partial="帮我看一下测试" since={Date.now()} subscribeLevel={subscribe} onCancel={onCancel} />);
     expect(screen.getByTestId('voice-transcript')).toHaveTextContent('帮我看一下测试');
+    rerender(<VoiceRecordingBar phase="recording" partial="然后提交" draft="帮我看一下测试，" since={Date.now()} subscribeLevel={subscribe} onCancel={onCancel} />);
+    expect(screen.getByTestId('voice-transcript')).toHaveTextContent('帮我看一下测试， 然后提交');
+    rerender(<VoiceRecordingBar phase="recording" partial="帮我看一下测试" since={Date.now()} subscribeLevel={subscribe} onCancel={onCancel} />);
 
     act(() => push(0.8));
     expect(screen.getByTestId('voice-level-meter')).toHaveAttribute('data-level', '0.80');
@@ -48,6 +51,6 @@ describe('VoiceControls', () => {
 
   it('the status line never repeats the transcript', () => {
     render(<VoiceStatus phase="recording" error="" onExit={() => {}} />);
-    expect(screen.getByTestId('voice-status')).toHaveTextContent('Recording · ↑ to send, ✎ to edit firstExit voice');
+    expect(screen.getByTestId('voice-status')).toHaveTextContent('Recording · ↑ to send, ✕ to edit firstExit voice');
   });
 });

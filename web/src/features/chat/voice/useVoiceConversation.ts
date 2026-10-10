@@ -34,7 +34,7 @@ type Recording = {
   open: boolean;
   chunks: number;
   finishing: boolean;
-  /** Stopped with "edit": put the transcript into the composer instead of sending it. */
+  /** Stopped with ✕: put the transcript into the composer instead of sending it. */
   edit: boolean;
   done: boolean;
   mic: MicCapture | null;
@@ -55,6 +55,8 @@ export function useVoiceConversation(args: {
   onSend: (text: string) => Promise<boolean | void> | boolean | void;
   /** Recognition failed part-way: put what was heard into the composer so it is not lost. */
   onKeepText?: (text: string) => void;
+  /** ✕ while recording: put the transcript into the composer to edit (defaults to `onKeepText`). */
+  onEditText?: (text: string) => void;
 }) {
   const { taskId, messages, replyInProgress, userToken } = args;
   const [phase, setPhaseState] = useState<VoicePhase>('off');
@@ -63,6 +65,8 @@ export function useVoiceConversation(args: {
   const [recordingSince, setRecordingSince] = useState<number | null>(null);
 
   const phaseRef = useRef<VoicePhase>('off');
+  const partialRef = useRef('');
+  partialRef.current = partial;
   const playerRef = useRef<PcmStreamPlayer | null>(null);
   const recRef = useRef<Recording | null>(null);
   const seenRef = useRef(new Set<string>());
@@ -77,6 +81,7 @@ export function useVoiceConversation(args: {
   const replyInProgressRef = useRef(replyInProgress);
   const onSendRef = useRef(args.onSend);
   const onKeepTextRef = useRef(args.onKeepText);
+  const onEditTextRef = useRef(args.onEditText ?? args.onKeepText);
   const stopRef = useRef<() => void>(() => {});
   // Mic level goes straight to subscribers (the level meter), not React state,
   // so 10 updates a second do not re-render the whole chat view.
@@ -88,6 +93,7 @@ export function useVoiceConversation(args: {
   replyInProgressRef.current = replyInProgress;
   onSendRef.current = args.onSend;
   onKeepTextRef.current = args.onKeepText;
+  onEditTextRef.current = args.onEditText ?? args.onKeepText;
 
   const setPhase = useCallback((next: VoicePhase) => {
     phaseRef.current = next;
@@ -181,15 +187,15 @@ export function useVoiceConversation(args: {
     if (recRef.current !== rec) return;
     closeRecording();
     if (phaseRef.current === 'off') return;
-    if (!text.trim()) {
-      toIdle("Didn't catch anything — tap the mic and try again");
+    if (rec.edit) {
+      // ✕: hand the text to the composer to edit; the mic or send button continues from there.
+      setPartial('');
+      if (text.trim()) onEditTextRef.current?.(text.trim());
+      setPhase('idle');
       return;
     }
-    if (rec.edit) {
-      // Stopped to edit: hand the text to the composer; the user sends it themselves.
-      setPartial('');
-      onKeepTextRef.current?.(text.trim());
-      setPhase('idle');
+    if (!text.trim()) {
+      toIdle("Didn't catch anything — tap the mic and try again");
       return;
     }
     setPartial(text);
@@ -220,7 +226,7 @@ export function useVoiceConversation(args: {
 
   /**
    * Second tap: stop the mic and ask for the final transcript, then send it —
-   * or, with `edit`, put it into the composer so it can be corrected first.
+   * or, with `edit` (✕), put it into the composer so it can be corrected first.
    */
   const finishRecording = useCallback((options?: { edit?: boolean }) => {
     const rec = recRef.current;
@@ -318,20 +324,21 @@ export function useVoiceConversation(args: {
   }, [clearSpeakQueue, closeRecording, setPhase]);
   stopRef.current = stop;
 
-  /** Stop recording without sending: the transcript goes into the input box for editing. */
-  const stopToEdit = useCallback(() => {
-    if (phaseRef.current !== 'recording' && phaseRef.current !== 'starting') return;
-    finishRecording({ edit: true });
-  }, [finishRecording]);
-
-  /** ✕ while recording: discard what was said, send nothing. */
+  /**
+   * ✕ while recording: stop without sending. What was said goes into the input
+   * box to edit (tap the mic again to keep talking); nothing heard yet → just stop.
+   */
   const cancel = useCallback(() => {
     const rec = recRef.current;
     if (!rec || phaseRef.current === 'recognizing') return;
+    if (partialRef.current.trim()) {
+      finishRecording({ edit: true });
+      return;
+    }
     if (rec.open) rec.ws.send(JSON.stringify({ type: 'cancel' }));
     setPartial('');
     toIdle();
-  }, [toIdle]);
+  }, [finishRecording, toIdle]);
 
   const subscribeLevel = useCallback((listener: (level: number) => void) => {
     levelListenersRef.current.add(listener);
@@ -405,5 +412,5 @@ export function useVoiceConversation(args: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => () => stop(), [taskId]);
 
-  return { phase, partial, error, toggle, stop, cancel, stopToEdit, subscribeLevel, recordingSince };
+  return { phase, partial, error, toggle, stop, cancel, subscribeLevel, recordingSince };
 }

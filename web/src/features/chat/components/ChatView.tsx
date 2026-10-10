@@ -13,6 +13,7 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { useVoiceConversation } from '../voice/useVoiceConversation';
+import { joinDictation } from '../voice/dictation';
 import { stopMessageSpeech, useMessageSpeakerStore } from '../voice/message-speaker';
 import { VoiceModeButton, VoiceRecordingBar, VoiceStatus } from '../voice/VoiceControls';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
@@ -841,18 +842,33 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
 
   const sendBlocked = (!isTaskRunning && !isRoundIdle) || isRoundSummaryPending || restartPending || roundActionPending;
   const userToken = useAuthStore((state) => state.session?.userToken);
+  // Voice input continues whatever is already in the input box: ✕ leaves the
+  // text there to edit, the mic picks up after it, and ↑ sends it all as one message.
+  const continueDraftWith = (text: string) => {
+    const input = messageInputRef.current;
+    input?.setDraft(joinDictation(input.getDraft(), text));
+  };
   const voice = useVoiceConversation({
     taskId,
     messages,
     replyInProgress: runtimeReplyInProgress,
     userToken,
     onSend: async (text) => {
-      const sent = await handleSend(text);
-      if (!sent) messageInputRef.current?.appendDraft(text);
+      const input = messageInputRef.current;
+      const full = joinDictation(input?.getDraft() ?? '', text);
+      input?.setDraft('');
+      const sent = await handleSend(full);
+      if (!sent) continueDraftWith(full);
       return sent;
     },
-    onKeepText: (text) => messageInputRef.current?.appendDraft(text),
+    onKeepText: continueDraftWith,
   });
+  // The input box text a recording continues, shown in front of the live transcript.
+  const [voiceDraft, setVoiceDraft] = useState('');
+  const handleVoiceButton = () => {
+    if (voice.phase !== 'recording') setVoiceDraft(messageInputRef.current?.getDraft() ?? '');
+    voice.toggle();
+  };
   // Reading a message aloud from its menu works outside voice mode; stop it when leaving the task.
   const messageSpeechError = useMessageSpeakerStore((state) => state.error);
   useEffect(() => () => stopMessageSpeech(), [taskId]);
@@ -1273,15 +1289,15 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
             ref={messageInputRef}
             taskId={taskId}
             onSend={async (content, files) => { await handleSend(content, files); }}
-            voiceControl={<VoiceModeButton phase={voice.phase} onClick={voice.toggle} disabled={sendBlocked} />}
+            voiceControl={<VoiceModeButton phase={voice.phase} onClick={handleVoiceButton} disabled={sendBlocked} />}
             voiceOverlay={voice.phase === 'starting' || voice.phase === 'recording' || voice.phase === 'recognizing' ? (
               <VoiceRecordingBar
                 phase={voice.phase}
                 partial={voice.partial}
+                draft={voiceDraft}
                 since={voice.recordingSince}
                 subscribeLevel={voice.subscribeLevel}
                 onCancel={voice.cancel}
-                onStopToEdit={voice.stopToEdit}
               />
             ) : undefined}
             onInsert={(content) => {
