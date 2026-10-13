@@ -8,6 +8,8 @@ import { TtsPrefetch } from './tts-prefetch';
 const TTS_SAMPLE_RATE = 24_000;
 /** Below the synthesize route's 2 000-character limit. */
 export const MAX_SEGMENT_CHARS = 1_500;
+/** A whole message is read up to here (cut at a sentence), so a huge report doesn't run into the rate limit. */
+export const MAX_MESSAGE_SPEECH_CHARS = 10_000;
 
 export type MessageSpeakerState = {
   /** Message being read aloud (or being prepared), null when quiet. */
@@ -51,6 +53,18 @@ type Session = {
 };
 
 let current: Session | null = null;
+const startListeners = new Set<() => void>();
+
+/**
+ * Called when a message starts being read aloud, so voice mode can stop its
+ * own playback instead of talking over it.
+ */
+export const onMessageSpeechStart = (listener: () => void) => {
+  startListeners.add(listener);
+  return () => {
+    startListeners.delete(listener);
+  };
+};
 let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Errors show briefly in the voice status line, then clear. */
@@ -80,11 +94,12 @@ export const stopMessageSpeech = () => {
  */
 export const speakMessage = async (messageId: string, markdown: string): Promise<void> => {
   stopMessageSpeech();
-  const segments = splitForSpeech(toSpeakableText(markdown, Number.POSITIVE_INFINITY));
+  const segments = splitForSpeech(toSpeakableText(markdown, MAX_MESSAGE_SPEECH_CHARS));
   if (segments.length === 0) {
     showError('Nothing to read aloud in this message');
     return;
   }
+  for (const listener of startListeners) listener();
   const player = new PcmStreamPlayer(TTS_SAMPLE_RATE);
   player.unlock();
   const session: Session = { messageId, player, streams: [], cancelled: false };

@@ -13,7 +13,7 @@ import { MessageBubble } from './MessageBubble';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
 import { ScheduledMessageDialog } from './ScheduledMessageDialog';
 import { useVoiceConversation } from '../voice/useVoiceConversation';
-import { joinDictation } from '../voice/dictation';
+import { joinDictation, sendDictation } from '../voice/dictation';
 import { stopMessageSpeech, useMessageSpeakerStore } from '../voice/message-speaker';
 import { VoiceModeButton, VoiceRecordingBar, VoiceStatus } from '../voice/VoiceControls';
 import { buildPersistentRoundGroups, PersistentRoundHeader } from './PersistentRounds';
@@ -853,14 +853,8 @@ function TaskScopedChatView({ taskId, autoFocusComposer = false }: ChatViewProps
     messages,
     replyInProgress: runtimeReplyInProgress,
     userToken,
-    onSend: async (text) => {
-      const input = messageInputRef.current;
-      const full = joinDictation(input?.getDraft() ?? '', text);
-      input?.setDraft('');
-      const sent = await handleSend(full);
-      if (!sent) continueDraftWith(full);
-      return sent;
-    },
+    // Typed text + speech + attached files go out as one message; put back if not sent.
+    onSend: (text) => sendDictation(() => messageInputRef.current, text, handleSend),
     onKeepText: continueDraftWith,
   });
   // The input box text a recording continues, shown in front of the live transcript.

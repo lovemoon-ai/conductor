@@ -26,7 +26,7 @@ vi.mock('./pcm-player', () => ({
 }));
 vi.mock('@/lib/auth/token-storage', () => ({ getStoredJwtToken: () => 'jwt-1' }));
 
-const { speakMessage, splitForSpeech, stopMessageSpeech, toggleMessageSpeech, useMessageSpeakerStore } = await import('./message-speaker');
+const { MAX_MESSAGE_SPEECH_CHARS, onMessageSpeechStart, speakMessage, splitForSpeech, stopMessageSpeech, toggleMessageSpeech, useMessageSpeakerStore } = await import('./message-speaker');
 
 describe('splitForSpeech', () => {
   it('keeps short text whole and cuts long text at sentence ends', () => {
@@ -76,6 +76,18 @@ describe('message speaker', () => {
     await speakMessage('m2', '第二条。');
     expect(players[1].closed).toBe(true);
     expect(useMessageSpeakerStore.getState().messageId).toBe('m2');
+  });
+
+  it('tells listeners (voice mode) when a message starts, and caps very long messages', async () => {
+    const listener = vi.fn();
+    const unsubscribe = onMessageSpeechStart(listener);
+    await speakMessage('m1', '很长的一句话。'.repeat(3_000));
+    unsubscribe();
+    expect(listener).toHaveBeenCalledTimes(1);
+    const texts = fetchSpy.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).text as string);
+    const total = texts.join('').length;
+    expect(total).toBeLessThanOrEqual(MAX_MESSAGE_SPEECH_CHARS + 2);
+    expect(total).toBeGreaterThan(MAX_MESSAGE_SPEECH_CHARS / 2);
   });
 
   it('reports synthesis failures', async () => {
