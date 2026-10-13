@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Message } from '@/shared/types';
 import { resolveAppWebSocketUrl } from '@/features/realtime';
 import { MIC_SAMPLE_RATE, startMicCapture, type MicCapture } from './mic-capture';
+import { onMessageSpeechStart, stopMessageSpeech } from './message-speaker';
 import { PcmStreamPlayer } from './pcm-player';
-import { isSpeakableReply, toSpeakableText } from './speakable-text';
+import { isSpeakableReply, splitForSpeech, toSpeakableText } from './speakable-text';
 import { TtsPrefetch } from './tts-prefetch';
 
 /**
@@ -33,6 +34,8 @@ type Recording = {
   open: boolean;
   chunks: number;
   finishing: boolean;
+  /** Stopped with ✕: put the transcript into the composer instead of sending it. */
+  edit: boolean;
   done: boolean;
   mic: MicCapture | null;
 };
@@ -52,6 +55,8 @@ export function useVoiceConversation(args: {
   onSend: (text: string) => Promise<boolean | void> | boolean | void;
   /** Recognition failed part-way: put what was heard into the composer so it is not lost. */
   onKeepText?: (text: string) => void;
+  /** ✕ while recording: put the transcript into the composer to edit (defaults to `onKeepText`). */
+  onEditText?: (text: string) => void;
 }) {
   const { taskId, messages, replyInProgress, userToken } = args;
   const [phase, setPhaseState] = useState<VoicePhase>('off');
@@ -60,6 +65,8 @@ export function useVoiceConversation(args: {
   const [recordingSince, setRecordingSince] = useState<number | null>(null);
 
   const phaseRef = useRef<VoicePhase>('off');
+  const partialRef = useRef('');
+  partialRef.current = partial;
   const playerRef = useRef<PcmStreamPlayer | null>(null);
   const recRef = useRef<Recording | null>(null);
   const seenRef = useRef(new Set<string>());
@@ -74,6 +81,7 @@ export function useVoiceConversation(args: {
   const replyInProgressRef = useRef(replyInProgress);
   const onSendRef = useRef(args.onSend);
   const onKeepTextRef = useRef(args.onKeepText);
+  const onEditTextRef = useRef(args.onEditText ?? args.onKeepText);
   const stopRef = useRef<() => void>(() => {});
   // Mic level goes straight to subscribers (the level meter), not React state,
   // so 10 updates a second do not re-render the whole chat view.
@@ -85,6 +93,7 @@ export function useVoiceConversation(args: {
   replyInProgressRef.current = replyInProgress;
   onSendRef.current = args.onSend;
   onKeepTextRef.current = args.onKeepText;
+  onEditTextRef.current = args.onEditText ?? args.onKeepText;
 
   const setPhase = useCallback((next: VoicePhase) => {
     phaseRef.current = next;
@@ -114,6 +123,22 @@ export function useVoiceConversation(args: {
     if (message) setError(message);
     setPhase('idle');
   }, [closeRecording, setPhase]);
+
+  /**
+   * Recognition never finished (timeout, dropped connection, server error):
+   * never lose or send a cut-off message — put what was heard into the
+   * composer so the user can finish or fix it.
+   */
+  const keepHeard = useCallback((reason: string, heardText?: string) => {
+    const heard = (heardText || partialRef.current).trim();
+    setPartial('');
+    if (heard && onKeepTextRef.current) {
+      onKeepTextRef.current(heard);
+      toIdle(`${reason} — what was heard is in the input box`);
+    } else {
+      toIdle(reason);
+    }
+  }, [toIdle]);
 
   /** Once the turn is over and everything has been read aloud, wait for the next tap. */
   const maybeFinishTurn = useCallback(() => {
@@ -162,6 +187,7 @@ export function useVoiceConversation(args: {
         item.stream ??= new TtsPrefetch(item.text);
         prefetchQueue(); // synthesize the next reply while this one plays
         setPhase('speaking');
+        stopMessageSpeech(); // a message read aloud from its menu would talk over the reply
         try {
           await speak(item);
         } catch (err) {
@@ -178,6 +204,13 @@ export function useVoiceConversation(args: {
     if (recRef.current !== rec) return;
     closeRecording();
     if (phaseRef.current === 'off') return;
+    if (rec.edit) {
+      // ✕: hand the text to the composer to edit; the mic or send button continues from there.
+      setPartial('');
+      if (text.trim()) onEditTextRef.current?.(text.trim());
+      setPhase('idle');
+      return;
+    }
     if (!text.trim()) {
       toIdle("Didn't catch anything — tap the mic and try again");
       return;
@@ -208,20 +241,24 @@ export function useVoiceConversation(args: {
     void drainSpeakQueue();
   }, [closeRecording, drainSpeakQueue, setPhase, toIdle]);
 
-  /** Second tap: stop the mic and ask for the final transcript. */
-  const finishRecording = useCallback(() => {
+  /**
+   * Second tap: stop the mic and ask for the final transcript, then send it —
+   * or, with `edit` (✕), put it into the composer so it can be corrected first.
+   */
+  const finishRecording = useCallback((options?: { edit?: boolean }) => {
     const rec = recRef.current;
     if (!rec || rec.finishing) return;
     rec.finishing = true;
+    rec.edit = Boolean(options?.edit);
     rec.mic?.stop();
     rec.mic = null;
     emitLevel(0);
     setPhase('recognizing');
     if (rec.open) rec.ws.send(JSON.stringify({ type: 'finish' }));
     setTimeout(() => {
-      if (recRef.current === rec) toIdle('Speech recognition timed out');
+      if (recRef.current === rec) keepHeard('Speech recognition timed out');
     }, RECOGNIZE_TIMEOUT_MS);
-  }, [emitLevel, setPhase, toIdle]);
+  }, [emitLevel, keepHeard, setPhase]);
 
   const startRecording = useCallback(async () => {
     if (!userToken) {
@@ -234,7 +271,7 @@ export function useVoiceConversation(args: {
     setPhase('starting');
     const ws = new WebSocket(speechSocketUrl(userToken));
     ws.binaryType = 'arraybuffer';
-    const rec: Recording = { ws, pending: [], open: false, chunks: 0, finishing: false, done: false, mic: null };
+    const rec: Recording = { ws, pending: [], open: false, chunks: 0, finishing: false, edit: false, done: false, mic: null };
     recRef.current = rec;
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'start', payload: { sample_rate: MIC_SAMPLE_RATE, tts_prewarm: true } }));
@@ -255,18 +292,13 @@ export function useVoiceConversation(args: {
       if (envelope.type === 'partial' && typeof payload.text === 'string') setPartial(payload.text);
       else if (envelope.type === 'result') void handleTranscript(rec, payload.text ?? '');
       else if (envelope.type === 'error') {
-        const heard = payload.text?.trim();
-        if (heard && onKeepTextRef.current) {
-          // Never send a message that was cut off; let the user finish or fix it.
-          onKeepTextRef.current(heard);
-          toIdle('Speech recognition failed — what was heard is in the input box');
-        } else {
-          toIdle(payload.detail || payload.message || 'Speech recognition failed');
-        }
+        const heard = (payload.text || partialRef.current).trim();
+        if (heard) keepHeard('Speech recognition failed', heard);
+        else toIdle(payload.detail || payload.message || 'Speech recognition failed');
       }
     };
     ws.onclose = () => {
-      if (recRef.current === rec && !rec.done) toIdle('Speech connection closed');
+      if (recRef.current === rec && !rec.done) keepHeard('Speech connection closed');
     };
 
     let mic: MicCapture;
@@ -291,7 +323,7 @@ export function useVoiceConversation(args: {
     rec.mic = mic;
     setRecordingSince(Date.now());
     setPhase('recording');
-  }, [closeRecording, emitLevel, finishRecording, handleTranscript, setPhase, toIdle, userToken]);
+  }, [closeRecording, emitLevel, finishRecording, handleTranscript, keepHeard, setPhase, toIdle, userToken]);
 
   const stop = useCallback(() => {
     clearTurnTimer();
@@ -304,14 +336,21 @@ export function useVoiceConversation(args: {
   }, [clearSpeakQueue, closeRecording, setPhase]);
   stopRef.current = stop;
 
-  /** ✕ while recording: discard what was said, send nothing. */
+  /**
+   * ✕ while recording: stop without sending. What was said goes into the input
+   * box to edit (tap the mic again to keep talking); nothing heard yet → just stop.
+   */
   const cancel = useCallback(() => {
     const rec = recRef.current;
     if (!rec || phaseRef.current === 'recognizing') return;
+    if (partialRef.current.trim()) {
+      finishRecording({ edit: true });
+      return;
+    }
     if (rec.open) rec.ws.send(JSON.stringify({ type: 'cancel' }));
     setPartial('');
     toIdle();
-  }, [toIdle]);
+  }, [finishRecording, toIdle]);
 
   const subscribeLevel = useCallback((listener: (level: number) => void) => {
     levelListenersRef.current.add(listener);
@@ -351,6 +390,7 @@ export function useVoiceConversation(args: {
       playerRef.current?.stop();
     }
     clearTurnTimer();
+    stopMessageSpeech(); // a message being read aloud from its menu would talk over the mic
     void startRecording();
   }, [clearSpeakQueue, finishRecording, maybeFinishTurn, startRecording, userToken]);
 
@@ -364,9 +404,10 @@ export function useVoiceConversation(args: {
       // A new user message (typed or spoken) starts a new turn: un-mute after a ■ interrupt.
       if (message.role === 'user') mutedRef.current = false;
       if (mutedRef.current || !isSpeakableReply(message)) continue;
-      const text = toSpeakableText(message.content);
-      if (!text) continue;
-      speakQueueRef.current.push({ text, stream: null });
+      // The whole reply is read, in request-sized pieces (prefetched ahead like separate replies).
+      const segments = splitForSpeech(toSpeakableText(message.content));
+      if (segments.length === 0) continue;
+      for (const text of segments) speakQueueRef.current.push({ text, stream: null });
       turnStartedRef.current = true;
       queued = true;
     }
@@ -375,6 +416,15 @@ export function useVoiceConversation(args: {
     if (phaseRef.current === 'idle') setPhase('waiting');
     void drainSpeakQueue();
   }, [drainSpeakQueue, messages, prefetchQueue, setPhase]);
+
+  // Reading a message aloud from its menu interrupts the reply being spoken, like ■.
+  useEffect(() => onMessageSpeechStart(() => {
+    if (phaseRef.current !== 'speaking') return;
+    mutedRef.current = true; // skip the rest of this turn's replies
+    clearSpeakQueue();
+    playerRef.current?.stop();
+    maybeFinishTurn();
+  }), [clearSpeakQueue, maybeFinishTurn]);
 
   useEffect(() => {
     if (replyInProgress) turnStartedRef.current = true;

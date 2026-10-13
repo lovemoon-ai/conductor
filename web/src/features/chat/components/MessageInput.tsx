@@ -42,7 +42,10 @@ interface MessageInputProps {
   autoFocus?: boolean;
   /** Voice-conversation toggle, rendered next to the send controls. */
   voiceControl?: ReactNode;
-  /** Shown in place of the text area while recording a voice message (the typed draft is kept). */
+  /**
+   * Shown in place of the text area while recording a voice message. The typed
+   * draft stays in the composer; the recording continues it and is sent with it.
+   */
   voiceOverlay?: ReactNode;
 }
 
@@ -66,6 +69,12 @@ export interface MessageInputHandle {
   appendDraft: (content: string) => void;
   /** The current composer text, e.g. to schedule it from the chat menu. */
   getDraft: () => string;
+  /** Replace the composer text (e.g. voice input continuing it), caret at the end. */
+  setDraft: (content: string) => void;
+  /** Files currently attached in the composer (e.g. to send them with a voice message). */
+  getFiles: () => File[];
+  /** Drop the attached files once something else has sent them. */
+  clearFiles: () => void;
 }
 
 const getDraftStorageKey = (taskId: string) => `${DRAFT_STORAGE_PREFIX}${taskId}`;
@@ -441,7 +450,16 @@ const MessageInputInner = forwardRef<MessageInputHandle, MessageInputProps>(func
       moveCaretToEnd(next);
     },
     getDraft: () => content,
-  }), [handleResend, content, moveCaretToEnd, updateContent]);
+    setDraft: (next: string) => {
+      updateContent(next);
+      moveCaretToEnd(next);
+    },
+    getFiles: () => selectedFiles,
+    clearFiles: () => {
+      setSelectedFiles([]);
+      setFileError('');
+    },
+  }), [handleResend, content, moveCaretToEnd, selectedFiles, updateContent]);
 
   const handleSubmit = () => {
     submitContent(content);

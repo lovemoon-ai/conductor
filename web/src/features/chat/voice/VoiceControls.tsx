@@ -112,16 +112,20 @@ function RecordingTimer({ since }: { since: number | null }) {
 
 /**
  * Replaces the text area while recording: red dot + timer, live level bars,
- * the live transcript in the input box itself, and ✕ to discard.
+ * the live transcript in the input box itself (after any text already there,
+ * which it continues), and ✕ to stop and edit the text instead of sending.
  */
-export function VoiceRecordingBar({ phase, partial, since, subscribeLevel, onCancel }: {
+export function VoiceRecordingBar({ phase, partial, draft = '', since, subscribeLevel, onCancel }: {
   phase: VoicePhase;
   partial: string;
+  /** Text already in the input box; the recording continues it and is sent with it. */
+  draft?: string;
   since: number | null;
   subscribeLevel: (listener: (level: number) => void) => () => void;
   onCancel: () => void;
 }) {
   const recording = phase === 'recording';
+  const before = draft.trim();
   return (
     <div className="flex min-w-0 flex-1 items-center gap-3" data-testid="voice-recording-bar" data-voice-phase={phase}>
       <div className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-red-600">
@@ -130,8 +134,9 @@ export function VoiceRecordingBar({ phase, partial, since, subscribeLevel, onCan
       </div>
       <LevelMeter subscribe={subscribeLevel} />
       <p className="min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-ink" data-testid="voice-transcript">
+        {before ? <span data-testid="voice-transcript-draft">{before} </span> : null}
         {partial || (
-          <span className="text-muted">{phase === 'starting' ? 'Starting microphone…' : phase === 'recognizing' ? 'Recognizing…' : 'Listening… start talking'}</span>
+          <span className="text-muted">{phase === 'starting' ? 'Starting microphone…' : phase === 'recognizing' ? 'Recognizing…' : before ? 'Listening… keep talking' : 'Listening… start talking'}</span>
         )}
       </p>
       {phase !== 'recognizing' ? (
@@ -139,8 +144,8 @@ export function VoiceRecordingBar({ phase, partial, since, subscribeLevel, onCan
           type="button"
           onClick={onCancel}
           data-testid="voice-cancel-button"
-          title="Discard recording"
-          aria-label="Discard recording"
+          title="Stop and edit the text"
+          aria-label="Stop and edit the text"
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-border/50 hover:text-ink"
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -154,7 +159,7 @@ export function VoiceRecordingBar({ phase, partial, since, subscribeLevel, onCan
 
 const STATUS_LABEL: Record<Exclude<VoicePhase, 'off'>, string> = {
   starting: 'Starting microphone…',
-  recording: 'Recording · tap ↑ to send',
+  recording: 'Recording · ↑ to send, ✕ to edit first',
   recognizing: 'Recognizing…',
   waiting: 'Waiting for the reply…',
   speaking: 'AI is speaking · tap ■ to stop',

@@ -65,6 +65,7 @@ class FakeSocket {
 }
 
 const { useVoiceConversation } = await import('./useVoiceConversation');
+const { speakMessage, useMessageSpeakerStore } = await import('./message-speaker');
 
 const reply = (id: string, content: string): Message => ({
   id, taskId: 't1', role: 'sdk', content, metadata: { reply_to: 'u1' },
@@ -134,6 +135,32 @@ describe('useVoiceConversation', () => {
     await act(async () => socket.receive({ type: 'result', payload: { text: '跑一下，然后提交。' } }));
     expect(onSend).toHaveBeenCalledWith('跑一下，然后提交。');
     expect(result.current.phase).toBe('waiting');
+  });
+
+  it('✕ after speaking puts the transcript into the input box instead of sending it', async () => {
+    const onSend = vi.fn();
+    const onKeepText = vi.fn();
+    const hook = setup(onSend, { onKeepText });
+    const { result } = hook;
+    await act(async () => result.current.toggle());
+    const socket = lastSocket();
+    act(() => socket.open());
+    act(() => socket.receive({ type: 'partial', payload: { text: '跑一下' } }));
+
+    act(() => result.current.cancel());
+    expect(result.current.phase).toBe('recognizing');
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'finish' }));
+    expect(mic.stop).toHaveBeenCalled();
+
+    await act(async () => socket.receive({ type: 'result', payload: { text: '跑一下测试。' } }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onKeepText).toHaveBeenCalledWith('跑一下测试。');
+    expect(result.current.phase).toBe('idle');
+    expect(result.current.partial).toBe('');
+
+    // Tapping the mic again records more; ↑ sends it.
+    await talk(hook, '提交。');
+    expect(onSend).toHaveBeenCalledWith('提交。');
   });
 
   it('reads new AI replies aloud, then waits for the next tap without reopening the mic', async () => {
@@ -298,13 +325,79 @@ describe('useVoiceConversation', () => {
     expect(hook.result.current.error).toMatch(/Sign in/);
   });
 
-  it('✕ discards the recording without sending', async () => {
+  it('reads a long reply whole, piece by piece', async () => {
+    const fetchSpy = vi.fn(async () => new Response(new Uint8Array([1, 2])));
+    vi.stubGlobal('fetch', fetchSpy);
+    const hook = setup();
+    await talk(hook);
+    const long = '这是一个很长的回复。'.repeat(400); // 4 000 characters
+    await act(async () => hook.rerender({ messages: [reply('old', '旧回复'), reply('r1', long)], replyInProgress: false }));
+    const texts = fetchSpy.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).text as string);
+    expect(texts.length).toBe(3);
+    expect(texts.join('')).toBe(long);
+    expect(hook.result.current.phase).toBe('speaking');
+  });
+
+  it('keeps what was heard in the input box when recognition times out or the connection drops', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const onSend = vi.fn();
+      const onKeepText = vi.fn();
+      const hook = setup(onSend, { onKeepText });
+      await act(async () => hook.result.current.toggle());
+      act(() => lastSocket().open());
+      act(() => lastSocket().receive({ type: 'partial', payload: { text: '帮我看一下' } }));
+      act(() => hook.result.current.cancel()); // ✕: wait for the final transcript…
+      act(() => {
+        vi.advanceTimersByTime(15_000); // …which never comes
+      });
+      expect(onKeepText).toHaveBeenCalledWith('帮我看一下');
+      expect(hook.result.current.phase).toBe('idle');
+      expect(hook.result.current.error).toBe('Speech recognition timed out — what was heard is in the input box');
+
+      await act(async () => hook.result.current.toggle());
+      act(() => lastSocket().open());
+      act(() => lastSocket().receive({ type: 'partial', payload: { text: '然后提交' } }));
+      act(() => lastSocket().onclose?.());
+      expect(onKeepText).toHaveBeenLastCalledWith('然后提交');
+      expect(hook.result.current.error).toBe('Speech connection closed — what was heard is in the input box');
+      expect(onSend).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reading a message aloud from its menu stops the reply being spoken, and a new reply stops it', async () => {
+    const fetchSpy = vi.fn(async () => new Response(new Uint8Array([1, 2])));
+    vi.stubGlobal('fetch', fetchSpy);
+    const hook = setup();
+    const { result, rerender } = hook;
+    await talk(hook);
+    await act(async () => rerender({ messages: [reply('old', '旧回复'), reply('r1', '一。')], replyInProgress: true }));
+    expect(result.current.phase).toBe('speaking');
+
+    await act(async () => speakMessage('old', '旧回复'));
+    expect(players[0].idle).toBe(true); // voice playback stopped
+    expect(result.current.phase).toBe('waiting');
+    await act(async () => rerender({ messages: [reply('old', '旧回复'), reply('r1', '一。'), reply('r2', '二。')], replyInProgress: true }));
+    const texts = fetchSpy.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).text);
+    expect(texts).toEqual(['一。', '旧回复']); // the rest of the interrupted turn stays quiet
+    expect(useMessageSpeakerStore.getState().messageId).toBe('old');
+
+    // Next turn: a new reply interrupts the message being read aloud.
+    const typed: Message = { id: 'u2', taskId: 't1', role: 'user', content: '再问一句' };
+    await act(async () => rerender({ messages: [reply('old', '旧回复'), reply('r1', '一。'), reply('r2', '二。'), typed, reply('r3', '三。')], replyInProgress: true }));
+    expect(result.current.phase).toBe('speaking');
+    expect(useMessageSpeakerStore.getState().messageId).toBeNull();
+  });
+
+  it('✕ before anything was heard just stops, sending nothing', async () => {
     const onSend = vi.fn();
-    const hook = setup(onSend);
+    const onKeepText = vi.fn();
+    const hook = setup(onSend, { onKeepText });
     await act(async () => hook.result.current.toggle());
     const socket = lastSocket();
     act(() => socket.open());
-    act(() => socket.receive({ type: 'partial', payload: { text: '说错了' } }));
     expect(hook.result.current.recordingSince).toEqual(expect.any(Number));
     act(() => hook.result.current.cancel());
     expect(socket.sent.at(-1)).toBe(JSON.stringify({ type: 'cancel' }));
@@ -314,6 +407,7 @@ describe('useVoiceConversation', () => {
     expect(mic.stop).toHaveBeenCalled();
     await act(async () => socket.receive({ type: 'result', payload: { text: '说错了' } }));
     expect(onSend).not.toHaveBeenCalled();
+    expect(onKeepText).not.toHaveBeenCalled();
   });
 
   it('streams the mic level to subscribers and drops it to 0 on send', async () => {

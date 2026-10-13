@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@/shared/types';
-import { isSpeakableReply, toSpeakableText } from './speakable-text';
+import { isSpeakableReply, splitForSpeech, toSpeakableText } from './speakable-text';
 
 const message = (overrides: Partial<Message>): Message => ({
   id: 'm1',
@@ -35,7 +35,21 @@ describe('voice speakable text', () => {
     expect(text).toBe('结果 已修复 登录 问题，见 PR 12。 改了 auth.ts 详情');
   });
 
-  it('cuts long replies at a sentence boundary', () => {
+  it('reads long replies whole by default', () => {
+    const long = '这是一句话。'.repeat(500);
+    expect(toSpeakableText(long)).toBe(long);
+  });
+
+  it('splits long text into request-sized pieces at sentence ends', () => {
+    expect(splitForSpeech('你好。')).toEqual(['你好。']);
+    expect(splitForSpeech('一二三四。五六七八。九十', 6)).toEqual(['一二三四。', '五六七八。', '九十']);
+    expect(splitForSpeech('a'.repeat(25), 10)).toEqual(['a'.repeat(10), 'a'.repeat(10), 'a'.repeat(5)]);
+    const pieces = splitForSpeech('这是一句话。'.repeat(500));
+    expect(pieces.every((piece) => piece.length <= 1_500)).toBe(true);
+    expect(pieces.join('')).toBe('这是一句话。'.repeat(500));
+  });
+
+  it('can still cut at a sentence boundary when asked', () => {
     const text = toSpeakableText(`${'这是一句话。'.repeat(20)}`, 40);
     expect(text.endsWith('。……')).toBe(true);
     expect(text.length).toBeLessThanOrEqual(42);
