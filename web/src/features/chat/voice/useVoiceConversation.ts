@@ -6,7 +6,7 @@ import { resolveAppWebSocketUrl } from '@/features/realtime';
 import { MIC_SAMPLE_RATE, startMicCapture, type MicCapture } from './mic-capture';
 import { onMessageSpeechStart, stopMessageSpeech } from './message-speaker';
 import { PcmStreamPlayer } from './pcm-player';
-import { isSpeakableReply, toSpeakableText } from './speakable-text';
+import { isSpeakableReply, splitForSpeech, toSpeakableText } from './speakable-text';
 import { TtsPrefetch } from './tts-prefetch';
 
 /**
@@ -404,9 +404,10 @@ export function useVoiceConversation(args: {
       // A new user message (typed or spoken) starts a new turn: un-mute after a ■ interrupt.
       if (message.role === 'user') mutedRef.current = false;
       if (mutedRef.current || !isSpeakableReply(message)) continue;
-      const text = toSpeakableText(message.content);
-      if (!text) continue;
-      speakQueueRef.current.push({ text, stream: null });
+      // The whole reply is read, in request-sized pieces (prefetched ahead like separate replies).
+      const segments = splitForSpeech(toSpeakableText(message.content));
+      if (segments.length === 0) continue;
+      for (const text of segments) speakQueueRef.current.push({ text, stream: null });
       turnStartedRef.current = true;
       queued = true;
     }

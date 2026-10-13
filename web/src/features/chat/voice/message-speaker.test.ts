@@ -26,16 +26,7 @@ vi.mock('./pcm-player', () => ({
 }));
 vi.mock('@/lib/auth/token-storage', () => ({ getStoredJwtToken: () => 'jwt-1' }));
 
-const { MAX_MESSAGE_SPEECH_CHARS, onMessageSpeechStart, speakMessage, splitForSpeech, stopMessageSpeech, toggleMessageSpeech, useMessageSpeakerStore } = await import('./message-speaker');
-
-describe('splitForSpeech', () => {
-  it('keeps short text whole and cuts long text at sentence ends', () => {
-    expect(splitForSpeech('你好。')).toEqual(['你好。']);
-    const parts = splitForSpeech('一二三四。五六七八。九十', 6);
-    expect(parts).toEqual(['一二三四。', '五六七八。', '九十']);
-    expect(splitForSpeech('a'.repeat(25), 10)).toEqual(['a'.repeat(10), 'a'.repeat(10), 'a'.repeat(5)]);
-  });
-});
+const { onMessageSpeechStart, speakMessage, stopMessageSpeech, toggleMessageSpeech, useMessageSpeakerStore } = await import('./message-speaker');
 
 describe('message speaker', () => {
   const fetchSpy = vi.fn(async () => new Response(new Uint8Array([1, 2, 3, 4])));
@@ -78,16 +69,17 @@ describe('message speaker', () => {
     expect(useMessageSpeakerStore.getState().messageId).toBe('m2');
   });
 
-  it('tells listeners (voice mode) when a message starts, and caps very long messages', async () => {
+  it('tells listeners (voice mode) when a message starts, and reads a long message whole', async () => {
     const listener = vi.fn();
     const unsubscribe = onMessageSpeechStart(listener);
-    await speakMessage('m1', '很长的一句话。'.repeat(3_000));
+    const long = '很长的一句话。'.repeat(3_000);
+    await speakMessage('m1', long);
     unsubscribe();
     expect(listener).toHaveBeenCalledTimes(1);
     const texts = fetchSpy.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).text as string);
-    const total = texts.join('').length;
-    expect(total).toBeLessThanOrEqual(MAX_MESSAGE_SPEECH_CHARS + 2);
-    expect(total).toBeGreaterThan(MAX_MESSAGE_SPEECH_CHARS / 2);
+    expect(texts.length).toBeGreaterThan(10);
+    expect(texts.every((text) => text.length <= 1_500)).toBe(true);
+    expect(texts.join('')).toBe(long);
   });
 
   it('reports synthesis failures', async () => {

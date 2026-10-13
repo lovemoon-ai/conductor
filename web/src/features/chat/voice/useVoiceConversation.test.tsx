@@ -325,6 +325,19 @@ describe('useVoiceConversation', () => {
     expect(hook.result.current.error).toMatch(/Sign in/);
   });
 
+  it('reads a long reply whole, piece by piece', async () => {
+    const fetchSpy = vi.fn(async () => new Response(new Uint8Array([1, 2])));
+    vi.stubGlobal('fetch', fetchSpy);
+    const hook = setup();
+    await talk(hook);
+    const long = '这是一个很长的回复。'.repeat(400); // 4 000 characters
+    await act(async () => hook.rerender({ messages: [reply('old', '旧回复'), reply('r1', long)], replyInProgress: false }));
+    const texts = fetchSpy.mock.calls.map((call) => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)).text as string);
+    expect(texts.length).toBe(3);
+    expect(texts.join('')).toBe(long);
+    expect(hook.result.current.phase).toBe('speaking');
+  });
+
   it('keeps what was heard in the input box when recognition times out or the connection drops', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

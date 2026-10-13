@@ -2,14 +2,10 @@
 
 import { create } from 'zustand';
 import { PcmStreamPlayer } from './pcm-player';
-import { toSpeakableText } from './speakable-text';
+import { splitForSpeech, toSpeakableText } from './speakable-text';
 import { TtsPrefetch } from './tts-prefetch';
 
 const TTS_SAMPLE_RATE = 24_000;
-/** Below the synthesize route's 2 000-character limit. */
-export const MAX_SEGMENT_CHARS = 1_500;
-/** A whole message is read up to here (cut at a sentence), so a huge report doesn't run into the rate limit. */
-export const MAX_MESSAGE_SPEECH_CHARS = 10_000;
 
 export type MessageSpeakerState = {
   /** Message being read aloud (or being prepared), null when quiet. */
@@ -23,27 +19,6 @@ export const useMessageSpeakerStore = create<MessageSpeakerState>(() => ({
   status: 'idle',
   error: '',
 }));
-
-const SENTENCE_END = /[。！？!?；;\n]|\.(?=\s)/g;
-
-/** Split speakable text into request-sized pieces, cutting at sentence ends where possible. */
-export const splitForSpeech = (text: string, maxChars = MAX_SEGMENT_CHARS): string[] => {
-  const segments: string[] = [];
-  let rest = text.trim();
-  while (rest.length > maxChars) {
-    const head = rest.slice(0, maxChars);
-    let cut = -1;
-    for (const match of head.matchAll(SENTENCE_END)) cut = (match.index ?? 0) + match[0].length;
-    if (cut < maxChars / 2) {
-      const space = head.lastIndexOf(' ');
-      cut = space > maxChars / 2 ? space + 1 : maxChars;
-    }
-    segments.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-  if (rest) segments.push(rest);
-  return segments.filter(Boolean);
-};
 
 type Session = {
   messageId: string;
@@ -94,7 +69,8 @@ export const stopMessageSpeech = () => {
  */
 export const speakMessage = async (messageId: string, markdown: string): Promise<void> => {
   stopMessageSpeech();
-  const segments = splitForSpeech(toSpeakableText(markdown, MAX_MESSAGE_SPEECH_CHARS));
+  // The whole message, however long: synthesized piece by piece, one piece ahead.
+  const segments = splitForSpeech(toSpeakableText(markdown));
   if (segments.length === 0) {
     showError('Nothing to read aloud in this message');
     return;
