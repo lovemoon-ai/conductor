@@ -24,6 +24,7 @@ import {
   inheritPtyLaunchConfigFromAiTask,
   isMissingAttachedTerminalSchemaError,
   resolveAttachedTerminalAgentHost,
+  resolveAttachedTerminalCodeCwd,
 } from "@/lib/tasks/attached-terminal";
 import { serializeTaskResponse } from "@/lib/tasks/serialization";
 import { normalizeTaskStatus } from "@/lib/tasks/task-config";
@@ -134,11 +135,17 @@ export async function POST(
     return NextResponse.json({ error: agentResolution.error }, { status: agentResolution.status });
   }
 
+  const codeCwd = await resolveAttachedTerminalCodeCwd({
+    userId: user.id,
+    agentHost: agentResolution.agentHost,
+    aiTaskLaunchConfig: aiTask.launchConfig,
+  });
   const ptyLaunchConfig = inheritPtyLaunchConfigFromAiTask(
     aiTask.launchConfig,
     aiTask.project?.workspacePath ?? null,
     aiTask.metadata,
     agentResolution.agentHost,
+    codeCwd,
   );
 
   let created: Awaited<ReturnType<typeof createAttachedTerminalRecord>>;

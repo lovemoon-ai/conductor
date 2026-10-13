@@ -25,13 +25,23 @@ differs when the project is a subdirectory of its repository.
 
 ## Fix
 - New `resolveTaskRemoteCodeLocation(launchConfig)` in
-  `lib/tasks/remote-worktree.ts` returns `{ host, workDir }` for a
+  `lib/tasks/remote-worktree.ts` returns `{ host, workDir, projectDir }` for a
   remote worktree or workspace. It uses the same path math as the operating
-  protocol given to the AI (`resolveRemoteWorktreePaths`).
+  protocol given to the AI (`resolveRemoteWorktreePaths`). If a malformed
+  row's workspace is outside its repoRoot, it falls back to the worktree root
+  instead of throwing.
 - `resolveAttachedTerminalAgentHost` sends the terminal to that host when it
-  exists. If the code's daemon is offline it returns a 409 that names the
-  daemon instead of quietly opening a shell on the AI's machine.
-- `inheritPtyLaunchConfigFromAiTask` starts the shell in that work dir.
+  exists. If the code's daemon is offline or cannot run terminals, it returns
+  a 409 that names the daemon and says what to do (start the daemon, or
+  upgrade it / enable terminals). It does not quietly open a shell on the
+  AI's machine.
+- The terminal's cwd is mkdir'd by the daemon. A remote worktree exists only
+  after the AI runs `git worktree add`, and creating its directory first (or a
+  subdirectory inside it) makes that step fail with "already exists". So
+  `resolveAttachedTerminalCodeCwd` stats the worktree's work dir on the code's
+  daemon (5 s timeout) and uses it only if it is there. If the worktree is
+  missing, or the daemon cannot stat or the stat fails, the terminal starts in
+  the project directory, which always exists.
 - The preview route uses the same helper, so its relative links resolve
   against the real work dir.
 

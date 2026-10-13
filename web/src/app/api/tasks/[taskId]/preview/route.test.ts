@@ -427,4 +427,33 @@ describe("file preview", () => {
     expect((await open(`${ROOT}/shot.png`)).status).toBe(200);
     expect(vi.mocked(requestRemoteFile).mock.calls[0][0].agentHost).toBe("macmini");
   });
+  it("resolves a relative link against the AI's work dir inside a remote worktree", async () => {
+    // The project is a subdirectory of its repository, so the AI works in the
+    // same subdirectory of the worktree, not at the worktree root.
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      agentHost: "macmini",
+      executionHost: null,
+      metadata: null,
+      launchConfig: {
+        remoteWorktree: {
+          host: "ubuntu",
+          projectId: "p",
+          repoRoot: "/data/repo",
+          workspacePath: "/data/repo/web",
+          branch: "f5b5cc",
+          baseRef: "main",
+        },
+      },
+      project: { daemonHost: "macmini" },
+    } as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "a", host: "ubuntu", capabilities: ["remote_file", "remote_file_preview"] },
+      { id: "b", host: "macmini", capabilities: ["remote_file", "remote_file_preview"] },
+    ] as any);
+    await open("docs/STATUS.md");
+    expect(vi.mocked(requestRemoteFile).mock.calls[0][0]).toMatchObject({
+      agentHost: "ubuntu",
+      args: { remotePath: "/data/repo/web/.conductor/worktrees/f5b5cc/web/docs/STATUS.md" },
+    });
+  });
 });
