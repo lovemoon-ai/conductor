@@ -873,6 +873,47 @@ describe('TaskList', () => {
       expect(onOpenTask).toHaveBeenCalledWith('task-2');
     });
 
+    it('merges a third card into an existing tab card with a mouse drag', async () => {
+      // Regression: desktop move/up landed on the tab card, which has no row
+      // handlers, so a third task could never be dropped onto a group.
+      tasksState.tasks.push({ id: 'task-3', title: 'Task Three', projectId: 'project-1', status: 'running' });
+      let captured: Element | null = null;
+      HTMLElement.prototype.setPointerCapture ??= () => undefined;
+      const captureSpy = vi.spyOn(HTMLElement.prototype, 'setPointerCapture')
+        .mockImplementation(function capture(this: HTMLElement) { captured = this as Element; });
+      // Browser semantics: with capture, events go to the captured row;
+      // otherwise to the element under the pointer.
+      const mouseDrag = (from: HTMLElement, over: HTMLElement, fromTop: number, toTop: number) => {
+        captured = null;
+        fireEvent.pointerDown(from, { pointerId: 1, button: 0, clientX: 20, clientY: fromTop + 10 });
+        fireEvent.pointerMove(from, { pointerId: 1, clientX: 20, clientY: fromTop + 30 });
+        fireEvent.pointerMove(captured ?? over, { pointerId: 1, clientX: 20, clientY: toTop + 10 });
+        fireEvent.pointerUp(captured ?? over, { pointerId: 1, clientX: 20, clientY: toTop + 10 });
+      };
+      const row = (id: string) => document.querySelector(`[data-task-item-wrapper="${id}"]`) as HTMLElement;
+      try {
+        render(<TaskList viewMode="list" projectFilter={null} />);
+        primeRowRects();
+        stubRect(row('task-3'), 200, 300);
+        mouseDrag(row('task-1'), row('task-2'), 0, 100);
+
+        const tabCard = await waitFor(() => {
+          const el = document.querySelector('[data-task-tab-card]');
+          expect(el).not.toBeNull();
+          return el as HTMLElement;
+        });
+        stubRect(tabCard, 0, 140);
+        stubRect(row('task-3'), 150, 250);
+        mouseDrag(row('task-3'), tabCard, 150, 0);
+
+        await waitFor(() => {
+          expect(document.querySelectorAll('[data-task-tab-card] [data-task-tab]')).toHaveLength(3);
+        });
+      } finally {
+        captureSpy.mockRestore();
+      }
+    });
+
     // The active tab sits flush on the card's top edge, so it must paint the
     // card's current background or the seam shows as a color band. Inactive
     // tabs keep the resting background when the card becomes selected.
