@@ -3191,5 +3191,150 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect(payload.initial_content).toContain("Add a dark mode");
       expect(payload.initial_content).not.toContain("handoff");
     });
+
+    describe("with the code on another daemon", () => {
+      const FIRST = "Add a dark mode";
+      const lastCreate = () => vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+      const lastPayload = () =>
+        JSON.parse(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data?.payloadJson as string).payload;
+      const ubuntuProject = {
+        id: "proj-ubuntu",
+        name: "repo",
+        userId: "user-1",
+        daemonHost: "ubuntu",
+        repoRoot: "/home/u/repo",
+        workspacePath: "/home/u/repo/app",
+        worktreeBranch: "dev",
+      };
+      const globalSource = () =>
+        buildTask({
+          secondProjectId: "proj-ubuntu",
+          launchConfig: JSON.stringify({
+            remoteWorkspace: {
+              host: "ubuntu",
+              projectId: "proj-ubuntu",
+              repoRoot: "/home/u/repo",
+              workspacePath: "/home/u/repo/app",
+            },
+          }),
+          metadata: JSON.stringify({ globalBackend: { host: "daemon-1", backend: "codex" } }),
+        });
+      const projectsById = (rows: Record<string, unknown>) =>
+        vi.mocked(db.project.findFirst).mockImplementation((async (args: any) => rows[args?.where?.id] ?? null) as any);
+
+      it("binds a global AI to a fresh remote worktree on a plain local source's daemon", async () => {
+        projectsById({ "proj-1": { ...gitProject, name: "project" } });
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["remote_exec", "remote_file"] },
+          {
+            id: "agent-2",
+            host: "daemon-2",
+            supportedBackends: ["codex"],
+            capabilities: ["global_backend_v1", "restart_first_message"],
+          },
+        ] as any);
+
+        const response = await post({ strategy: "new_task", new_worktree: true, first_message: FIRST, agent_host: "daemon-2" });
+
+        expect(response.status).toBe(200);
+        expect(lastCreate().data.agentHost).toBe("daemon-2");
+        expect(JSON.parse(lastCreate().data.launchConfig)).toEqual({
+          remoteWorktree: {
+            host: "daemon-1",
+            projectId: "proj-1",
+            repoRoot: "/repo",
+            workspacePath: "/repo/project",
+            branch: expect.any(String),
+            baseRef: "main",
+          },
+        });
+        expect(JSON.parse(lastCreate().data.metadata).globalBackend).toEqual({ host: "daemon-2", backend: "codex" });
+        expect(lastPayload().initial_content).toMatch(/^\[conductor:remote-worktree\]/);
+        expect(lastPayload().initial_content).toContain(FIRST);
+      });
+
+      it("explains that the AI cannot reach the code when the remote binding is unavailable", async () => {
+        projectsById({ "proj-1": { ...gitProject, name: "project" } });
+        // daemon-1 does not serve conductor remote, so daemon-2 cannot work on its code.
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+          {
+            id: "agent-2",
+            host: "daemon-2",
+            supportedBackends: ["codex"],
+            capabilities: ["global_backend_v1", "restart_first_message"],
+          },
+        ] as any);
+
+        const response = await post({ strategy: "new_task", new_worktree: true, first_message: FIRST, agent_host: "daemon-2" });
+
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(
+          /AI on daemon-2 cannot work on the code on daemon-1 remotely.*pick a backend on daemon-1/,
+        );
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("creates a local worktree when the AI moves onto the daemon holding the code", async () => {
+        vi.mocked(db.task.findFirst).mockResolvedValue(globalSource() as any);
+        projectsById({
+          "proj-1": { id: "proj-1", userId: "user-1", daemonHost: "daemon-1", workspacePath: "/repo/project" },
+          "proj-ubuntu": ubuntuProject,
+        });
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+          { id: "agent-2", host: "ubuntu", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+        ] as any);
+
+        const response = await post({ strategy: "new_task", new_worktree: true, first_message: FIRST, agent_host: "ubuntu" });
+
+        expect(response.status).toBe(200);
+        expect(lastCreate().data.agentHost).toBe("ubuntu");
+        expect(JSON.parse(lastCreate().data.launchConfig)).toMatchObject({
+          worktree: true,
+          worktreeId: lastCreate().data.id,
+          worktreeBaseRef: "dev",
+          projectRepoRoot: "/home/u/repo",
+          projectWorkspacePath: "/home/u/repo/app",
+          projectRelativePath: "app",
+        });
+        expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
+        expect(lastPayload().initial_content).toBe(FIRST);
+      });
+
+      it("refuses when the daemon holding the code is offline", async () => {
+        vi.mocked(db.task.findFirst).mockResolvedValue(globalSource() as any);
+        projectsById({
+          "proj-1": { id: "proj-1", userId: "user-1", daemonHost: "daemon-1", workspacePath: "/repo/project" },
+          "proj-ubuntu": ubuntuProject,
+        });
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+        ] as any);
+
+        const response = await post({ strategy: "new_task", new_worktree: true, first_message: FIRST });
+
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/ubuntu is offline/);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+
+      it("refuses when the project holding the code no longer exists", async () => {
+        vi.mocked(db.task.findFirst).mockResolvedValue(globalSource() as any);
+        projectsById({
+          "proj-1": { id: "proj-1", userId: "user-1", daemonHost: "daemon-1", workspacePath: "/repo/project" },
+        });
+        vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+          { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: ["restart_first_message"] },
+          { id: "agent-2", host: "ubuntu", supportedBackends: ["codex"], capabilities: ["remote_exec", "remote_file"] },
+        ] as any);
+
+        const response = await post({ strategy: "new_task", new_worktree: true, first_message: FIRST });
+
+        expect(response.status).toBe(409);
+        expect((await extractJson(response)).error).toMatch(/no longer exists/);
+        expect(db.task.create).not.toHaveBeenCalled();
+      });
+    });
   });
 });

@@ -1311,5 +1311,64 @@ describe('RestartTaskControls', () => {
       expect(screen.getByLabelText(/Create a new worktree/)).toBeDisabled();
       expect(screen.getByText(/git repository is on daemon-1/)).toBeInTheDocument();
     });
+
+    describe('when the code lives on another daemon (global AI)', () => {
+      const globalTask = {
+        ...gitTask,
+        launchConfig: {
+          remoteWorkspace: { host: 'ubuntu', projectId: 'proj-ubuntu', repoRoot: '/home/u/repo', workspacePath: '/home/u/repo' },
+        },
+        metadata: { globalBackend: { host: 'daemon-1', backend: 'codex' } },
+      };
+      beforeEach(() => {
+        agentsState = {
+          agents: [
+            { host: 'daemon-1', supportedBackends: ['codex'], capabilities: ['restart_first_message', 'global_backend_v1'] },
+            { host: 'ubuntu', supportedBackends: ['codex'], capabilities: ['remote_exec', 'remote_file'] },
+          ],
+        };
+      });
+
+      it("offers the worktree from the code's project, not the AI's", async () => {
+        projectsState = {
+          projects: [
+            { id: 'proj-1', daemonHost: 'daemon-1' },
+            { id: 'proj-ubuntu', daemonHost: 'ubuntu', repoRoot: '/home/u/repo', worktreeBranch: 'dev' },
+          ],
+        };
+        restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+        render(<RestartTaskControls open onClose={() => {}} onCreatedTask={() => {}} task={globalTask as never} />);
+
+        expect(screen.getByLabelText('Daemon')).toHaveValue('ubuntu');
+        const checkbox = screen.getByLabelText(/Create a new worktree/);
+        expect(checkbox).toBeEnabled();
+        fireEvent.click(checkbox);
+        expect(screen.getByText(/fresh worktree from dev/)).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText(/First message/), { target: { value: 'Add a dark mode' } });
+        fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+
+        await waitFor(() => expect(restartTaskMock).toHaveBeenCalledTimes(1));
+        const input = restartTaskMock.mock.calls[0][1];
+        // The AI stays where it ran and the code stays on ubuntu: no overrides.
+        expect(input).toEqual({
+          backendType: 'codex',
+          strategy: 'new_task',
+          firstMessage: 'Add a dark mode',
+          newWorktree: true,
+        });
+      });
+
+      it("is hidden when only the AI's project is a git repository", () => {
+        projectsState = {
+          projects: [
+            { id: 'proj-1', daemonHost: 'daemon-1', repoRoot: '/repo' },
+            { id: 'proj-ubuntu', daemonHost: 'ubuntu' },
+          ],
+        };
+        render(<RestartTaskControls open onClose={() => {}} task={globalTask as never} />);
+
+        expect(screen.queryByLabelText(/Create a new worktree/)).not.toBeInTheDocument();
+      });
+    });
   });
 });

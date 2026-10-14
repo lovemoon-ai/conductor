@@ -1064,11 +1064,18 @@ export async function POST(
         (codeProject as { workspacePath?: string | null }).workspacePath,
       );
       if (!codeDaemonHost || codeDaemonHost !== restartAgentHost || !codeRepoRoot || !codeWorkspacePath) {
+        // An AI on another daemon that was meant to work on this code remotely
+        // but could not be bound to it (code daemon offline / too old / shared):
+        // the code daemon is the right one, its AI choice is what fails.
+        const remoteBindingFailed =
+          isCrossDaemonOverride && !isCodeMoveRequest && Boolean(codeRepoRoot) && codeDaemonHost === sourceCodeHost;
         return NextResponse.json(
           {
-            error: codeRepoRoot
-              ? `A new worktree must be created on the project's daemon${codeDaemonHost ? ` ${codeDaemonHost}` : ""}`
-              : "A new worktree requires a git-backed project",
+            error: !codeRepoRoot
+              ? "A new worktree requires a git-backed project"
+              : remoteBindingFailed
+                ? `The AI on ${restartAgentHost} cannot work on the code on ${codeDaemonHost} remotely (the daemon is offline, does not support conductor remote, or is shared); pick a backend on ${codeDaemonHost} to create the worktree`
+                : `A new worktree must be created on the project's daemon${codeDaemonHost ? ` ${codeDaemonHost}` : ""}`,
           },
           { status: 409 },
         );
