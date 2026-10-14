@@ -1021,6 +1021,9 @@ function TaskListComponent({
         return;
       }
       if (Math.abs(deltaY) < DRAG_ACTIVATE_THRESHOLD) return;
+      // Without capture, move/up go to whatever is under the cursor; tab
+      // cards have no row handlers, so dropping onto a group was ignored.
+      rowRefs.current.get(drag.taskId)?.setPointerCapture?.(event.pointerId);
       activateRowDrag(drag, event.clientX, event.clientY);
     }
     event.preventDefault();
