@@ -37,12 +37,21 @@ export type ScheduledMessageMode =
       } | null;
     };
 
+/**
+ * Who created a schedule. `quota_resume` rows are written by a fire that hit
+ * its model quota, to continue the task once the quota resets; a task keeps at
+ * most one active such row.
+ */
+export const SCHEDULED_MESSAGE_SOURCES = ["message_bubble", "quota_resume"] as const;
+export type ScheduledMessageSource = (typeof SCHEDULED_MESSAGE_SOURCES)[number];
+
 export type CreateScheduledMessageInput = {
   userId: string;
   taskId: string;
   sourceMessageId?: string | null;
   content: string;
   schedule: ScheduledMessageMode;
+  source?: ScheduledMessageSource | null;
   now?: Date;
 };
 
@@ -60,6 +69,7 @@ export type ScheduledMessageResponse = {
   userId: string;
   taskId: string;
   sourceMessageId: string | null;
+  source: string;
   content: string;
   kind: string;
   condition: string;
@@ -270,6 +280,15 @@ const resolveCreateData = (
   };
 };
 
+const readScheduleSource = (metadata: string | null | undefined): string => {
+  const createdBy = parseJsonObject(metadata)?.createdBy;
+  return typeof createdBy === "string" && createdBy ? createdBy : "message_bubble";
+};
+
+// `metadata` is a JSON string column; this is the exact text a quota_resume
+// row's metadata contains, so active rows can be matched without a new column.
+const QUOTA_RESUME_METADATA_MARKER = '"createdBy":"quota_resume"';
+
 export const buildScheduledMessageResponse = (
   row: NonNullable<ScheduledMessageRow>,
 ): ScheduledMessageResponse => ({
@@ -277,6 +296,7 @@ export const buildScheduledMessageResponse = (
   userId: row.userId,
   taskId: row.taskId,
   sourceMessageId: row.sourceMessageId ?? null,
+  source: readScheduleSource(row.metadata),
   content: row.content,
   kind: row.kind,
   condition: row.condition,
@@ -338,6 +358,19 @@ export async function createScheduledMessageForTask(
 
   const now = input.now ?? new Date();
   const scheduleData = resolveCreateData(input.schedule, now);
+  const source: ScheduledMessageSource = input.source ?? "message_bubble";
+  if (source === "quota_resume") {
+    // One pending auto-resume per task: a newer quota hit replaces the old one.
+    await db.scheduledMessage.updateMany({
+      where: {
+        userId: input.userId,
+        taskId: input.taskId,
+        status: "active",
+        metadata: { contains: QUOTA_RESUME_METADATA_MARKER },
+      },
+      data: { status: "canceled", updatedAt: now },
+    });
+  }
   const scheduled = await db.scheduledMessage.create({
     data: {
       userId: input.userId,
@@ -354,7 +387,7 @@ export async function createScheduledMessageForTask(
       stopAt: scheduleData.stopAt,
       stopWhenTaskNotRunning: scheduleData.stopWhenTaskNotRunning,
       metadata: JSON.stringify({
-        createdBy: "message_bubble",
+        createdBy: source,
       }),
     },
   });

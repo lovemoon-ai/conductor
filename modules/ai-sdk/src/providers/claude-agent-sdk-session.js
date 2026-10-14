@@ -632,6 +632,8 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       status_done_line: payload?.status_done_line,
       reply_preview: payload?.reply_preview,
       thread_id: this.sessionId || undefined,
+      // A turn claude ran on its own, between user turns (see dispatchLiveMessage).
+      ...(payload?.background === true ? { background: true } : {}),
     };
     this.updateCurrentTurnStatus(normalized);
     const snapshot = this.getCurrentTurnStatus();
@@ -1247,6 +1249,16 @@ export class ClaudeAgentSdkSession extends EventEmitter {
     liveQuery.backgroundTurn = null;
     if (backgroundTurn) {
       await this.finishBackgroundTurn(backgroundTurn, null, failure);
+    } else if (failure && !this.closeRequested && !this.currentTurn) {
+      // The process died after a background turn's result, e.g. an error
+      // result (quota hit) makes claude exit right after reporting it. No turn
+      // is left to own the failure, so report it as a background one.
+      await this.emitWorkingStatus({
+        phase: "turn_failed",
+        status_done_line: failure?.message || String(failure),
+        reply_in_progress: false,
+        background: true,
+      });
     }
   }
 
@@ -1283,9 +1295,13 @@ export class ClaudeAgentSdkSession extends EventEmitter {
   }
 
   async finishBackgroundTurn(backgroundTurn, resultMessage, failure = null) {
-    const failed = Boolean(failure) || (resultMessage && resultMessage.subtype !== "success");
+    // An error result (e.g. "You've hit your session limit") can carry subtype
+    // "success"; `is_error` is what marks it.
+    const errorResult = Boolean(resultMessage && (resultMessage.subtype !== "success" || resultMessage.is_error === true));
+    const failed = Boolean(failure) || errorResult;
     const text = normalizeText(resultMessage?.result);
-    if (!failed && text && !backgroundTurn.emittedAssistantMessage) {
+    // An error result's text still reaches the chat, as it always has.
+    if (!failure && resultMessage?.subtype === "success" && text && !backgroundTurn.emittedAssistantMessage) {
       await this.emitAssistantMessage(text);
     }
     // A pending user turn owns the working status.
@@ -1297,9 +1313,12 @@ export class ClaudeAgentSdkSession extends EventEmitter {
       failed
         ? {
             phase: "turn_failed",
-            status_done_line: failure?.message || extractResultErrorMessage(resultMessage),
+            status_done_line:
+              failure?.message ||
+              (resultMessage?.is_error === true && text ? text : extractResultErrorMessage(resultMessage)),
+            background: true,
           }
-        : { phase: "turn_completed", status_done_line: "claude finished" },
+        : { phase: "turn_completed", status_done_line: "claude finished", background: true },
     );
   }
 

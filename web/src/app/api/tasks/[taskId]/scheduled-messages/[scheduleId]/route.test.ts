@@ -91,6 +91,35 @@ describe("/api/tasks/[taskId]/scheduled-messages/[scheduleId]", () => {
     });
   });
 
+  it("with cancel_only, keeps a schedule that was already sent", async () => {
+    vi.mocked(cancelScheduledMessageForTask).mockResolvedValue(false);
+    vi.mocked(getScheduledMessageStatusForTask).mockResolvedValue("sent");
+
+    const response = await DELETE(
+      createMockRequest({
+        method: "DELETE",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages/sched-1?cancel_only=1",
+      }),
+      { params: Promise.resolve({ taskId: "task-1", scheduleId: "sched-1" }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect(deleteScheduledMessageForTask).not.toHaveBeenCalled();
+  });
+
+  it("with cancel_only, still cancels an active schedule", async () => {
+    const response = await DELETE(
+      createMockRequest({
+        method: "DELETE",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages/sched-1?cancel_only=1",
+      }),
+      { params: Promise.resolve({ taskId: "task-1", scheduleId: "sched-1" }) },
+    );
+
+    expect(response.status).toBe(204);
+    expect(deleteScheduledMessageForTask).not.toHaveBeenCalled();
+  });
+
   it("reports an in-flight send as a 409 rather than a missing row", async () => {
     vi.mocked(cancelScheduledMessageForTask).mockResolvedValue(false);
     vi.mocked(getScheduledMessageStatusForTask).mockResolvedValue("sending");

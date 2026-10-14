@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import {
+  SCHEDULED_MESSAGE_SOURCES,
   ScheduledMessageError,
   createScheduledMessageForTask,
   listScheduledMessagesForTask,
@@ -26,6 +27,7 @@ const createScheduledMessageSchema = z.object({
   sourceMessageId: z.string().trim().min(1).optional().nullable(),
   source_message_id: z.string().trim().min(1).optional().nullable(),
   schedule: scheduleSchema,
+  source: z.enum(SCHEDULED_MESSAGE_SOURCES).optional().nullable(),
 });
 
 const errorResponse = (error: unknown): Response => {
@@ -124,6 +126,7 @@ export async function POST(
       sourceMessageId: parsed.data.sourceMessageId ?? parsed.data.source_message_id ?? null,
       content: parsed.data.content,
       schedule: parsed.data.schedule,
+      source: parsed.data.source ?? null,
     });
     return NextResponse.json(schedule, { status: 201 });
   } catch (error) {

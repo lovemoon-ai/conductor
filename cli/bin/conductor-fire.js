@@ -27,6 +27,17 @@ import {
   resumeProviderForBackend as resumeProviderForCliBackend,
 } from "../src/fire/resume.js";
 import {
+  QUOTA_RESUME_MAX_ATTEMPTS,
+  buildQuotaResumePrompt,
+  computeQuotaResumeAt,
+  createQuotaResumeScheduler,
+  formatResumeTime,
+  isQuotaResumePrompt,
+  mergeQueuedMessages,
+  parseQuotaLimitError,
+  parseQuotaResumePrompt,
+} from "../src/fire/quota-resume.js";
+import {
   REMOTE_WORKTREE_ENV,
   buildRemoteWorktreeSessionOptions,
   readRemoteWorktreeBinding,
@@ -2100,8 +2111,19 @@ export class BridgeRunner {
     shouldProcessPrePrompt,
     createFreshBackendSession,
     withFreshSessionBootstrap,
+    quotaResumeScheduler,
+    now,
+    random,
   }) {
     this.backendSession = backendSession;
+    // Model quota handling (see src/fire/quota-resume.js). `undefined` means
+    // "build the HTTP scheduler from env on first use"; tests inject their own.
+    this.quotaResumeSchedulerOverride = quotaResumeScheduler;
+    this.now = typeof now === "function" ? now : () => new Date();
+    this.random = typeof random === "function" ? random : Math.random;
+    this.quotaWait = null;
+    this.quotaResumeAttempts = 0;
+    this.lastQuotaResumeQueue = null;
     this.createFreshBackendSession = createFreshBackendSession;
     this.withFreshSessionBootstrap = withFreshSessionBootstrap;
     this.conductor = conductor;
@@ -2428,6 +2450,7 @@ export class BridgeRunner {
       if (this.needsReconnectRecovery && !this.runningTurn) {
         await this.recoverAfterReconnect();
       }
+      await this.runLocalQuotaResumeIfDue();
       let processed = false;
       try {
         processed = await this.processIncomingBatch();
@@ -3255,6 +3278,19 @@ export class BridgeRunner {
   }
 
   async handleContinuousWorkingStatus(payload) {
+    // A turn claude ran on its own (after a background task or subagent) hit
+    // the quota: no user turn fails, so park the task here.
+    if (
+      payload?.background === true &&
+      payload?.phase === "turn_failed" &&
+      !this.runningTurn &&
+      (await this.enterQuotaWaitIfQuotaError(String(payload.status_done_line || ""), {
+        replyTo: undefined,
+        content: "",
+      }))
+    ) {
+      return;
+    }
     await this.reportRuntimeStatus(payload, payload?.replyTo);
   }
 
@@ -3317,6 +3353,228 @@ export class BridgeRunner {
 
   resetErrorLoop() {
     this.errorLoop = null;
+  }
+
+  getQuotaResumeScheduler() {
+    if (this.quotaResumeSchedulerOverride !== undefined) {
+      return this.quotaResumeSchedulerOverride;
+    }
+    this.quotaResumeSchedulerOverride = createQuotaResumeScheduler();
+    return this.quotaResumeSchedulerOverride;
+  }
+
+  /**
+   * A turn failed because the model quota is used up: park the task until the
+   * quota resets. The resume is a one-off Conductor scheduled message, so it
+   * survives restarts and can be canceled from the schedule list; messages that
+   * arrive meanwhile are queued instead of each failing again. Returns false
+   * (report the error as usual) for other errors, or after
+   * QUOTA_RESUME_MAX_ATTEMPTS resumes in a row hit the quota again.
+   */
+  async enterQuotaWaitIfQuotaError(errorMessage, { replyTo, content }) {
+    const now = this.now();
+    const quota = parseQuotaLimitError(errorMessage, { now });
+    if (!quota) {
+      return false;
+    }
+    const failedItems = this.pendingItemsOfFailedTurn(replyTo, content);
+    if (this.quotaWait) {
+      // Already parked (a background failure, or a turn that raced the wait):
+      // fold this one in rather than scheduling a second resume.
+      await this.addToQuotaWait(failedItems);
+      return true;
+    }
+    this.quotaResumeAttempts += 1;
+    if (this.quotaResumeAttempts > QUOTA_RESUME_MAX_ATTEMPTS) {
+      log(`[quota] ${this.quotaResumeAttempts - 1} resumes in a row hit the quota again; not scheduling another`);
+      this.quotaResumeAttempts = 0;
+      this.lastQuotaResumeQueue = null;
+      return false;
+    }
+    this.lastQuotaResumeQueue = null;
+    const sendAt = computeQuotaResumeAt(quota.resetAt, { now, random: this.random });
+    // Set synchronously, before any await, so messages and background failures
+    // that arrive while the schedule is being created are queued into it.
+    const wait = {
+      // Messages that arrive before this are queued; later ones end the wait.
+      resumeAfter: quota.resetAt && quota.resetAt.getTime() > now.getTime() ? quota.resetAt : sendAt,
+      sendAt,
+      scheduleId: null,
+      localResumeAt: null,
+      queued: failedItems,
+    };
+    this.quotaWait = wait;
+    const scheduler = this.getQuotaResumeScheduler();
+    let scheduleNote = "可在定时消息列表里取消。";
+    let scheduledContent = "";
+    if (scheduler) {
+      // A fire that restarted mid-wait left its resume schedule behind; the new
+      // one replaces it, so carry over what it listed.
+      if (typeof scheduler.listActive === "function") {
+        try {
+          const leftover = await scheduler.listActive({ taskId: this.taskId });
+          wait.queued = mergeQueuedMessages(
+            ...leftover.map((row) => parseQuotaResumePrompt(row?.content)),
+            wait.queued,
+          );
+        } catch (error) {
+          log(`[quota] failed to read earlier resume schedules: ${error?.message || error}`);
+        }
+      }
+      scheduledContent = buildQuotaResumePrompt(wait.queued);
+      try {
+        const created = await scheduler.schedule({
+          taskId: this.taskId,
+          sendAt,
+          content: scheduledContent,
+        });
+        wait.scheduleId = created?.id || null;
+      } catch (error) {
+        log(`[quota] failed to schedule resume: ${error?.message || error}`);
+      }
+    }
+    if (!wait.scheduleId) {
+      // No server schedule: fire keeps the time itself (lost if fire restarts).
+      wait.localResumeAt = sendAt;
+      scheduleNote = "定时消息没有建成，改由本进程计时；如果 fire 重启，需要手动发消息继续。";
+    } else if (buildQuotaResumePrompt(wait.queued) !== scheduledContent) {
+      // Messages queued while the schedule was being created.
+      await this.syncQuotaResumeSchedule();
+    }
+    const resumeLabel = formatResumeTime(sendAt);
+    log(
+      `[quota] waiting until ${sendAt.toISOString()} (reset ${quota.resetAt ? quota.resetAt.toISOString() : "unknown"}) schedule=${wait.scheduleId || "local"} attempt=${this.quotaResumeAttempts}`,
+    );
+    await this.reportRuntimeStatus(
+      {
+        state: "WAITING",
+        phase: "quota_wait",
+        reply_in_progress: false,
+        status_done_line: `额度已用完，${resumeLabel} 自动继续`,
+        quota_resume_at: sendAt.toISOString(),
+      },
+      replyTo,
+    );
+    try {
+      await this.conductor.sendMessage(
+        this.taskId,
+        `${this.backendName} 额度已用完：${errorMessage}\n将在 ${resumeLabel} 自动继续，在此之前收到的消息会排队，届时一起处理。${scheduleNote}`,
+        {
+          severity: "warning",
+          backend: this.backendName,
+          reply_to: replyTo || undefined,
+          quota_wait: true,
+          quota_resume_at: sendAt.toISOString(),
+          cli_args: this.cliArgs,
+        },
+      );
+    } catch (error) {
+      log(`[quota] failed to post wait notice: ${error?.message || error}`);
+    }
+    return true;
+  }
+
+  /** What still has to run after a turn that hit the quota. */
+  pendingItemsOfFailedTurn(replyTo, content) {
+    const text = String(content || "").trim();
+    if (!text) {
+      // A background turn: nothing to redo beyond "continue".
+      return [];
+    }
+    if (!isQuotaResumePrompt(text)) {
+      return [{ messageId: replyTo || null, content: text }];
+    }
+    // A failed resume: what it carried. A fire that restarted mid-wait has no
+    // memory of it, so read the list back out of the prompt itself.
+    return this.lastQuotaResumeQueue
+      ? [...this.lastQuotaResumeQueue]
+      : parseQuotaResumePrompt(text);
+  }
+
+  async addToQuotaWait(items) {
+    const wait = this.quotaWait;
+    const before = wait.queued.length;
+    wait.queued = mergeQueuedMessages(wait.queued, items);
+    if (wait.queued.length !== before) {
+      await this.syncQuotaResumeSchedule();
+    }
+  }
+
+  /** Keep the scheduled resume's text complete, so a fire restart loses nothing. */
+  async syncQuotaResumeSchedule() {
+    const wait = this.quotaWait;
+    const scheduler = this.getQuotaResumeScheduler();
+    if (!wait?.scheduleId || typeof scheduler?.update !== "function") {
+      return;
+    }
+    try {
+      await scheduler.update({
+        taskId: this.taskId,
+        scheduleId: wait.scheduleId,
+        content: buildQuotaResumePrompt(wait.queued),
+      });
+    } catch (error) {
+      log(`[quota] failed to update resume schedule: ${error?.message || error}`);
+    }
+  }
+
+  isQuotaResumeMessage(message, content) {
+    const scheduledMessageId = message?.metadata?.scheduledMessageId;
+    if (scheduledMessageId && this.quotaWait?.scheduleId && scheduledMessageId === this.quotaWait.scheduleId) {
+      return true;
+    }
+    return isQuotaResumePrompt(content);
+  }
+
+  /** While waiting for the quota, queue the message. Returns false once the wait should end. */
+  async queueMessageDuringQuotaWait(message, content) {
+    const wait = this.quotaWait;
+    if (this.isQuotaResumeMessage(message, content)) {
+      return false;
+    }
+    if (this.now().getTime() >= wait.resumeAfter.getTime()) {
+      return false;
+    }
+    const replyTo = message?.message_id || null;
+    if (replyTo) {
+      this.processedMessageIds.add(replyTo);
+    }
+    await this.addToQuotaWait([{ messageId: replyTo, content }]);
+    log(`[quota] queued message ${replyTo || "(no id)"} until ${wait.sendAt.toISOString()} (${wait.queued.length} queued)`);
+    return true;
+  }
+
+  /** Ends the quota wait; returns the prompt for the turn that resumes the task. */
+  async leaveQuotaWait(message, content) {
+    const wait = this.quotaWait;
+    this.quotaWait = null;
+    const isResume = this.isQuotaResumeMessage(message, content);
+    const queued = [...wait.queued];
+    if (!isResume) {
+      // Someone wrote after the quota reset, before the scheduled resume fired.
+      queued.push({ messageId: message?.message_id || null, content });
+      const scheduler = this.getQuotaResumeScheduler();
+      // At or after the send time the schedule is (being) sent: leave it be.
+      if (wait.scheduleId && scheduler?.cancel && this.now().getTime() < wait.sendAt.getTime()) {
+        try {
+          await scheduler.cancel({ taskId: this.taskId, scheduleId: wait.scheduleId });
+        } catch (error) {
+          log(`[quota] failed to cancel resume schedule: ${error?.message || error}`);
+        }
+      }
+    }
+    this.lastQuotaResumeQueue = queued;
+    log(`[quota] resuming with ${queued.length} pending message(s)${isResume ? "" : " (ended by a new message)"}`);
+    return buildQuotaResumePrompt(queued);
+  }
+
+  /** The fallback when no server schedule could be made: resume from fire's own clock. */
+  async runLocalQuotaResumeIfDue() {
+    const wait = this.quotaWait;
+    if (!wait?.localResumeAt || this.runningTurn || this.now().getTime() < wait.localResumeAt.getTime()) {
+      return;
+    }
+    await this.respondToMessage({ role: "user", content: buildQuotaResumePrompt(wait.queued) });
   }
 
   evaluateErrorLoop(errorMessage) {
@@ -3383,7 +3641,7 @@ export class BridgeRunner {
         )
       : [];
     const rawContent = String(message.content || "").trim();
-    const content = rawContent || (localAttachments.length ? "Analyze the attached files." : "");
+    let content = rawContent || (localAttachments.length ? "Analyze the attached files." : "");
     if (!content) {
       this.copilotLog(`skip empty message replyTo=${message?.message_id || "latest"}`);
       return;
@@ -3396,6 +3654,16 @@ export class BridgeRunner {
     if (replyTo && this.inFlightMessageIds.has(replyTo)) {
       this.copilotLog(`skip in-flight duplicated message replyTo=${replyTo}`);
       return;
+    }
+    if (this.quotaWait) {
+      if (await this.queueMessageDuringQuotaWait(message, content)) {
+        return;
+      }
+      content = await this.leaveQuotaWait(message, content);
+    } else if (isQuotaResumePrompt(content)) {
+      // A resume this fire did not schedule (it restarted while waiting):
+      // its text already lists what was queued.
+      this.lastQuotaResumeQueue = null;
     }
     if (replyTo) {
       this.inFlightMessageIds.add(replyTo);
@@ -3538,6 +3806,8 @@ export class BridgeRunner {
         this.pendingInitialPrompt = "";
       }
       this.resetErrorLoop();
+      this.quotaResumeAttempts = 0;
+      this.lastQuotaResumeQueue = null;
       if (this.useSessionFileReplyStream) {
         this.copilotLog(`session_file turn settled replyTo=${replyTo || "latest"}`);
       } else {
@@ -3563,6 +3833,12 @@ export class BridgeRunner {
         return;
       }
       if (await this.settleCodexCheckpointUnavailableAfterStream(replyTo, errorMessage)) {
+        return;
+      }
+      if (await this.enterQuotaWaitIfQuotaError(errorMessage, { replyTo, content })) {
+        if (replyTo) {
+          this.processedMessageIds.add(replyTo);
+        }
         return;
       }
       this.copilotLog(
@@ -3942,6 +4218,12 @@ export class BridgeRunner {
     surfaceUserMessage,
     replyMetadata,
   }) {
+    if (this.quotaWait) {
+      // Parked on the quota (e.g. the pre-prompt just hit it): run this with the resume.
+      log(`[quota] ${logTag} queued until ${this.quotaWait.sendAt.toISOString()}`);
+      await this.addToQuotaWait([{ messageId: replyTarget || null, content: String(content || "") }]);
+      return;
+    }
     this.lastRuntimeStatusSignature = null;
     this.runningTurn = true;
     // Lets a target-less interrupt (`/stop`) reach this turn.
@@ -4030,6 +4312,9 @@ export class BridgeRunner {
           markProcessed: false,
         })
       ) {
+        return;
+      }
+      if (await this.enterQuotaWaitIfQuotaError(errorMessage, { replyTo: replyTarget, content })) {
         return;
       }
       this.copilotLog(
