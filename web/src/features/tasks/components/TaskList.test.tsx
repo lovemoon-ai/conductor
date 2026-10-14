@@ -647,6 +647,44 @@ describe('TaskList', () => {
     ]);
   });
 
+  it('never leaves a row translated when a reorder interrupts a pending FLIP frame', () => {
+    // Regression: a second reorder before the FLIP frame ran (rAF is paused
+    // in background tabs) cancelled that frame, stranding rows with their
+    // start transform so they overlapped their neighbours.
+    const frames: FrameRequestCallback[] = [];
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => frames.push(cb));
+    const cafSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
+      frames[id - 1] = () => undefined;
+    });
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    // Row top = layout slot + any applied translateY, like a real browser.
+    HTMLElement.prototype.getBoundingClientRect = function getRect(this: HTMLElement) {
+      const rows = Array.from(document.querySelectorAll('[data-task-item-wrapper]'));
+      const translateY = Number(/translate\([^,]+,\s*(-?[\d.]+)px\)/.exec(this.style.transform)?.[1] ?? 0);
+      const top = rows.indexOf(this) * 100 + translateY;
+      return { top, bottom: top + 90, left: 0, right: 300, x: 0, y: top, width: 300, height: 90, toJSON: () => ({}) } as DOMRect;
+    };
+    const task = (id: string) => ({ id, title: id, projectId: 'project-1', status: 'running' });
+    // TaskList is memoized; a fresh callback forces the store re-read.
+    try {
+      tasksState = { ...tasksState, tasks: [task('a'), task('b'), task('c')] };
+      const { rerender } = render(<TaskList viewMode="list" projectFilter="project-1" desktopListPaneMode />);
+      tasksState = { ...tasksState, tasks: [task('b'), task('a'), task('c')] };
+      rerender(<TaskList viewMode="list" projectFilter="project-1" desktopListPaneMode onOpenTask={() => undefined} />);
+      tasksState = { ...tasksState, tasks: [task('b'), task('c'), task('a')] };
+      rerender(<TaskList viewMode="list" projectFilter="project-1" desktopListPaneMode onOpenTask={() => undefined} />);
+      frames.forEach((cb) => cb(0));
+
+      document.querySelectorAll<HTMLElement>('[data-task-item-wrapper]').forEach((row) => {
+        expect(row.style.transform).toBe('');
+      });
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = originalRect;
+      rafSpy.mockRestore();
+      cafSpy.mockRestore();
+    }
+  });
+
   describe('project name / daemon host chip visibility', () => {
     const lastPropsFor = (taskId: string) => {
       const calls = taskItemMock.mock.calls.filter(
