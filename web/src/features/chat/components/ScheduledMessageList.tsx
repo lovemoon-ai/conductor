@@ -70,6 +70,9 @@ export const describeSchedule = (schedule: ScheduledMessageSummary): string => {
     const base = `Every ${formatDuration(schedule.intervalMs)}`;
     return schedule.condition === 'ai_idle' ? `${base}, only when AI is idle` : base;
   }
+  if (schedule.source === 'quota_resume') {
+    return `Auto-resume after quota reset, at ${formatDateTime(schedule.nextRunAt)}`;
+  }
   if (schedule.kind === 'once_at') {
     return `Once at ${formatDateTime(schedule.nextRunAt)}`;
   }

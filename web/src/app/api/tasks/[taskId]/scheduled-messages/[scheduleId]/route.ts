@@ -104,6 +104,23 @@ export async function DELETE(
     scheduleId,
   });
 
+  // `cancel_only=1` (fire ending a quota wait): stop the row if it is still
+  // pending, but never erase one that was already sent.
+  if (!canceled && request.nextUrl.searchParams.get("cancel_only") === "1") {
+    const status = await getScheduledMessageStatusForTask({
+      userId: userResult.id,
+      taskId,
+      scheduleId,
+    });
+    if (!status) {
+      return NextResponse.json({ error: SCHEDULED_MESSAGE_NOT_DELETABLE_ERROR }, { status: 404 });
+    }
+    return NextResponse.json(
+      { error: "schedule_not_active", status },
+      { status: 409 },
+    );
+  }
+
   // An active row is stopped, not erased, so its history stays auditable. Rows
   // that already finished are removed outright -- that is the only way the
   // management list can be cleaned up.

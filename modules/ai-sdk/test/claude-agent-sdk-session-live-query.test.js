@@ -26,6 +26,7 @@ function createFakeClaude() {
         const outbox = [];
         let waiter = null;
         let ended = false;
+        let failure = null;
         const prompts = [];
         const promptWaiters = [];
         const state = {
@@ -41,6 +42,16 @@ function createFakeClaude() {
               resolve({ value: message, done: false });
             } else {
               outbox.push(message);
+            }
+          },
+          fail(error) {
+            ended = true;
+            state.ended = true;
+            failure = error;
+            if (waiter) {
+              const resolve = waiter;
+              waiter = null;
+              resolve(Promise.reject(error));
             }
           },
           end() {
@@ -75,6 +86,9 @@ function createFakeClaude() {
               next: () => {
                 if (outbox.length) {
                   return Promise.resolve({ value: outbox.shift(), done: false });
+                }
+                if (failure) {
+                  return Promise.reject(failure);
                 }
                 if (ended) {
                   return Promise.resolve({ value: undefined, done: true });
@@ -211,6 +225,57 @@ describe("claude agent-sdk session: long-lived query", () => {
       cache_creation_input_tokens: 0,
     });
     assert.equal(fake.queries.length, 1);
+
+    await session.close();
+  });
+
+  it("marks a background turn that ends in an error result as failed, and the process exit after it", async () => {
+    const fake = createFakeClaude();
+    const { session, emitted, statuses } = createSession(fake);
+
+    const turn = session.runTurn("start the subagents");
+    const prompt = await fake.nextPrompt();
+    fake.current.emit(result("Subagents launched.", { uuid: prompt.uuid }));
+    await turn;
+
+    // Claude carries on by itself and hits the quota: an error result with
+    // subtype "success", then the process exits.
+    const quotaText = "You've hit your session limit · resets 1:20am (Asia/Shanghai)";
+    fake.current.emit(assistant("Checking the subagent output."));
+    fake.current.emit({ ...result(quotaText), is_error: true });
+    await tick();
+    await tick();
+    const failed = statuses.filter((status) => status.phase === "turn_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].background, true);
+    assert.equal(failed[0].status_done_line, quotaText);
+    // The error text still reaches the chat, as before.
+    assert.equal(emitted.includes("Checking the subagent output."), true);
+
+    fake.current.end();
+    await tick();
+    await tick();
+    assert.equal(statuses.filter((status) => status.phase === "turn_failed").length, 1);
+
+    await session.close();
+  });
+
+  it("reports a process failure between turns as a background turn failure", async () => {
+    const fake = createFakeClaude();
+    const { session, statuses } = createSession(fake);
+
+    const turn = session.runTurn("go");
+    const prompt = await fake.nextPrompt();
+    fake.current.emit(result("ok", { uuid: prompt.uuid }));
+    await turn;
+
+    fake.current.fail(new Error("Claude Code returned an error result: You've hit your session limit"));
+    await tick();
+    await tick();
+    const failed = statuses.filter((status) => status.phase === "turn_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].background, true);
+    assert.match(failed[0].status_done_line, /hit your session limit/);
 
     await session.close();
   });

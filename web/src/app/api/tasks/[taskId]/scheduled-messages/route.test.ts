@@ -40,6 +40,7 @@ describe("/api/tasks/[taskId]/scheduled-messages", () => {
       userId: "user-1",
       taskId: "task-1",
       sourceMessageId: "msg-1",
+      source: "message_bubble",
       content: "hello later",
       kind: "interval",
       condition: "ai_idle",
@@ -103,7 +104,46 @@ describe("/api/tasks/[taskId]/scheduled-messages", () => {
           stopWhenTaskNotRunning: true,
         },
       },
+      source: null,
     });
+  });
+
+  it("passes a quota_resume source through to the service", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages",
+        body: {
+          content: "额度已恢复，继续",
+          source: "quota_resume",
+          schedule: { mode: "at", sendAt: "2026-06-07T13:02:00.000Z" },
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(201);
+    expect(createScheduledMessageForTask).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "quota_resume" }),
+    );
+  });
+
+  it("rejects an unknown schedule source", async () => {
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:6152/api/tasks/task-1/scheduled-messages",
+        body: {
+          content: "hello",
+          source: "anything",
+          schedule: { mode: "delay", amount: 1, unit: "minute" },
+        },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(createScheduledMessageForTask).not.toHaveBeenCalled();
   });
 
   it("rejects malformed schedule requests", async () => {

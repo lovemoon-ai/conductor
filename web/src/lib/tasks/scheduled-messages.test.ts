@@ -125,6 +125,48 @@ describe("scheduled messages", () => {
     });
   });
 
+  it("keeps a single active quota_resume schedule per task", async () => {
+    const result = await createScheduledMessageForTask({
+      userId: "user-1",
+      taskId: "task-1",
+      content: "额度已恢复，继续",
+      source: "quota_resume",
+      now: date("2026-06-07T10:00:00.000Z"),
+      schedule: { mode: "at", sendAt: "2026-06-07T13:02:00.000Z" },
+    });
+
+    expect(db.scheduledMessage.updateMany).toHaveBeenCalledWith({
+      where: {
+        userId: "user-1",
+        taskId: "task-1",
+        status: "active",
+        metadata: { contains: '"createdBy":"quota_resume"' },
+      },
+      data: { status: "canceled", updatedAt: date("2026-06-07T10:00:00.000Z") },
+    });
+    expect(db.scheduledMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        kind: "once_at",
+        nextRunAt: date("2026-06-07T13:02:00.000Z"),
+        metadata: JSON.stringify({ createdBy: "quota_resume" }),
+      }),
+    });
+    expect(result.source).toBe("quota_resume");
+  });
+
+  it("does not cancel other schedules for a person-made schedule", async () => {
+    const result = await createScheduledMessageForTask({
+      userId: "user-1",
+      taskId: "task-1",
+      content: "hello later",
+      now: date("2026-06-07T10:00:00.000Z"),
+      schedule: { mode: "delay", amount: 5, unit: "minute" },
+    });
+
+    expect(db.scheduledMessage.updateMany).not.toHaveBeenCalled();
+    expect(result.source).toBe("message_bubble");
+  });
+
   it("rejects a source message that does not belong to the task", async () => {
     vi.mocked(db.message.findFirst).mockResolvedValue(null);
 

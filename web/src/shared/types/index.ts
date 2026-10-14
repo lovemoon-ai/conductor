@@ -242,6 +242,8 @@ export interface ScheduledMessageSummary {
   id: string;
   taskId: string;
   sourceMessageId?: string | null;
+  /** Who created it: `message_bubble` (a person) or `quota_resume` (fire, after a model quota hit). */
+  source?: string;
   content: string;
   /** `once_delay` | `once_at` | `interval` */
   kind: string;
