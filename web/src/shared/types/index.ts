@@ -461,6 +461,12 @@ export interface RestartTaskInput {
   codeHost?: string;
   /** new_task only: replaces the default "resume from the source transcript" first message. */
   firstMessage?: string;
+  /**
+   * new_task only (`new_worktree`): start the successor in its own fresh git
+   * worktree — a parallel branch of the work — instead of continuing in the
+   * source task's workspace. The source keeps its agent-group slot.
+   */
+  newWorktree?: boolean;
 }
 
 /** RFC 0039: settings of a persistent task. */

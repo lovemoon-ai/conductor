@@ -670,6 +670,9 @@ export const useTasksStore = create<TasksState>()((set, get) => {
         if (typeof input?.firstMessage === 'string' && input.firstMessage.trim()) {
           body.first_message = input.firstMessage.trim();
         }
+        if (input?.newWorktree === true) {
+          body.new_worktree = true;
+        }
         const response = await api.post<{
           mode: RestartTaskResponse['mode'];
           source_task_id: string;

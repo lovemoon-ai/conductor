@@ -28,7 +28,7 @@ import {
   type TaskCardGroup,
 } from '@/features/tasks/utils/task-card-groups';
 import { useTaskCardGroupsSyncStore } from '@/features/tasks/task-card-groups-sync-store';
-import { buildTaskListNavigation } from '@/features/tasks/utils/task-list-navigation';
+import { buildTaskListNavigation, formatTaskTitleWithTabLabel } from '@/features/tasks/utils/task-list-navigation';
 import { resolveTaskDisplayProjectId } from '@/features/tasks/utils/task-filter';
 import {
   buildTaskDetailHref,
@@ -191,6 +191,11 @@ export default function TaskDetailPage() {
     : null;
   const nextTask = hasSwipeTargets ? swipeTasks[(currentTaskIndex + 1) % swipeTasks.length] ?? null : null;
   const canSwipeTaskTitle = !isDesktop && returnsToListView && currentTaskIndex >= 0;
+  // On mobile a task inside a task group (tab card) leads its title with the
+  // tab's name, so it reads which tab of the card is open: "[review] Fix login".
+  const mobileTitle = (target: { id: string; title: string } | null | undefined): string | null =>
+    target ? formatTaskTitleWithTabLabel(target.title, navigation.tabLabelByTaskId.get(target.id)) : null;
+  const headerTitle = !isDesktop ? mobileTitle(task) : null;
 
   const handleTaskTitleSwipe = useCallback((targetTask: { id: string }, direction: TaskSwitchDirection) => {
     setTaskSwitchAnimation(direction);
@@ -225,6 +230,7 @@ export default function TaskDetailPage() {
         showBack
         onBack={() => push(returnHref)}
         showConnectionStatus
+        headerTitle={headerTitle}
         onTitleSwipeLeft={canSwipeTaskTitle && nextTask
           ? () => handleTaskTitleSwipe(nextTask, 'forward')
           : undefined}
@@ -232,8 +238,8 @@ export default function TaskDetailPage() {
           ? () => handleTaskTitleSwipe(previousTask, 'backward')
           : undefined}
         onTitleSwipeProgress={canSwipeTaskTitle ? handleTaskTitleSwipeProgress : undefined}
-        titleSwipePreviewLeft={previousTask?.title ?? null}
-        titleSwipePreviewRight={nextTask?.title ?? null}
+        titleSwipePreviewLeft={(!isDesktop ? mobileTitle(previousTask) : previousTask?.title) ?? null}
+        titleSwipePreviewRight={(!isDesktop ? mobileTitle(nextTask) : nextTask?.title) ?? null}
         titleTransitionDirection={!isDesktop ? taskSwitchAnimation : null}
         titleSwipeState={!isDesktop && canSwipeTaskTitle ? taskSwipeState : undefined}
       />

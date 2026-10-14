@@ -38,6 +38,7 @@ import {
 } from "@/lib/tasks/task-config";
 import {
   acquireTaskWorktreeMutationLock,
+  buildTaskWorktreeLaunchConfig,
   toRemoteWorktreeCleanupLaunchConfig,
   inheritTaskWorktreeLaunchConfig,
   parseRemoteWorkspaceLaunchConfig,
@@ -70,6 +71,10 @@ import {
 } from "@/lib/tasks/global-backend";
 import {
   buildRemoteWorkspaceBootstrap,
+  buildRemoteWorktreeBootstrap,
+  buildRemoteWorktreeForTarget,
+  checkRemoteDaemon,
+  resolveRemoteTarget,
   resolveRemoteWorktreePaths,
 } from "@/lib/tasks/remote-worktree";
 import {
@@ -360,6 +365,26 @@ export async function POST(
   const firstMessage = normalizeOptionalString(normalizedBody.first_message ?? normalizedBody.firstMessage);
   if (firstMessage && (requestedStrategy !== "new_task" || hasExplicitRestartMode)) {
     return NextResponse.json({ error: "first_message requires strategy new_task" }, { status: 400 });
+  }
+  // "New task from this" in a fresh git worktree: the successor becomes a
+  // parallel branch of the work (e.g. another tab in the same task card group)
+  // instead of continuing in the source task's workspace. It starts from the
+  // project base, not the source's files, so it must not load the source
+  // transcript either — that would describe changes it does not have. A first
+  // message is therefore required: it replaces the transcript handoff.
+  const rawNewWorktree = normalizedBody.new_worktree ?? normalizedBody.newWorktree;
+  if (rawNewWorktree !== undefined && rawNewWorktree !== null && typeof rawNewWorktree !== "boolean") {
+    return NextResponse.json({ error: "new_worktree must be a boolean" }, { status: 400 });
+  }
+  const newWorktreeRequested = rawNewWorktree === true;
+  if (newWorktreeRequested && (requestedStrategy !== "new_task" || hasExplicitRestartMode)) {
+    return NextResponse.json({ error: "new_worktree requires strategy new_task" }, { status: 400 });
+  }
+  if (newWorktreeRequested && !firstMessage) {
+    return NextResponse.json(
+      { error: "new_worktree requires first_message: a new worktree does not load the source task's conversation" },
+      { status: 400 },
+    );
   }
 
   // Explicit daemon override. Lets the caller run the restart on a specific
@@ -876,7 +901,11 @@ export async function POST(
   );
   const sourceAgentRole = normalizeOptionalString(sourceMetadata.agentRole);
   const sourceAgentName = normalizeOptionalString(sourceMetadata.agentName);
+  // A fresh-worktree successor runs alongside the source rather than replacing
+  // it, so the source keeps its execution-group slot (RFC 0033).
+  const transfersGroupSlot = Boolean(sourceGroupId) && !newWorktreeRequested;
   const successorGroupMetadata =
+    transfersGroupSlot &&
     sourceGroupId &&
     sourceAgentName &&
     (sourceAgentRole === "worker" || sourceAgentRole === "reviewer")
@@ -904,9 +933,10 @@ export async function POST(
     continuedFromTaskId: sourceTask.id,
     restartSourceBackendType: sourceBackend,
     restartStrategy: "new_task",
+    ...(newWorktreeRequested ? { restartNewWorktree: true } : {}),
   };
   const sourceMetadataAfterGroupTransfer = { ...sourceMetadata };
-  if (sourceGroupId) {
+  if (transfersGroupSlot) {
     delete sourceMetadataAfterGroupTransfer.groupId;
     delete sourceMetadataAfterGroupTransfer.agentRole;
     delete sourceMetadataAfterGroupTransfer.agentName;
@@ -973,7 +1003,7 @@ export async function POST(
       : isCrossDaemonOverride && !sourceRemoteWorktree && sourceRemoteWorkspace?.host === restartAgentHost
         ? { cwd: sourceRemoteWorkspace.workspacePath }
         : null;
-  const successorLaunchConfig: JsonObject = isCodeMoveRequest
+  const continuedLaunchConfig: JsonObject = isCodeMoveRequest
     // The work moves to the AI's own daemon: nothing from the source machine
     // (local paths or remote bindings) applies there.
     ? {}
@@ -988,6 +1018,87 @@ export async function POST(
         ...(successorCwd ? { cwd: successorCwd } : {}),
         ...(projectWorktreeBranch ? { worktreeBranch: projectWorktreeBranch } : {}),
       };
+  // A fresh worktree replaces the continued workspace with a new branch of the
+  // same repository on the same daemon: a local worktree when the code lives
+  // on the AI's daemon, a remote one (created by the AI over conductor remote,
+  // like a new global-backend task) when it lives elsewhere.
+  let successorLaunchConfig: JsonObject = continuedLaunchConfig;
+  let freshRemoteWorktree: ReturnType<typeof buildRemoteWorktreeForTarget> | null = null;
+  if (newWorktreeRequested) {
+    const continuedRemote =
+      parseRemoteWorktreeLaunchConfig(continuedLaunchConfig) ??
+      parseRemoteWorkspaceLaunchConfig(continuedLaunchConfig);
+    const homecomingRemote = homecomingLaunchConfig ? sourceRemoteWorktree ?? sourceRemoteWorkspace : null;
+    const codeProjectId = continuedRemote?.projectId ?? homecomingRemote?.projectId ?? project.id;
+    const codeProject =
+      codeProjectId === project.id
+        ? project
+        : await db.project.findFirst({ where: { id: codeProjectId, userId: user.id } });
+    if (!codeProject) {
+      return NextResponse.json(
+        { error: "The project holding the source task's code no longer exists" },
+        { status: 409 },
+      );
+    }
+    if (continuedRemote) {
+      const target = resolveRemoteTarget(codeProject);
+      if ("error" in target) {
+        return NextResponse.json({ error: target.error }, { status: target.status });
+      }
+      const remoteDaemonProblem = checkRemoteDaemon(target.host, connectedAgents);
+      if (remoteDaemonProblem) {
+        return NextResponse.json({ error: remoteDaemonProblem.error }, { status: remoteDaemonProblem.status });
+      }
+      // The AI itself creates a remote worktree, prompted by initial_content
+      // (first_message already required a daemon that takes one).
+      freshRemoteWorktree = buildRemoteWorktreeForTarget(target);
+      const localClone = normalizeOptionalString(continuedLaunchConfig.cwd);
+      successorLaunchConfig = {
+        ...(localClone ? { cwd: localClone } : {}),
+        remoteWorktree: freshRemoteWorktree,
+      };
+    } else {
+      const codeDaemonHost = normalizeOptionalString((codeProject as { daemonHost?: string | null }).daemonHost);
+      const codeRepoRoot = normalizeOptionalString((codeProject as { repoRoot?: string | null }).repoRoot);
+      const codeWorkspacePath = normalizeOptionalString(
+        (codeProject as { workspacePath?: string | null }).workspacePath,
+      );
+      if (!codeDaemonHost || codeDaemonHost !== restartAgentHost || !codeRepoRoot || !codeWorkspacePath) {
+        // An AI on another daemon that was meant to work on this code remotely
+        // but could not be bound to it (code daemon offline / too old / shared):
+        // the code daemon is the right one, its AI choice is what fails.
+        const remoteBindingFailed =
+          isCrossDaemonOverride && !isCodeMoveRequest && Boolean(codeRepoRoot) && codeDaemonHost === sourceCodeHost;
+        return NextResponse.json(
+          {
+            error: !codeRepoRoot
+              ? "A new worktree requires a git-backed project"
+              : remoteBindingFailed
+                ? `The AI on ${restartAgentHost} cannot work on the code on ${codeDaemonHost} remotely (the daemon is offline, does not support conductor remote, or is shared); pick a backend on ${codeDaemonHost} to create the worktree`
+                : `A new worktree must be created on the project's daemon${codeDaemonHost ? ` ${codeDaemonHost}` : ""}`,
+          },
+          { status: 409 },
+        );
+      }
+      try {
+        successorLaunchConfig = buildTaskWorktreeLaunchConfig({
+          launchConfig: null,
+          worktreeId: successorTaskId,
+          projectRepoRoot: codeRepoRoot,
+          projectWorkspacePath: codeWorkspacePath,
+          projectWorktreeBranch: normalizeOptionalString(
+            (codeProject as { worktreeBranch?: string | null }).worktreeBranch,
+          ),
+          projectLastCommit: normalizeOptionalString((codeProject as { lastCommit?: string | null }).lastCommit),
+        });
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : "Invalid worktree request" },
+          { status: 409 },
+        );
+      }
+    }
+  }
   if (crossDaemonRemoteBinding) {
     successorMetadata.globalBackend = { host: restartAgentHost, backend: targetBackend };
   } else if (homecomingLaunchConfig || isCodeMoveRequest) {
@@ -997,8 +1108,10 @@ export async function POST(
   // protocol a new remote task does, wrapped around its first prompt; without
   // it the AI would edit the target machine's files with its built-in tools.
   // An existing remote worktree is continued in place, not re-created.
-  const successorRemoteWorktree = parseRemoteWorktreeLaunchConfig(successorLaunchConfig);
-  const successorRemoteDir: RemoteWorkspaceLaunchConfig | null = successorRemoteWorktree
+  const successorRemoteWorktree = freshRemoteWorktree ? null : parseRemoteWorktreeLaunchConfig(successorLaunchConfig);
+  const successorRemoteDir: RemoteWorkspaceLaunchConfig | null = freshRemoteWorktree
+    ? null
+    : successorRemoteWorktree
     ? (() => {
         const { worktreeRoot, workDir } = resolveRemoteWorktreePaths(successorRemoteWorktree);
         return {
@@ -1050,8 +1163,15 @@ export async function POST(
     );
   }
 
-  const agentInitialContent =
-    successorRemoteDir && restartAgentCapabilities.includes(RESTART_FIRST_MESSAGE_CAPABILITY)
+  const agentInitialContent = freshRemoteWorktree
+    ? buildRemoteWorktreeBootstrap({
+        remoteWorktree: freshRemoteWorktree,
+        localWorkspacePath: normalizeOptionalString(successorLaunchConfig.cwd),
+        taskPrompt:
+          firstMessage ??
+          buildResumeHandoffPrompt({ sourceBackend, targetBackend, resumeContextUrl }),
+      })
+    : successorRemoteDir && restartAgentCapabilities.includes(RESTART_FIRST_MESSAGE_CAPABILITY)
       ? buildRemoteWorkspaceBootstrap({
           remoteWorkspace: successorRemoteDir,
           localWorkspacePath: normalizeOptionalString(successorLaunchConfig.cwd),
@@ -1086,7 +1206,7 @@ export async function POST(
           Object.keys(successorLaunchConfig).length > 0 ? successorLaunchConfig : null,
         ),
         metadata: JSON.stringify(successorMetadata),
-        ...(sourceGroupId ? { groupId: sourceGroupId } : {}),
+        ...(transfersGroupSlot && sourceGroupId ? { groupId: sourceGroupId } : {}),
         ...(sourceSecondProjectId ? { secondProjectId: sourceSecondProjectId } : {}),
       },
     });
@@ -1122,7 +1242,7 @@ export async function POST(
           // A successor replaces the source task's execution-group slot. If we
           // left both rows in the group, reviewers would see two workers (or
           // two copies of the same reviewer) and could target the stale one.
-          ...(sourceGroupId ? { groupId: null } : {}),
+          ...(transfersGroupSlot ? { groupId: null } : {}),
           metadata: JSON.stringify({
             ...sourceMetadataAfterGroupTransfer,
             successorTaskId,

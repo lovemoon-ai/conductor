@@ -97,6 +97,28 @@ describe("conductor task lifecycle verbs", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("restart --new-worktree sends new_worktree with new_task", async () => {
+    const { code, calls } = await runWithFetch(
+      main,
+      ["restart", "t1", "--strategy", "new_task", "--new-worktree", "--first-message", "add dark mode"],
+      { "POST /api/tasks/t1/restart": { mode: "successor_new_task", task: { id: "t2", status: "init", title: "Fix" } } },
+    );
+    assert.equal(code, 0);
+    assert.deepEqual(calls[0].body, { strategy: "new_task", first_message: "add dark mode", new_worktree: true });
+  });
+
+  it("restart --new-worktree without --first-message is an args error", async () => {
+    const { code, calls } = await runWithFetch(main, ["restart", "t1", "--strategy", "new_task", "--new-worktree"], {});
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
+  });
+
+  it("restart --new-worktree without new_task is an args error", async () => {
+    const { code, calls } = await runWithFetch(main, ["restart", "t1", "--new-worktree"], {});
+    assert.equal(code, 2);
+    assert.equal(calls.length, 0);
+  });
+
   it("delete requires --yes, and --permanent adds the query flag", async () => {
     const refused = await runWithFetch(main, ["delete", "t1"], {});
     assert.equal(refused.code, 2);

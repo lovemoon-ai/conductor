@@ -4,6 +4,7 @@ import { orderTasksWithPinnedFirst } from '../store';
 import {
   buildTaskCardRows,
   projectTaskCardGroups,
+  taskCardTabLabel,
   type TaskCardGroup,
 } from './task-card-groups';
 import {
@@ -31,7 +32,13 @@ export type TaskListNavigation = {
   activeTaskIdByTaskId: Map<string, string>;
   /** Every visible grouped task points to its card's visible tabs, in tab order. */
   groupTasksByTaskId: Map<string, Task[]>;
+  /** Every visible grouped task points to its tab's title (custom name, or its ordinal). */
+  tabLabelByTaskId: Map<string, string>;
 };
+
+/** Mobile task header: a grouped task's title is led by its tab name, e.g. "[review] Fix login". */
+export const formatTaskTitleWithTabLabel = (title: string, tabLabel: string | null | undefined): string =>
+  tabLabel ? `[${tabLabel}] ${title}` : title;
 
 /**
  * Rebuild the mobile task list's linear navigation order.
@@ -80,12 +87,14 @@ export const buildTaskListNavigation = (
   const renderGroups = projectTaskCardGroups(groups, (taskId) => visibleTaskIdSet.has(taskId));
   const activeTaskIdByTaskId = new Map<string, string>();
   const groupTasksByTaskId = new Map<string, Task[]>();
+  const tabLabelByTaskId = new Map<string, string>();
 
   for (const group of renderGroups) {
     const groupTasks = group.taskIds.flatMap((taskId) => taskById.get(taskId) ?? []);
     for (const taskId of group.taskIds) {
       activeTaskIdByTaskId.set(taskId, group.activeTaskId);
       groupTasksByTaskId.set(taskId, groupTasks);
+      tabLabelByTaskId.set(taskId, taskCardTabLabel(group, taskId));
     }
   }
 
@@ -99,5 +108,6 @@ export const buildTaskListNavigation = (
     tasks: navigationTasks,
     activeTaskIdByTaskId,
     groupTasksByTaskId,
+    tabLabelByTaskId,
   };
 };
