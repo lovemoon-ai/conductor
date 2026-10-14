@@ -6,11 +6,15 @@
  * follows to create and use that worktree over `conductor remote`.
  */
 
+import path from "node:path";
 import { appendTaskPrompt } from "./agent-group";
 import { normalizeOptionalString } from "./task-config";
 import {
   buildInitialWorktreeBranchName,
+  parseRemoteWorkspaceLaunchConfig,
+  parseRemoteWorktreeLaunchConfig,
   resolveTaskWorktreeCwdFromLaunchConfig,
+  sanitizeWorktreeFolderName,
   toRemoteWorktreeCleanupLaunchConfig,
   type RemoteWorkspaceLaunchConfig,
   type RemoteWorktreeLaunchConfig,
@@ -93,6 +97,46 @@ export const resolveRemoteWorktreePaths = (remote: RemoteWorktreeLaunchConfig) =
     worktreeRoot: resolveTaskWorktreeCwdFromLaunchConfig({ ...translated, projectRelativePath: "." })!,
     workDir: resolveTaskWorktreeCwdFromLaunchConfig(translated)!,
   };
+};
+
+/**
+ * Where a task's code really is when its AI reaches it over `conductor remote`
+ * (a remote worktree, RFC 0038, or a remote project directory, RFC 0041): the
+ * daemon holding the files, the directory the AI works in there (`workDir`),
+ * and the project directory it hangs off (`projectDir`). Null for an ordinary
+ * task, whose files are on the daemon that runs it.
+ *
+ * `projectDir` always exists; a remote worktree's `workDir` exists only once
+ * the AI has run `git worktree add`, so anything that would create it (a
+ * terminal's cwd is mkdir'd) must check first.
+ *
+ * Features that touch a task's files (terminal, preview, ...) must use this
+ * host, not the AI's: on a global-backend task they are different machines.
+ */
+export const resolveTaskRemoteCodeLocation = (
+  launchConfig: unknown,
+): { host: string; workDir: string; projectDir: string } | null => {
+  const worktree = parseRemoteWorktreeLaunchConfig(launchConfig);
+  if (worktree) {
+    let workDir: string;
+    try {
+      workDir = resolveRemoteWorktreePaths(worktree).workDir;
+    } catch {
+      // A workspace outside its repoRoot has no relative path; the server never
+      // mints one, but a bad row must not turn into a 500 for its readers.
+      workDir = path.posix.join(
+        worktree.workspacePath,
+        ".conductor",
+        "worktrees",
+        sanitizeWorktreeFolderName(worktree.branch),
+      );
+    }
+    return { host: worktree.host, workDir, projectDir: worktree.workspacePath };
+  }
+  const workspace = parseRemoteWorkspaceLaunchConfig(launchConfig);
+  return workspace
+    ? { host: workspace.host, workDir: workspace.workspacePath, projectDir: workspace.workspacePath }
+    : null;
 };
 
 /** How to drive another daemon over `conductor remote`; identical for both modes. */

@@ -35,6 +35,10 @@ vi.mock("@/lib/realtime/agent-outbox", () => ({
   }),
 }));
 
+vi.mock("@/lib/realtime/remote-file", () => ({
+  requestRemoteFile: vi.fn(),
+}));
+
 vi.mock("@/lib/subscription/service", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/subscription/service")>();
   return {
@@ -451,6 +455,176 @@ describe("/api/tasks/[taskId]/terminal", () => {
       expect(response.status).toBe(201);
       const ptySessionArgs = vi.mocked(db.ptySession.create).mock.calls[0]?.[0] as any;
       expect(ptySessionArgs?.data?.cwd).toBe("/repo");
+    });
+  });
+
+  describe("POST on a task whose code is on another daemon (global backend)", () => {
+    // RFC 0041: the AI runs on macmini (the task is filed on a project bound
+    // there) but reads and writes the project on apex over `conductor remote`.
+    const globalTask = (remote: Record<string, unknown>) => ({
+      ...aiTaskFixture,
+      agentHost: "macmini",
+      launchConfig: JSON.stringify(remote),
+      metadata: JSON.stringify({
+        globalBackend: { host: "macmini", backend: "claude" },
+        daemonName: "macmini",
+        cwd: "/Users/me/clone",
+      }),
+      project: { daemonHost: "macmini", workspacePath: "/Users/me/clone" },
+    });
+    const remoteWorkspace = {
+      remoteWorkspace: { host: "apex", projectId: "p-apex", repoRoot: "/data/repo", workspacePath: "/data/repo" },
+    };
+    // A project in a subdirectory of its repository: the work dir is the same
+    // subdirectory inside the worktree.
+    const remoteWorktree = {
+      remoteWorktree: {
+        host: "apex",
+        projectId: "p-apex",
+        repoRoot: "/data/repo",
+        workspacePath: "/data/repo/web",
+        branch: "f5b5cc",
+        baseRef: "main",
+      },
+    };
+    const WORK_DIR = "/data/repo/web/.conductor/worktrees/f5b5cc/web";
+    const macmini = { id: "a", host: "macmini", supportedBackends: ["claude"], capabilities: ["pty_task", "ai_task"] };
+    const apex = {
+      id: "b",
+      host: "apex",
+      supportedBackends: ["claude"],
+      capabilities: ["pty_task", "ai_task", "remote_exec", "remote_file"],
+    };
+    const open = () =>
+      POST(
+        createMockRequest({
+          method: "POST",
+          url: "http://localhost/api/tasks/ai-1/terminal",
+          token: createTestToken("user-1"),
+          body: {},
+        }),
+        { params: Promise.resolve({ taskId: "ai-1" }) },
+      );
+    const created = () => {
+      const taskArgs = vi.mocked(db.task.create).mock.calls[0]?.[0] as any;
+      return { agentHost: taskArgs.data.agentHost, cwd: JSON.parse(taskArgs.data.launchConfig).cwd };
+    };
+    const statsAs = async (result: Record<string, unknown>) => {
+      const { requestRemoteFile } = await import("@/lib/realtime/remote-file");
+      vi.mocked(requestRemoteFile).mockResolvedValue({ ok: true, action: "stat", result } as any);
+      return vi.mocked(requestRemoteFile);
+    };
+
+    beforeEach(async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([macmini, apex] as any);
+    });
+
+    it("opens the terminal on the code's daemon, in the project directory", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorkspace) as any);
+      const stat = await statsAs({ exists: true, isDirectory: true });
+      const response = await open();
+      expect(response.status).toBe(201);
+      expect(created()).toEqual({ agentHost: "apex", cwd: "/data/repo" });
+      const { enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
+      expect(vi.mocked(enqueueAndAttemptAgentCommand).mock.calls[0][0].agentHost).toBe("apex");
+      // A project directory always exists: nothing to ask.
+      expect(stat).not.toHaveBeenCalled();
+    });
+
+    it("opens the terminal in the remote worktree's work dir once it exists", async () => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorktree) as any);
+      const stat = await statsAs({ exists: true, isDirectory: true });
+      const response = await open();
+      expect(response.status).toBe(201);
+      expect(created()).toEqual({ agentHost: "apex", cwd: WORK_DIR });
+      expect(stat.mock.calls[0][0]).toMatchObject({ agentHost: "apex", action: "stat", args: { remotePath: WORK_DIR } });
+    });
+
+    it("opens in the project directory while the AI has not created the worktree yet", async () => {
+      // The daemon mkdir's the cwd; creating the worktree's directory first
+      // would make the AI's `git worktree add` fail with "already exists".
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorktree) as any);
+      await statsAs({ exists: false, isDirectory: false });
+      expect((await open()).status).toBe(201);
+      expect(created()).toEqual({ agentHost: "apex", cwd: "/data/repo/web" });
+    });
+
+    it.each([
+      ["the stat times out", { ok: false, reason: "timeout", message: "timed out" }],
+      ["the stat is refused", { ok: false, reason: "remote_error", message: "outside shared root" }],
+    ])("opens in the project directory when %s", async (_label, outcome) => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorktree) as any);
+      const { requestRemoteFile } = await import("@/lib/realtime/remote-file");
+      vi.mocked(requestRemoteFile).mockResolvedValue(outcome as any);
+      expect((await open()).status).toBe(201);
+      expect(created().cwd).toBe("/data/repo/web");
+    });
+
+    it("opens in the project directory, without asking, when the code's daemon cannot stat files", async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        macmini,
+        { ...apex, capabilities: ["pty_task", "ai_task"] },
+      ] as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorktree) as any);
+      const stat = await statsAs({ exists: true, isDirectory: true });
+      expect((await open()).status).toBe(201);
+      expect(created().cwd).toBe("/data/repo/web");
+      expect(stat).not.toHaveBeenCalled();
+    });
+
+    it("refuses rather than opening on the AI's daemon when the code's daemon is offline", async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([macmini] as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorkspace) as any);
+      const response = await open();
+      expect(response.status).toBe(409);
+      const { error } = await extractJson(response);
+      expect(error).toContain("This task's code is on apex");
+      expect(error).toContain("start `conductor daemon` on apex");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("refuses with an upgrade hint when the code's daemon cannot run terminals", async () => {
+      const { realtimeHub } = await import("@/lib/realtime/hub");
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+        macmini,
+        { ...apex, capabilities: ["ai_task", "remote_exec", "remote_file"] },
+      ] as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(globalTask(remoteWorkspace) as any);
+      const response = await open();
+      expect(response.status).toBe(409);
+      const { error } = await extractJson(response);
+      expect(error).toContain("does not support PTY tasks");
+      expect(error).toContain("upgrade the conductor CLI on apex or enable terminals");
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("inheritPtyLaunchConfigFromAiTask on a remote-code task", () => {
+    const launchConfig = {
+      cwd: "/Users/me/clone",
+      remoteWorkspace: { host: "apex", projectId: "p", repoRoot: "/data/repo", workspacePath: "/data/repo" },
+    };
+    const metadata = { daemonName: "macmini", cwd: "/Users/me/clone/sub" };
+
+    it("ignores the code's directory when the terminal runs on another daemon", async () => {
+      const { inheritPtyLaunchConfigFromAiTask } = await import("@/lib/tasks/attached-terminal");
+      // Every remaining source names the AI's machine, so it wins there.
+      expect(inheritPtyLaunchConfigFromAiTask(launchConfig, "/Users/me/clone", metadata, "macmini")).toEqual({
+        cwd: "/Users/me/clone/sub",
+      });
+    });
+
+    it("uses the confirmed code cwd on the code's daemon, else its project directory", async () => {
+      const { inheritPtyLaunchConfigFromAiTask } = await import("@/lib/tasks/attached-terminal");
+      expect(
+        inheritPtyLaunchConfigFromAiTask(launchConfig, "/Users/me/clone", metadata, "apex", "/data/repo/x"),
+      ).toEqual({ cwd: "/data/repo/x" });
+      expect(inheritPtyLaunchConfigFromAiTask(launchConfig, "/Users/me/clone", metadata, "apex")).toEqual({
+        cwd: "/data/repo",
+      });
     });
   });
 

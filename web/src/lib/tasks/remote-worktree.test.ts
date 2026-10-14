@@ -5,6 +5,7 @@ import {
   checkRemoteDaemon,
   resolveRemoteTarget,
   resolveRemoteWorktreePaths,
+  resolveTaskRemoteCodeLocation,
 } from "./remote-worktree";
 
 const projectB = {
@@ -140,5 +141,40 @@ describe("buildRemoteWorktreeBootstrap", () => {
     expect(text).not.toContain("git worktree add");
     expect(text).not.toContain("READ-ONLY copy");
     expect(text).toContain("Fix the build");
+  });
+});
+
+describe("resolveTaskRemoteCodeLocation", () => {
+  const worktree = {
+    host: "apex",
+    projectId: "p",
+    repoRoot: "/data/repo",
+    workspacePath: "/data/repo/web",
+    branch: "feat/x",
+    baseRef: "main",
+  };
+
+  it("names the code's daemon, the AI's work dir and the project directory", () => {
+    expect(resolveTaskRemoteCodeLocation({ remoteWorktree: worktree })).toEqual({
+      host: "apex",
+      workDir: "/data/repo/web/.conductor/worktrees/feat_x/web",
+      projectDir: "/data/repo/web",
+    });
+    expect(
+      resolveTaskRemoteCodeLocation(
+        JSON.stringify({ remoteWorkspace: { host: "apex", projectId: "p", repoRoot: "/r", workspacePath: "/r/a" } }),
+      ),
+    ).toEqual({ host: "apex", workDir: "/r/a", projectDir: "/r/a" });
+  });
+
+  it("is null for an ordinary task", () => {
+    expect(resolveTaskRemoteCodeLocation({ cwd: "/repo" })).toBeNull();
+    expect(resolveTaskRemoteCodeLocation(null)).toBeNull();
+  });
+
+  it("falls back to the worktree root instead of throwing on a workspace outside its repo", () => {
+    expect(
+      resolveTaskRemoteCodeLocation({ remoteWorktree: { ...worktree, workspacePath: "/elsewhere" } }),
+    ).toEqual({ host: "apex", workDir: "/elsewhere/.conductor/worktrees/feat_x", projectDir: "/elsewhere" });
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { realtimeHub } from "@/lib/realtime/hub";
+import { requestRemoteFile } from "@/lib/realtime/remote-file";
 import { enqueueAndAttemptAgentCommand } from "@/lib/realtime/agent-outbox";
 import { deleteTaskAttachmentDirectory } from "@/lib/tasks/task-file-storage";
 import { isMissingPtySchemaError } from "@/lib/tasks/pty-compat";
@@ -11,6 +12,7 @@ import {
   type ConnectedAgent,
 } from "@/lib/tasks/pty-runtime";
 import { resolveTaskWorktreeCwdFromLaunchConfig } from "@/lib/tasks/worktree";
+import { resolveTaskRemoteCodeLocation } from "@/lib/tasks/remote-worktree";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
 import {
   normalizeOptionalString,
@@ -371,15 +373,43 @@ export const createAttachedTerminalRecord = async (args: {
  * spawn the terminal in an unrelated workspace path, silently surprising
  * the user. In that case we surface a 409 telling them to start a daemon
  * on the host where the AI task is actually running.
+ *
+ * A task whose code lives on another daemon (a global-backend task, RFC 0041,
+ * or a remote worktree, RFC 0038) gets its terminal on THAT daemon: the AI's
+ * own daemon only holds a read-only clone or nothing at all, and the user
+ * opens a terminal to work on the files the AI is editing. If the code's
+ * daemon is offline the request fails rather than silently landing on the
+ * AI's machine.
  */
 export const resolveAttachedTerminalAgentHost = (args: {
   userId: string;
   aiTaskAgentHost: string | null;
   projectDaemonHost: string | null;
+  aiTaskLaunchConfig?: unknown;
 }):
   | { agentHost: string }
   | { error: string; status: number } => {
   const connectedAgents = realtimeHub.getAgentsForUser(args.userId) as ConnectedAgent[];
+  const remoteCode = resolveTaskRemoteCodeLocation(args.aiTaskLaunchConfig);
+  if (remoteCode && !isConductorFireHost(remoteCode.host)) {
+    const result = resolvePtyAgentHost({
+      connectedAgents,
+      requestedAgentHost: remoteCode.host,
+      requestedBackendType: null,
+      launchConfig: null,
+    });
+    if ("error" in result) {
+      const online = connectedAgents.some((agent) => agent.host === remoteCode.host);
+      const hint = online
+        ? `upgrade the conductor CLI on ${remoteCode.host} or enable terminals in its config`
+        : `start \`conductor daemon\` on ${remoteCode.host}`;
+      return {
+        error: `This task's code is on ${remoteCode.host}, so its terminal opens there: ${result.error}. To use it, ${hint}.`,
+        status: result.status,
+      };
+    }
+    return { agentHost: result.agentHost };
+  }
   const aiHostWasFire = isConductorFireHost(args.aiTaskAgentHost);
   const daemonHostWasFire = isConductorFireHost(args.projectDaemonHost);
   const candidateAiHost =
@@ -414,6 +444,48 @@ export const resolveAttachedTerminalAgentHost = (args: {
     return { error: result.error, status: result.status };
   }
   return { agentHost: result.agentHost };
+};
+
+/** Long enough for a healthy daemon to stat a path; short enough not to stall opening a terminal. */
+const CODE_DIR_STAT_TIMEOUT_MS = 5_000;
+
+/**
+ * The directory an attached terminal on a remote-code task (`remoteWorktree` /
+ * `remoteWorkspace`) should start in, when it runs on the code's daemon; null
+ * for any other task, which keeps the ordinary cwd chain.
+ *
+ * The daemon mkdir's a terminal's cwd. A remote worktree's directory exists
+ * only once the AI has run `git worktree add`, and creating it first (or a
+ * subdirectory inside it) makes that step fail with "already exists". So the
+ * worktree is used only when the code's daemon confirms it is there; otherwise
+ * (not created yet, daemon cannot stat, stat failed) the terminal starts in the
+ * project directory, which always exists.
+ */
+export const resolveAttachedTerminalCodeCwd = async (args: {
+  userId: string;
+  agentHost: string;
+  aiTaskLaunchConfig: unknown;
+}): Promise<string | null> => {
+  const remoteCode = resolveTaskRemoteCodeLocation(args.aiTaskLaunchConfig);
+  if (!remoteCode || remoteCode.host !== args.agentHost) return null;
+  if (remoteCode.workDir === remoteCode.projectDir) return remoteCode.workDir;
+  const agent = (realtimeHub.getAgentsForUser(args.userId) as ConnectedAgent[]).find(
+    (entry) => entry.host === args.agentHost,
+  );
+  if (!agent?.capabilities?.includes("remote_file")) return remoteCode.projectDir;
+  try {
+    const outcome = await requestRemoteFile({
+      userId: args.userId,
+      agentHost: args.agentHost,
+      action: "stat",
+      args: { remotePath: remoteCode.workDir },
+      timeoutMs: CODE_DIR_STAT_TIMEOUT_MS,
+    });
+    const stat = (outcome.ok ? outcome.result : null) as { exists?: boolean; isDirectory?: boolean } | null;
+    return stat?.exists && stat.isDirectory ? remoteCode.workDir : remoteCode.projectDir;
+  } catch {
+    return remoteCode.projectDir;
+  }
 };
 
 /**
@@ -497,6 +569,12 @@ const PTY_INHERITABLE_LAUNCH_CONFIG_KEYS = ["env", "shell"] as const;
  *    create endpoint for ordinary, non-worktree projects).
  * 3. Fall back to the bound project's workspacePath.
  *
+ * A task whose code is on another daemon (`remoteWorktree` /
+ * `remoteWorkspace`) opens on that daemon in `codeCwd` (see
+ * `resolveAttachedTerminalCodeCwd`), else in its project directory there:
+ * every other source names the AI's machine, and a remote worktree may not
+ * exist yet.
+ *
  * In addition we forward a small whitelist of PTY-shaping fields
  * (`PTY_INHERITABLE_LAUNCH_CONFIG_KEYS`). See the constant above for the
  * exact rationale per field.
@@ -506,15 +584,22 @@ export const inheritPtyLaunchConfigFromAiTask = (
   projectWorkspacePath: string | null,
   aiTaskMetadata?: unknown,
   agentHost?: string | null,
+  codeCwd?: string | null,
 ): JsonObject | null => {
   const aiConfig = parseJsonObject(aiTaskLaunchConfig);
   const aiMetadata = parseJsonObject(aiTaskMetadata);
+  const remoteCode = resolveTaskRemoteCodeLocation(aiTaskLaunchConfig);
+  const remoteCwd =
+    remoteCode && agentHost && remoteCode.host === agentHost
+      ? normalizeOptionalString(codeCwd) ?? remoteCode.projectDir
+      : null;
   const worktreeCwd = resolveTaskWorktreeCwdFromLaunchConfig(aiTaskLaunchConfig);
   const reportedCwd =
     agentHost && normalizeOptionalString(aiMetadata?.daemonName) === agentHost
       ? normalizeOptionalString(aiMetadata?.cwd)
       : null;
   const cwd =
+    remoteCwd ??
     reportedCwd ??
     worktreeCwd ??
     normalizeOptionalString(aiConfig?.cwd) ??
