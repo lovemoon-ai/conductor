@@ -260,6 +260,8 @@ function TaskListComponent({
   const previousRectsRef = useRef(new Map<string, DOMRect>());
   const previousOrderRef = useRef<string[]>([]);
   const animationFrameRef = useRef<number | null>(null);
+  // Rows holding a FLIP start transform until the next frame clears it.
+  const pendingFlipNodesRef = useRef(new Set<HTMLDivElement>());
   const effectiveProjectFilter: string | string[] | null =
     projectFilter !== undefined ? projectFilter : currentProjectFilter;
   // Hide PTY tasks that are bound to an AI task via AttachedTerminal. The
@@ -516,6 +518,21 @@ function TaskListComponent({
   }, [activeTaskId, activeTaskStoredGroup]);
 
   useLayoutEffect(() => {
+    // A reorder that lands before the previous FLIP frame ran (common in
+    // background tabs, where rAF is paused) cancels that frame; clear its
+    // start transforms first or those rows stay translated over their
+    // neighbours forever, and the rects below would be measured offset.
+    if (pendingFlipNodesRef.current.size > 0) {
+      if (animationFrameRef.current !== null) {
+        window.cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      pendingFlipNodesRef.current.forEach((node) => {
+        Object.assign(node.style, { transition: 'none', transform: '', willChange: '' });
+      });
+      pendingFlipNodesRef.current.clear();
+    }
+
     const currentRects = new Map<string, DOMRect>();
     allTaskIds.forEach((taskId) => {
       const node = itemWrapperRefs.current.get(taskId);
@@ -533,7 +550,7 @@ function TaskListComponent({
       !prefersReducedMotion();
 
     if (shouldAnimate) {
-      const animatedNodes: HTMLDivElement[] = [];
+      const animatedNodes = pendingFlipNodesRef.current;
 
       allTaskIds.forEach((taskId) => {
         const node = itemWrapperRefs.current.get(taskId);
@@ -554,13 +571,10 @@ function TaskListComponent({
           transform: `translate(${deltaX}px, ${deltaY}px)`,
           willChange: 'transform',
         });
-        animatedNodes.push(node);
+        animatedNodes.add(node);
       });
 
-      if (animatedNodes.length > 0 && typeof window !== 'undefined') {
-        if (animationFrameRef.current !== null) {
-          window.cancelAnimationFrame(animationFrameRef.current);
-        }
+      if (animatedNodes.size > 0 && typeof window !== 'undefined') {
         animationFrameRef.current = window.requestAnimationFrame(() => {
           animatedNodes.forEach((node) => {
             Object.assign(node.style, {
@@ -568,6 +582,7 @@ function TaskListComponent({
               transform: '',
             });
           });
+          animatedNodes.clear();
           animationFrameRef.current = null;
         });
       }
