@@ -18,6 +18,33 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.17.1] - 2026-10-15
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.17.1`
+- `@love-moon/conductor-sdk` `0.17.1`
+- `@love-moon/ai-sdk` `0.17.1`
+- `@love-moon/app-sdk` `0.17.1`
+- `@love-moon/chat-web` `0.17.1`
+
+### Changes
+
+### Patch Changes
+
+- 7e92c0f: When a task's model quota runs out ("You've hit your session limit · resets
+  1:20am"), fire no longer stops there. It reads the reset time, schedules a
+  one-off Conductor scheduled message to continue a minute or few after the
+  reset, and posts a single notice. Messages that arrive while waiting are queued
+  and handed to the resume turn together instead of each failing with another
+  "处理失败". The resume shows up in the task's scheduled-message list, where it
+  can be canceled. This also covers a quota hit while Claude works on its own
+  between user turns: ai-sdk now reports such a background turn that ends in an
+  error result (or a process exit after it) as a failed turn.
+- Updated dependencies [7e92c0f]
+  - @love-moon/ai-sdk@0.17.1
+  - @love-moon/conductor-sdk@0.17.1
+
 ## [0.17.0] - 2026-10-04
 
 ### Released packages
