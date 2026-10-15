@@ -48,6 +48,15 @@ Review follow-ups (fixed before commit):
   erases its history. Fire cancels only before the send time, with
   `?cancel_only=1`, which never deletes.
 
+QA follow-up (0.17.1 round, 2026-10-15): the common case still slipped through.
+A quota hit on a user's own turn also arrives as `subtype: "success"`,
+`is_error: true`, and the foreground `runTurn` only checked `subtype`, so the
+quota text came back as a normal reply and fire never parked the task. The
+foreground path now treats `is_error` as a failed turn too (message = the result
+text), the same rule the background path uses. Reproduced with a local
+Anthropic proxy answering 429 + `anthropic-ratelimit-unified-status: rejected`,
+which makes the real claude CLI print the session-limit line.
+
 ## Avoiding it next time
 Errors that carry a retry time (quota, rate limits) need their own handling
 path: park, schedule the retry, queue input. A generic "report and wait for the

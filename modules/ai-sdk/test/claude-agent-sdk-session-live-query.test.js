@@ -260,6 +260,23 @@ describe("claude agent-sdk session: long-lived query", () => {
     await session.close();
   });
 
+  it("fails a user turn that ends in an error result with subtype success", async () => {
+    const fake = createFakeClaude();
+    const { session, statuses } = createSession(fake);
+
+    const quotaText = "You've hit your session limit · resets 1:20am (Asia/Shanghai)";
+    const turn = session.runTurn("go");
+    const prompt = await fake.nextPrompt();
+    fake.current.emit(assistant(quotaText));
+    fake.current.emit({ ...result(quotaText, { uuid: prompt.uuid }), is_error: true });
+    await assert.rejects(turn, (error) => error.message === quotaText && error.reason === "turn_failed");
+    const failed = statuses.filter((status) => status.phase === "turn_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].status_done_line, quotaText);
+
+    await session.close();
+  });
+
   it("reports a process failure between turns as a background turn failure", async () => {
     const fake = createFakeClaude();
     const { session, statuses } = createSession(fake);
