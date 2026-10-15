@@ -1428,8 +1428,11 @@ export class ClaudeAgentSdkSession extends EventEmitter {
         });
       }
 
-      if (resultMessage.subtype !== "success") {
-        const errorMessage = extractResultErrorMessage(resultMessage);
+      // An error result (e.g. "You've hit your session limit") can carry subtype
+      // "success"; `is_error` is what marks it.
+      if (resultMessage.subtype !== "success" || resultMessage.is_error === true) {
+        const errorText = resultMessage.is_error === true ? normalizeText(resultMessage.result) : "";
+        const errorMessage = errorText || extractResultErrorMessage(resultMessage);
         this.maybeEmitAuthRequired(errorMessage, errorMessage);
         await this.emitTerminalWorkingStatus(
           currentTurn,
