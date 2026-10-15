@@ -7,8 +7,8 @@ import path from "node:path";
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REGISTRY_URL = process.env.NPM_REGISTRY_URL || "https://registry.npmjs.org";
-const PUBLISH_VISIBILITY_ATTEMPTS = 12;
-const PUBLISH_VISIBILITY_DELAY_MS = 5_000;
+const PUBLISH_VISIBILITY_ATTEMPTS = 60;
+const PUBLISH_VISIBILITY_DELAY_MS = 10_000;
 
 const PACKAGES = [
   { path: "modules/chat-web/package.json" },
