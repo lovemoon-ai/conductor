@@ -918,12 +918,19 @@ export async function POST(
   // "New task from this" continues the same work, so it keeps the labels a
   // person attached — otherwise every restart would silently untag the task.
   const sourceLabelIds = readTaskLabelIdsFromMetadata(sourceMetadata);
-  // RFC 0041: a global-backend task keeps showing under the project it was
-  // started from, and keeps saying which daemon/backend runs its AI.
+  // RFC 0041: a global-backend task keeps saying which daemon/backend runs
+  // its AI.
   const sourceGlobalBackend = readTaskGlobalBackend(sourceMetadata);
-  const sourceSecondProjectId = sourceGlobalBackend
-    ? normalizeOptionalString((sourceTask as { secondProjectId?: unknown }).secondProjectId)
-    : null;
+  // The successor shows under the same project as its source, so it doesn't
+  // move out of the project the user is working in. This holds for every
+  // source, not only global-backend ones. A task can be filed on the default
+  // project but displayed under its code's project, with no `globalBackend`
+  // left: a global-backend task whose AI later moved to the code's daemon
+  // ("homecoming") loses `globalBackend` but keeps both project ids, and a
+  // task moved display-only has no `globalBackend` either.
+  const sourceSecondProjectId = normalizeOptionalString(
+    (sourceTask as { secondProjectId?: unknown }).secondProjectId,
+  );
   const successorMetadata = {
     ...successorGroupMetadata,
     ...(sourceGlobalBackend
@@ -976,25 +983,46 @@ export async function POST(
   // working on the source machine's files through the remote_* MCP tools
   // (RFC 0041). Falls back to the target's own path when that is not possible
   // (source daemon offline, old CLI, shared daemon).
-  const crossDaemonRemoteBinding =
-    isCrossDaemonOverride && !isCodeMoveRequest && !sourceRemoteWorktree && !sourceRemoteWorkspace
-      ? await resolveCrossDaemonRemoteBinding({
-          userId: user.id,
-          tokenScope: user.tokenScope ?? null,
-          sourceHost: sourceRunHost,
-          targetHost: restartAgentHost,
-          targetCapabilities: restartAgentCapabilities,
-          connectedAgents,
-          projectId: project.id,
-          sourceWorktreeLaunchConfig: inheritedWorktreeLaunchConfig,
-          sourceCwd:
-            sourceCwd ?? (projectDaemonHost === sourceRunHost ? projectWorkspacePath : null),
-          projectRepoRoot:
-            projectDaemonHost === sourceRunHost
-              ? normalizeOptionalString((project as { repoRoot?: string | null }).repoRoot)
-              : null,
-        })
-      : null;
+  const needsCrossDaemonRemoteBinding =
+    isCrossDaemonOverride && !isCodeMoveRequest && !sourceRemoteWorktree && !sourceRemoteWorkspace;
+  // The project that holds the source's code on the source daemon. Usually the
+  // task's own project. A task filed on the unbound default project but
+  // displayed under its code's project (a global-backend task whose AI moved
+  // to the code's daemon) has its code in that display project. Binding the
+  // remote worktree to the default project would leave it without a daemon or
+  // repository, so a later "new worktree" from the successor would fail.
+  const sourceCodeProject =
+    !needsCrossDaemonRemoteBinding || !sourceRunHost || projectDaemonHost === sourceRunHost
+      ? project
+      : (sourceSecondProjectId && sourceSecondProjectId !== project.id
+          ? await db.project.findFirst({
+              where: { id: sourceSecondProjectId, userId: user.id, daemonHost: sourceRunHost },
+            })
+          : null) ?? project;
+  const sourceCodeProjectDaemonHost = normalizeOptionalString(
+    (sourceCodeProject as { daemonHost?: string | null }).daemonHost,
+  );
+  const crossDaemonRemoteBinding = needsCrossDaemonRemoteBinding
+    ? await resolveCrossDaemonRemoteBinding({
+        userId: user.id,
+        tokenScope: user.tokenScope ?? null,
+        sourceHost: sourceRunHost,
+        targetHost: restartAgentHost,
+        targetCapabilities: restartAgentCapabilities,
+        connectedAgents,
+        projectId: sourceCodeProject.id,
+        sourceWorktreeLaunchConfig: inheritedWorktreeLaunchConfig,
+        sourceCwd:
+          sourceCwd ??
+          (sourceCodeProjectDaemonHost === sourceRunHost
+            ? normalizeOptionalString((sourceCodeProject as { workspacePath?: string | null }).workspacePath)
+            : null),
+        projectRepoRoot:
+          sourceCodeProjectDaemonHost === sourceRunHost
+            ? normalizeOptionalString((sourceCodeProject as { repoRoot?: string | null }).repoRoot)
+            : null,
+      })
+    : null;
   // Moving the AI onto the daemon that holds the remote files makes it an
   // ordinary local task again, instead of reaching its own disk remotely.
   const homecomingLaunchConfig =

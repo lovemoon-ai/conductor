@@ -555,6 +555,53 @@ describe("/api/tasks/[taskId]/restart", () => {
       });
     });
 
+    it("keeps a default-project task shown under its code's project and binds that project", async () => {
+      // A global-backend task whose AI moved home to the code's daemon: still
+      // filed on the unbound default project, shown under the real project,
+      // running in a local worktree on daemon-1, and no longer `globalBackend`.
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: "proj-default" } as any);
+      vi.mocked(db.project.findFirst).mockImplementation((async ({ where }: any) =>
+        where.id === "proj-default"
+          ? { id: "proj-default", userId: "user-1", daemonHost: null, workspacePath: null }
+          : where.id === "proj-code" && where.daemonHost === "daemon-1"
+            ? {
+                id: "proj-code",
+                userId: "user-1",
+                daemonHost: "daemon-1",
+                workspacePath: "/repo/project",
+                repoRoot: "/repo/project",
+              }
+            : null) as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          projectId: "proj-default",
+          secondProjectId: "proj-code",
+          metadata: null,
+          launchConfig: JSON.stringify({
+            worktree: true,
+            worktreeId: "task-1",
+            worktreeBranch: "1bf94c",
+            worktreeBaseRef: "main",
+            projectRepoRoot: "/repo/project",
+            projectWorkspacePath: "/repo/project",
+            projectRelativePath: ".",
+          }),
+        }) as any,
+      );
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.projectId).toBe("proj-default");
+      expect(lastCreate().data.secondProjectId).toBe("proj-code");
+      expect(JSON.parse(lastCreate().data.launchConfig).remoteWorktree).toMatchObject({
+        host: "daemon-1",
+        projectId: "proj-code",
+        branch: "1bf94c",
+      });
+    });
+
     it("falls back to the target's own path when the source daemon cannot serve remote tools", async () => {
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents([]) as any);
 
@@ -675,7 +722,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
   });
 
-  it("does not carry a plain display-only move to a successor", async () => {
+  it("carries a display-only move to a successor so it stays in the same project", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ secondProjectId: "proj-other" }) as any);
     const response = await POST(
       createMockRequest({
@@ -687,7 +734,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
     expect(response.status).toBe(200);
     const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
-    expect(createArgs.data.secondProjectId).toBeUndefined();
+    expect(createArgs.data.secondProjectId).toBe("proj-other");
   });
 
   it("does not add an empty labelIds key to a successor of an unlabelled task", async () => {
