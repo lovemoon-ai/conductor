@@ -555,6 +555,124 @@ describe("/api/tasks/[taskId]/restart", () => {
       });
     });
 
+    // A global-backend task whose AI moved home to the code's daemon: still
+    // filed on the unbound default project, shown under the real project,
+    // running in a local worktree on daemon-1, and no longer `globalBackend`.
+    const homecomedWorktree = {
+      worktree: true,
+      worktreeId: "task-1",
+      worktreeBranch: "1bf94c",
+      worktreeBaseRef: "main",
+      projectRepoRoot: "/repo/project",
+      projectWorkspacePath: "/repo/project",
+      projectRelativePath: ".",
+    };
+    const mockDefaultFiledSource = (launchConfig: Record<string, unknown> | null = homecomedWorktree) => {
+      vi.mocked(db.defaultProject.findUnique).mockResolvedValue({ projectId: "proj-default" } as any);
+      vi.mocked(db.project.findFirst).mockImplementation((async ({ where }: any) =>
+        where.id === "proj-default"
+          ? { id: "proj-default", userId: "user-1", daemonHost: null, workspacePath: null }
+          : where.id === "proj-code"
+            ? {
+                id: "proj-code",
+                userId: "user-1",
+                daemonHost: "daemon-1",
+                workspacePath: "/repo/project",
+                repoRoot: "/repo/project",
+                worktreeBranch: "main",
+              }
+            : null) as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue(
+        buildTask({
+          projectId: "proj-default",
+          secondProjectId: "proj-code",
+          metadata: null,
+          launchConfig: launchConfig ? JSON.stringify(launchConfig) : null,
+        }) as any,
+      );
+    };
+
+    it("keeps a default-project task shown under its code's project and binds that project", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      mockDefaultFiledSource();
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.projectId).toBe("proj-default");
+      expect(lastCreate().data.secondProjectId).toBe("proj-code");
+      expect(JSON.parse(lastCreate().data.launchConfig).remoteWorktree).toMatchObject({
+        host: "daemon-1",
+        projectId: "proj-code",
+        branch: "1bf94c",
+      });
+    });
+
+    it("does not bind a display project's directory the source never worked in", async () => {
+      // No cwd: the source ran in a fresh workspace, and was only moved
+      // display-only under proj-code. Its successor must not edit proj-code.
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      mockDefaultFiledSource(null);
+
+      const response = await restartOn();
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.secondProjectId).toBe("proj-code");
+      expect(lastCreate().data.launchConfig ?? null).toBeNull();
+    });
+
+    it("explains an unreachable code daemon for a new worktree of a default-filed task", async () => {
+      // daemon-1 cannot serve remote tools, so the successor cannot be bound.
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents([]) as any);
+      mockDefaultFiledSource();
+
+      const response = await restartOn({ new_worktree: true, first_message: "go" });
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(
+        /cannot work on the code on daemon-1 remotely.*pick a backend on daemon-1/,
+      );
+      expect(db.task.create).not.toHaveBeenCalled();
+    });
+
+    it("creates a new worktree in the code's project for a default-filed task on the same daemon", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(
+        agents([...REMOTE_CAPS, "restart_first_message"]) as any,
+      );
+      mockDefaultFiledSource();
+
+      const response = await POST(
+        createMockRequest({
+          method: "POST",
+          token: createTestToken("user-1"),
+          body: { strategy: "new_task", new_worktree: true, first_message: "go" },
+        }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-1");
+      expect(lastCreate().data.secondProjectId).toBe("proj-code");
+      const launchConfig = JSON.parse(lastCreate().data.launchConfig);
+      expect(launchConfig).toMatchObject({
+        worktree: true,
+        projectRepoRoot: "/repo/project",
+        projectWorkspacePath: "/repo/project",
+      });
+      expect(launchConfig.worktreeBranch).not.toBe("1bf94c");
+    });
+
+    it("does not show a code move's successor under a display project bound to the source daemon", async () => {
+      vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
+      mockDefaultFiledSource();
+
+      const response = await restartOn({ code_host: "daemon-2" });
+
+      expect(response.status).toBe(200);
+      expect(lastCreate().data.agentHost).toBe("daemon-2");
+      expect(lastCreate().data.secondProjectId).toBeUndefined();
+    });
+
     it("falls back to the target's own path when the source daemon cannot serve remote tools", async () => {
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents([]) as any);
 
@@ -675,8 +793,30 @@ describe("/api/tasks/[taskId]/restart", () => {
     });
   });
 
-  it("does not carry a plain display-only move to a successor", async () => {
+  it("carries a display-only move to a successor so it stays in the same project", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ secondProjectId: "proj-other" }) as any);
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    expect(response.status).toBe(200);
+    const createArgs = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+    expect(createArgs.data.secondProjectId).toBe("proj-other");
+  });
+
+  it.each([
+    ["hidden", { id: "proj-other", userId: "user-1", hiddenAt: new Date("2026-10-01T00:00:00.000Z") }],
+    ["missing", null],
+  ])("does not carry a %s display project to a successor", async (_label, displayProject) => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ secondProjectId: "proj-other" }) as any);
+    vi.mocked(db.project.findFirst).mockImplementation((async ({ where }: any) =>
+      where.id === "proj-other"
+        ? displayProject
+        : { id: "proj-1", userId: "user-1", daemonHost: "daemon-1", workspacePath: "/repo/project" }) as any);
     const response = await POST(
       createMockRequest({
         method: "POST",

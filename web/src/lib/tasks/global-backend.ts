@@ -209,7 +209,8 @@ export const isGlobalBackendAgentHost = (
   );
 };
 
-const isWithinDir = (root: string, target: string): boolean => {
+/** Whether `target` is `root` or a path below it (either separator). */
+export const isWithinDir = (root: string, target: string): boolean => {
   const trimmed = root.replace(/[\\/]+$/, "");
   return target === trimmed || target.startsWith(`${trimmed}/`) || target.startsWith(`${trimmed}\\`);
 };
