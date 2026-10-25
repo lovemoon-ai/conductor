@@ -44,6 +44,7 @@ import {
   parseRemoteWorkspaceLaunchConfig,
   parseRemoteWorktreeLaunchConfig,
   type RemoteWorkspaceLaunchConfig,
+  parseTaskWorktreeLaunchConfig,
 } from "@/lib/tasks/worktree";
 import { normalizeBackendType } from "@/lib/tasks/pty-runtime";
 import {
@@ -68,6 +69,7 @@ import {
   isGlobalBackendAgentHost,
   readTaskGlobalBackend,
   resolveCrossDaemonRemoteBinding,
+  isWithinDir,
 } from "@/lib/tasks/global-backend";
 import {
   buildRemoteWorkspaceBootstrap,
@@ -249,6 +251,16 @@ export async function POST(
   ) {
     return NextResponse.json({ error: "Project binding incomplete" }, { status: 409 });
   }
+  // The project the source is displayed under (`secondProjectId`), when it is
+  // not its own. Only a project the user still owns counts; `secondProjectId`
+  // has no foreign key, so it can outlive the project it names.
+  const sourceDisplayProjectId = normalizeOptionalString(
+    (sourceTask as { secondProjectId?: unknown }).secondProjectId,
+  );
+  const sourceDisplayProject =
+    sourceDisplayProjectId && sourceDisplayProjectId !== project.id
+      ? await db.project.findFirst({ where: { id: sourceDisplayProjectId, userId: user.id } })
+      : null;
   if ((sourceTask.taskType ?? "ai_task") !== "ai_task") {
     return NextResponse.json({ error: "Only ai_task supports restart" }, { status: 409 });
   }
@@ -928,9 +940,18 @@ export async function POST(
   // left: a global-backend task whose AI later moved to the code's daemon
   // ("homecoming") loses `globalBackend` but keeps both project ids, and a
   // task moved display-only has no `globalBackend` either.
-  const sourceSecondProjectId = normalizeOptionalString(
-    (sourceTask as { secondProjectId?: unknown }).secondProjectId,
+  // Except: a hidden display project would hide the successor (the move route
+  // refuses one for the same reason), and a code move takes the work away from
+  // a display project bound to another daemon.
+  const sourceDisplayProjectHost = normalizeOptionalString(
+    (sourceDisplayProject as { daemonHost?: string | null } | null)?.daemonHost,
   );
+  const sourceSecondProjectId =
+    sourceDisplayProject &&
+    !(sourceDisplayProject as { hiddenAt?: Date | null }).hiddenAt &&
+    !(isCodeMoveRequest && sourceDisplayProjectHost && sourceDisplayProjectHost !== restartAgentHost)
+      ? sourceDisplayProjectId
+      : null;
   const successorMetadata = {
     ...successorGroupMetadata,
     ...(sourceGlobalBackend
@@ -983,46 +1004,53 @@ export async function POST(
   // working on the source machine's files through the remote_* MCP tools
   // (RFC 0041). Falls back to the target's own path when that is not possible
   // (source daemon offline, old CLI, shared daemon).
-  const needsCrossDaemonRemoteBinding =
-    isCrossDaemonOverride && !isCodeMoveRequest && !sourceRemoteWorktree && !sourceRemoteWorkspace;
-  // The project that holds the source's code on the source daemon. Usually the
-  // task's own project. A task filed on the unbound default project but
+  // The project holding the source's local code on the source daemon. Usually
+  // the task's own project. A task filed on the unbound default project but
   // displayed under its code's project (a global-backend task whose AI moved
-  // to the code's daemon) has its code in that display project. Binding the
-  // remote worktree to the default project would leave it without a daemon or
-  // repository, so a later "new worktree" from the successor would fail.
+  // to the code's daemon) has its code in that display project, provided the
+  // source really worked inside it: a plain display-only move says nothing
+  // about where the files are. The remote binding and a new worktree both use
+  // it; the default project has no daemon or repository to use instead.
+  const sourceWorktree = inheritedWorktreeLaunchConfig
+    ? parseTaskWorktreeLaunchConfig(inheritedWorktreeLaunchConfig)
+    : null;
+  const sourceLocalDir = sourceWorktree?.projectWorkspacePath ?? sourceCwd;
+  const displayProjectRoot =
+    normalizeOptionalString((sourceDisplayProject as { repoRoot?: string | null } | null)?.repoRoot) ??
+    normalizeOptionalString((sourceDisplayProject as { workspacePath?: string | null } | null)?.workspacePath);
   const sourceCodeProject =
-    !needsCrossDaemonRemoteBinding || !sourceRunHost || projectDaemonHost === sourceRunHost
-      ? project
-      : (sourceSecondProjectId && sourceSecondProjectId !== project.id
-          ? await db.project.findFirst({
-              where: { id: sourceSecondProjectId, userId: user.id, daemonHost: sourceRunHost },
-            })
-          : null) ?? project;
-  const sourceCodeProjectDaemonHost = normalizeOptionalString(
-    (sourceCodeProject as { daemonHost?: string | null }).daemonHost,
-  );
-  const crossDaemonRemoteBinding = needsCrossDaemonRemoteBinding
-    ? await resolveCrossDaemonRemoteBinding({
-        userId: user.id,
-        tokenScope: user.tokenScope ?? null,
-        sourceHost: sourceRunHost,
-        targetHost: restartAgentHost,
-        targetCapabilities: restartAgentCapabilities,
-        connectedAgents,
-        projectId: sourceCodeProject.id,
-        sourceWorktreeLaunchConfig: inheritedWorktreeLaunchConfig,
-        sourceCwd:
-          sourceCwd ??
-          (sourceCodeProjectDaemonHost === sourceRunHost
-            ? normalizeOptionalString((sourceCodeProject as { workspacePath?: string | null }).workspacePath)
-            : null),
-        projectRepoRoot:
-          sourceCodeProjectDaemonHost === sourceRunHost
+    sourceRunHost &&
+    projectDaemonHost !== sourceRunHost &&
+    sourceDisplayProject &&
+    sourceDisplayProjectHost === sourceRunHost &&
+    sourceLocalDir &&
+    displayProjectRoot &&
+    isWithinDir(displayProjectRoot, sourceLocalDir)
+      ? sourceDisplayProject
+      : project;
+  const sourceCodeProjectIsOwn = sourceCodeProject === project;
+  const sourceCodeProjectBoundOnRunHost =
+    normalizeOptionalString((sourceCodeProject as { daemonHost?: string | null }).daemonHost) === sourceRunHost;
+  const crossDaemonRemoteBinding =
+    isCrossDaemonOverride && !isCodeMoveRequest && !sourceRemoteWorktree && !sourceRemoteWorkspace
+      ? await resolveCrossDaemonRemoteBinding({
+          userId: user.id,
+          tokenScope: user.tokenScope ?? null,
+          sourceHost: sourceRunHost,
+          targetHost: restartAgentHost,
+          targetCapabilities: restartAgentCapabilities,
+          connectedAgents,
+          projectId: sourceCodeProject.id,
+          sourceWorktreeLaunchConfig: inheritedWorktreeLaunchConfig,
+          // Without a cwd the source ran in its own project's directory; that
+          // never holds for a display project, which is only used with a cwd.
+          sourceCwd:
+            sourceCwd ?? (sourceCodeProjectIsOwn && sourceCodeProjectBoundOnRunHost ? projectWorkspacePath : null),
+          projectRepoRoot: sourceCodeProjectBoundOnRunHost
             ? normalizeOptionalString((sourceCodeProject as { repoRoot?: string | null }).repoRoot)
             : null,
-      })
-    : null;
+        })
+      : null;
   // Moving the AI onto the daemon that holds the remote files makes it an
   // ordinary local task again, instead of reaching its own disk remotely.
   const homecomingLaunchConfig =
@@ -1057,11 +1085,18 @@ export async function POST(
       parseRemoteWorktreeLaunchConfig(continuedLaunchConfig) ??
       parseRemoteWorkspaceLaunchConfig(continuedLaunchConfig);
     const homecomingRemote = homecomingLaunchConfig ? sourceRemoteWorktree ?? sourceRemoteWorkspace : null;
-    const codeProjectId = continuedRemote?.projectId ?? homecomingRemote?.projectId ?? project.id;
+    // A code move starts from the target daemon's own project path, so only
+    // the source's own project applies there.
+    const codeProjectId =
+      continuedRemote?.projectId ??
+      homecomingRemote?.projectId ??
+      (isCodeMoveRequest ? project.id : sourceCodeProject.id);
     const codeProject =
       codeProjectId === project.id
         ? project
-        : await db.project.findFirst({ where: { id: codeProjectId, userId: user.id } });
+        : codeProjectId === sourceCodeProject.id
+          ? sourceCodeProject
+          : await db.project.findFirst({ where: { id: codeProjectId, userId: user.id } });
     if (!codeProject) {
       return NextResponse.json(
         { error: "The project holding the source task's code no longer exists" },
