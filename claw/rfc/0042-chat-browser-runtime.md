@@ -60,9 +60,16 @@ TBD
 | CEF 加最小原生界面 | 支持嵌入 Chromium、进程通信和响应数据过滤；原生控制更直接，需要维护 C++ 集成和跨平台打包 |
 | 系统 Chrome 加扩展与本地宿主 | 嵌入式浏览器兼容性不满足时的候选；保留聊天语义协议，重新验证扩展权限与流采集 |
 | Tauri 2 默认系统 WebView | 官方文档显示桌面平台分别使用 WebView2 或 WebKit；包体优势需与跨引擎适配成本一起评估 |
+| Moli | 独立 Rust 浏览器内核，基础隔离与增量流已通过本地 v1.1.19 实验；有 ChatGPT demo。适合作为可替换 worker 引擎，真实站点兼容性仍需验证，附加持久化 context 受限 |
 | Lightpanda 等新浏览器引擎 | 有面向机器的接口和资源优化方向，但目标站点的登录、流式协议和完整应用行为必须单独验证 |
 
 选型依据：[Electron WebContentsView](https://www.electronjs.org/docs/latest/api/web-contents-view)、[Electron session](https://www.electronjs.org/docs/latest/api/session)、[Min 源码](https://github.com/minbrowser/min)、[Min package.json](https://github.com/minbrowser/min/blob/master/package.json)、[CEF](https://github.com/chromiumembedded/cef)、[Tauri 2 WebView](https://v2.tauri.app/reference/webview-versions/)、[Lightpanda](https://github.com/lightpanda-io/browser)。以上判断针对当前仓库和聊天场景，不代表目标站点已通过验证。
+
+### Moli 调研结果
+
+[Moli 调研与可复现实验](../research/moli/README.md) 使用源码快照 26d2d182 和官方 v1.1.19 macOS arm64 二进制。模拟聊天流实验验证了同源 context 存储隔离、双路增量接收、单 context 关闭隔离、双进程故障隔离，以及 Browser.close 后的 profile 恢复。结果支持将 Moli 列为候选执行引擎；尚未验证四个真实站点的登录和对话链路。
+
+建议在 BrowserHost 后增加可替换的 Moli 后端，按 chat 使用独立进程与 profile，保留 Chromium 基线。附加 context 的 persistentPartitionId 明确返回不支持；SIGTERM 立即退出，不能替代协议关闭与持久化确认。上游 ChatGPT demo 默认借助 Chromium 认证，并保留刷新后读取回复的路径，不能作为完整实时聊天兼容性已通过的证据。
 
 ## Proposed Design
 

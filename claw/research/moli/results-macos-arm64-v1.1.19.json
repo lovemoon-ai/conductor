@@ -1,0 +1,41 @@
+{
+  "binary": "moli 1.1.19",
+  "platform": "darwin",
+  "arch": "arm64",
+  "fixture": "local HTTP, no chatbot accounts",
+  "checks": [
+    {
+      "name": "same-origin context storage isolation",
+      "contexts": 2,
+      "stores": [
+        "cookies",
+        "localStorage",
+        "sessionStorage"
+      ]
+    },
+    {
+      "name": "two contexts receive concurrent body chunks before EOF",
+      "chunksAt750ms": [
+        2,
+        2
+      ]
+    },
+    {
+      "name": "CDP binding carries per-session incremental payloads",
+      "bindingEvents": 8
+    },
+    {
+      "name": "disposing one context preserves other context stream"
+    },
+    {
+      "name": "additional persistent context rejected",
+      "error": "{\"code\":-32602,\"message\":\"PersistentBrowserContextNotSupported\"}"
+    },
+    {
+      "name": "two processes isolate profile state; killing A preserves B stream"
+    },
+    {
+      "name": "profile cookies and localStorage survive Browser.close and restart"
+    }
+  ]
+}
