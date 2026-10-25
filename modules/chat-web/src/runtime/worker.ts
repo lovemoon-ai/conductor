@@ -11,7 +11,7 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Installed in the page's main world, with a private per-worker binding. */
 // Keep injected source independent of Node/TypeScript loader helpers.
-const observeFetch = String.raw`(options) => {
+const observeStreams = String.raw`(options) => {
   const scope = window;
   if (scope[options.key]) return;
   const state = { active: "" };
@@ -27,27 +27,80 @@ const observeFetch = String.raw`(options) => {
     if (matched) {
       const send = (payload) => Promise.resolve(scope[options.binding]({ token, ...payload })).catch(() => undefined);
       if (!response.ok) void send({ error: "Provider HTTP " + response.status });
-      else if (response.headers.get("content-type")?.includes("event-stream")) {
+      else if (response.headers.get("content-type")?.includes("event-stream") ||
+               response.headers.get("content-type")?.includes("application/connect+json")) {
+        const connect = response.headers.get("content-type").includes("application/connect+json");
         const reader = response.clone().body?.getReader();
         if (reader) void (async () => {
           const decoder = new TextDecoder();
           let bytes = 0;
+          const pending = new Set();
+          const emit = (payload) => {
+            const task = send(payload).finally(() => pending.delete(task));
+            pending.add(task);
+          };
           try {
             for (;;) {
               const { value, done } = await reader.read();
               if (done) break;
               bytes += value.byteLength;
-              if (bytes > 8_000_000) { await send({ error: "Response exceeds capture limit" }); break; }
-              await send({ chunk: decoder.decode(value, { stream: true }) });
+              if (bytes > 8_000_000) { await send({ error: "Response exceeds capture limit" }); void reader.cancel().catch(() => undefined); break; }
+              if (connect) {
+                // Pass raw bytes across IPC: decoding binary envelope headers as UTF-8 corrupts lengths.
+                let binary = "";
+                for (let i = 0; i < value.length; i += 32768) binary += String.fromCharCode(...value.subarray(i, i + 32768));
+                emit({ connectChunk: btoa(binary) });
+                // Drain the tee promptly: the site's reader may abort as soon as it sees done.
+                if (pending.size >= 64) await Promise.all(pending);
+              } else await send({ chunk: decoder.decode(value, { stream: true }) });
             }
+            if (connect) { await Promise.all(pending); await send({ connectEnd: true }); }
             const tail = decoder.decode();
             if (tail) await send({ chunk: tail });
-          } catch { await send({ error: "Response stream interrupted" }); }
+          } catch (error) {
+            await Promise.all(pending);
+            await send({ interrupted: error?.name || "Error" });
+          }
           finally { reader.releaseLock(); }
         })();
       }
     }
     return response;
+  };
+  // DeepSeek streams SSE through XMLHttpRequest, so fetch alone misses the entire protocol.
+  const opened = new WeakMap();
+  const xhrOpen = XMLHttpRequest.prototype.open;
+  const xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    opened.set(this, { method: String(method).toUpperCase(), url: new URL(String(url), location.href) });
+    return xhrOpen.call(this, method, url, ...rest);
+  };
+  XMLHttpRequest.prototype.send = function (...args) {
+    const request = opened.get(this);
+    const token = state.active;
+    if (token && request?.method === "POST" && request.url.origin === options.origin &&
+        pattern.test(request.url.pathname + request.url.search)) {
+      let offset = 0;
+      let limited = false;
+      const send = (payload) => Promise.resolve(scope[options.binding]({ token, ...payload })).catch(() => undefined);
+      const flush = () => {
+        if (limited || (this.responseType && this.responseType !== "text") ||
+            !this.getResponseHeader("content-type")?.includes("event-stream")) return;
+        const text = this.responseText;
+        if (text.length > 8_000_000) { limited = true; void send({ error: "Response exceeds capture limit" }); return; }
+        const chunk = text.slice(offset); offset = text.length;
+        if (chunk) void send({ chunk });
+      };
+      this.addEventListener("progress", flush);
+      this.addEventListener("load", () => {
+        if (this.status < 200 || this.status >= 300) void send({ error: "Provider HTTP " + this.status });
+        else flush();
+      });
+      this.addEventListener("abort", () => { void send({ interrupted: "AbortError" }); });
+      this.addEventListener("error", () => { void send({ interrupted: "NetworkError" }); });
+      this.addEventListener("timeout", () => { void send({ interrupted: "TimeoutError" }); });
+    }
+    return xhrSend.apply(this, args);
   };
   scope[options.key] = state;
 }`;
@@ -98,13 +151,25 @@ class Session {
     await page.exposeBinding(this.binding, ({ page: source, frame }, payload: any) => {
       if (source !== page || frame !== page.mainFrame() || payload?.token !== this.token || !this.token) return;
       if (typeof payload.error === "string") this.captureError = payload.error.slice(0, 256);
+      if (typeof payload.interrupted === "string" &&
+          !(payload.interrupted === "AbortError" && this.decoder?.complete)) {
+        this.captureError = "Response stream interrupted (" + payload.interrupted.slice(0, 32) + ")";
+      }
+      if (typeof payload.connectChunk === "string") {
+        if (payload.connectChunk.length > 1_400_000) { this.captureError = "Capture chunk exceeds limit"; return; }
+        try { this.decoder?.pushConnect(Buffer.from(payload.connectChunk, "base64")); }
+        catch (error) { this.captureError = String(error); }
+      }
+      if (payload.connectEnd === true) {
+        try { this.decoder?.finishConnect(); } catch (error) { this.captureError = String(error); }
+      }
       if (typeof payload.chunk === "string") {
         if (payload.chunk.length > 1_000_000) { this.captureError = "Capture chunk exceeds limit"; return; }
         try { this.decoder?.push(payload.chunk); } catch (error) { this.captureError = String(error); }
       }
     });
     const observer = { key: this.key, binding: this.binding, path: this.config.site.streamPath, origin: new URL(this.config.site.homeUrl).origin };
-    const source = "(" + observeFetch + ")(" + JSON.stringify(observer) + ")";
+    const source = "(" + observeStreams + ")(" + JSON.stringify(observer) + ")";
     await page.addInitScript({ content: source });
     await page.goto(this.config.conversation.url ?? this.config.site.homeUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(source);
@@ -188,18 +253,20 @@ class Session {
         const texts = await page.locator(this.config.site.assistant).allTextContents();
         const newMessage = texts.length > baseline.length;
         const domText = newMessage ? texts.at(-1)?.trim() ?? "" : "";
-        const text = this.decoder.text || domText;
+        // Once a protocol is captured, an empty answer can mean reasoning, not missing DOM.
+        const text = this.decoder.captured ? this.decoder.text : domText;
         if (text.length > 1_000_000) throw new RuntimeError("UNCERTAIN", "Response exceeds limit");
         if (text !== previous) {
           previous = text;
           stableSince = Date.now();
           if (text) notify({ type: "progress", text, ...(await this.location()) });
         }
-        if (this.decoder.complete && this.decoder.text) return { text: this.decoder.text, source: "sse", ...(await this.location()) };
         const stopping = !!(await this.visible(this.config.site.stop));
+        // The protocol can finish before the UI releases its composer; keep FIFO handoff safe.
+        if (this.decoder.complete && this.decoder.text && !stopping) return { text: this.decoder.text, source: this.decoder.source, ...(await this.location()) };
         observedStop ||= stopping;
         // DOM completion requires an observed generation control transition and a NEW answer.
-        if (newMessage && text && observedStop && !stopping && Date.now() - stableSince > 700) {
+        if (this.decoder.source !== "connect" && newMessage && text && observedStop && !stopping && Date.now() - stableSince > 700) {
           return { text, source: "dom", ...(await this.location()) };
         }
         await pause(100);

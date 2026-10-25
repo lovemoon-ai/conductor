@@ -20,7 +20,7 @@ export interface TurnEvent {
   text?: string;
   error?: string;
   stopConfirmed?: boolean;
-  source?: "sse" | "dom";
+  source?: "sse" | "connect" | "dom";
 }
 
 export interface Turn {
@@ -35,7 +35,7 @@ export interface Turn {
   createdAt: string;
   error?: string;
   stopConfirmed?: boolean;
-  source?: "sse" | "dom";
+  source?: "sse" | "connect" | "dom";
 }
 
 export interface RuntimeState {
@@ -63,7 +63,7 @@ export interface WorkerResult {
   providerConversationId?: string;
   ready?: boolean;
   stopConfirmed?: boolean;
-  source?: "sse" | "dom";
+  source?: "sse" | "connect" | "dom";
 }
 export interface WorkerNotice {
   type: "submitting" | "progress";

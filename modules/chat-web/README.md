@@ -2,7 +2,7 @@
 
 ChatGPT、DeepSeek、Kimi、Claude 网页聊天的本地运行时。第一版使用 Chromium/Playwright，每个 chat 独占一个 Node worker、浏览器进程和持久化 profile。多个 SDK/CLI 客户端通过本地 socket 共享 daemon，同一 chat 的发送有序，不同 chat 可并行。
 
-Kimi、Claude 适配标记为 experimental。自动化测试覆盖四种页面与 SSE 协议的模拟站点，不代表四个真实站点的登录和连续对话已验收。Moli 留作后续资源优化。
+Kimi、Claude 适配标记为 experimental。2026-10-25 UTC 已在 macmini 使用真实 Kimi、DeepSeek 账号验证多轮、四路并行、独立取消与重启恢复；ChatGPT、Claude 仍仅有模拟站点覆盖。Moli 留作后续资源优化。
 
 ## 启动与登录
 
@@ -23,7 +23,7 @@ chat-web chat login CHAT_B
 
 create 输出 JSON，其中 id 是稳定的本地 chat id。把 CHAT_A、CHAT_B 替换为对应 id。login 返回后浏览器仍由 daemon 持有，在窗口中手动登录；凭证和验证步骤由用户处理。每个隔离 profile 首次需要单独授权，旧版 `chat-web login <provider>` 的共享 profile 不会自动复制到新 chat。
 
-create 默认 headless。login 将该 chat 切为 headed；登录后需要后台模式时，运行：
+create 默认 headless。login 将该 chat 切为 headed。当前实测 Kimi 的已有登录态切换到 headless 后，发送返回 HTTP 401，切回 headed 可用；建议 Kimi 保持 headed（创建时可传 --headed），原因尚未确认，不自动重试提交。DeepSeek 已验证 headless 和 headed。确认站点支持后，需要后台模式时运行：
 
 ```bash
 chat-web chat close CHAT_A
@@ -99,7 +99,7 @@ const session = createAiSession("chat-web", {
 - 空闲 worker 可回收，恢复依赖已保存的站点会话 URL。已发送但没有可靠 URL 的 chat 不会在资源回收或重启后悄悄打开新会话。
 - 已开始的 turn 在异常或重启后进入 uncertain；重启只重新调度从未开始的 queued turn，不重放已提交消息。
 - uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。
-- 回复优先从 fetch 的 SSE 副本增量解析。终态 source 字段区分 sse 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、二进制或变化后的站点协议可能需要更新适配器。
+- 回复优先从 fetch/XHR 的 SSE 或 Kimi Connect JSON 流增量解析。终态 source 字段区分 sse、connect 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、Connect 压缩帧或变化后的站点协议可能需要更新适配器。
 - 本地状态目录默认 `CHAT_WEB_HOME/runtime`，CHAT_WEB_HOME 默认 ~/.chat-web。Unix 目录权限 0700，socket 与状态文件 0600，凭证保存在各 chat 的 profile。没有开放 TCP 监听端口。
 - 第一版使用原子 JSON 状态快照，最多保留 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。达到限制会明确拒绝操作；长期归档与清理接口留待后续实现。状态含输入与回复，应按本地聊天记录管理。
 
@@ -114,4 +114,6 @@ pnpm test
 node dist/cli.js serve
 ```
 
-测试包括本地 RPC/SDK/CLI、并发与顺序、幂等、取消、断线重放、异常检查点恢复，以及独立 Chromium 进程中的四种站点模拟页面。真实浏览器测试在 Chromium 不可用时跳过；可设置 CHAT_WEB_TEST_BROWSER 指定测试二进制，不会自动安装或使用真实账号。
+测试包括本地 RPC/SDK/CLI、并发与顺序、幂等、取消、断线重放、异常检查点恢复，以及独立 Chromium 进程中的四种站点模拟页面。Kimi 模拟 Connect 二进制分帧、done 后网页主动 abort、UI 延迟解除生成状态与截断流；DeepSeek 模拟 XHR SSE、负数分片下标及 BATCH 终态。真实浏览器测试在 Chromium 不可用时跳过；可设置 CHAT_WEB_TEST_BROWSER 指定测试二进制，不会自动安装或使用真实账号。
+
+真实账号验证覆盖同一 daemon 内 Kimi 两路（headed）和 DeepSeek 两路（headless），四条生成区间共同重叠 1024 ms，四个站点会话 id 不同。各 chat 只回忆自己的标记；取消每站点的一条生成均得到 stopConfirmed=true，另一条继续完成；重启后两站点均可继续原对话。此轮联合验证 14 个 turn，其中 12 个 completed、2 个按要求 cancelled。它验证当前网页版本的基础文本路径，不代表账号配额、附件、工具调用或长时间负载已验收。凭证、原始网络数据和执行日志不进入仓库。

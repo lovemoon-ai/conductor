@@ -18,20 +18,24 @@ function fixtureHtml(provider: string): string {
     '<div id="prompt-textarea" class="chat-input-editor ProseMirror" role="textbox" contenteditable="true"></div>';
   const assistant = provider === "chatgpt" ? '<div data-message-author-role="assistant"></div>' :
     provider === "deepseek" ? '<div class="ds-markdown"></div>' :
-    provider === "kimi" ? '<div class="segment-assistant"><div class="markdown"></div></div>' :
+    provider === "kimi" ? '<div class="segment-assistant"><div class="toolcall-container"><div class="markdown">private thought</div></div><div class="markdown"></div></div>' :
     '<div class="font-claude-message"></div>';
   const route = provider === "chatgpt" ? "/c/" : provider === "deepseek" ? "/a/chat/s/" : "/chat/";
   const endpoint = provider === "chatgpt" ? "/backend-api/conversation" : provider === "deepseek" ? "/api/v0/chat/completion" :
-    provider === "kimi" ? "/api/chat/thread/completion/stream" : "/api/organizations/org/chat_conversations/thread/completion";
+    provider === "kimi" ? "/apiv2/kimi.gateway.chat.v1.ChatService/Chat" : "/api/organizations/org/chat_conversations/thread/completion";
+  const controls = provider === "kimi"
+    ? '<div id="composer-submit-button" class="send-button-container">Send</div><div id="stop-control" class="send-button-container stop" hidden>Stop</div>'
+    : provider === "deepseek"
+    ? '<div id="composer-submit-button" role="button">Send</div><div id="stop-control" role="button" class="ds-button--circle" hidden><svg><path d="M2 4.88 fixture"/></svg></div>'
+    : '<button id="composer-submit-button" data-testid="send-button" aria-label="Send message">Send</button><button id="stop-control" class="stop-button" data-testid="stop-button" aria-label="Stop generating" hidden>Stop</button>';
   return `<!doctype html><html><body>${input}
-    <button id="composer-submit-button" data-testid="send-button" aria-label="Send message">Send</button>
-    <button class="stop-button" data-testid="stop-button" aria-label="Stop generating" hidden>Stop</button>
+    ${controls}
     <main></main><script>
-    let controller;
+    let controller, xhr;
     const composer = document.querySelector('textarea, [contenteditable]');
-    const stop = document.querySelector('.stop-button');
+    const stop = document.querySelector('#stop-control');
     if (${JSON.stringify(provider)} === "claude") { composer.hidden = true; setTimeout(() => { composer.hidden = false; }, 350); }
-    stop.onclick = () => { controller?.abort(); stop.hidden = true; };
+    stop.onclick = () => { controller?.abort(); xhr?.abort(); stop.hidden = true; };
     document.querySelector('#composer-submit-button').onclick = async () => {
       const message = composer.value ?? composer.innerText;
       const id = localStorage.getItem('chatId') || crypto.randomUUID();
@@ -43,11 +47,41 @@ function fixtureHtml(provider: string): string {
       document.querySelector('main').insertAdjacentHTML('beforeend', ${JSON.stringify(assistant)});
       controller = new AbortController(); stop.hidden = false;
       try {
-        const response = await fetch(${JSON.stringify(endpoint)}, { method: 'POST', body: JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}), signal: controller.signal });
-        const reader = response.body.getReader(); while (!(await reader.read()).done) {}
-      } catch {} finally { stop.hidden = true; }
+        if (${JSON.stringify(provider)} === "deepseek") {
+          await new Promise((resolve, reject) => {
+            xhr = new XMLHttpRequest();
+            xhr.open('POST', ${JSON.stringify(endpoint)});
+            xhr.onload = resolve; xhr.onerror = reject; xhr.onabort = reject;
+            xhr.onprogress = () => { document.querySelector('main .ds-markdown:last-child').textContent = 'private thought'; };
+            xhr.send(JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}));
+          });
+        } else {
+          const response = await fetch(${JSON.stringify(endpoint)}, { method: 'POST', body: JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}), signal: controller.signal });
+          const reader = response.body.getReader();
+          for (;;) {
+            const {value, done} = await reader.read(); if (done) break;
+            if (${JSON.stringify(provider)} === "kimi" && new TextDecoder().decode(value).includes('"done":')) {
+              controller.abort(); break;
+            }
+          }
+        }
+      } catch {} finally {
+        if (${JSON.stringify(provider)} === "kimi") await new Promise(resolve => setTimeout(resolve, 650));
+        stop.hidden = true;
+      }
+    };
+    composer.onkeydown = event => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault(); document.querySelector('#composer-submit-button').click();
+      }
     };
     </script></body></html>`;
+}
+
+function connectFrame(value: unknown, flags = 0): Buffer {
+  const body = Buffer.from(JSON.stringify(value));
+  const header = Buffer.alloc(5); header[0] = flags; header.writeUInt32BE(body.length, 1);
+  return Buffer.concat([header, body]);
 }
 
 async function startFixture() {
@@ -64,22 +98,33 @@ async function startFixture() {
     for await (const chunk of request) body += chunk;
     const data = JSON.parse(body);
     requests.push(data);
-    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+    response.writeHead(200, { "content-type": data.provider === "kimi" ? "application/connect+json" : "text/event-stream; charset=utf-8" });
     response.flushHeaders();
     const answer = "你好:" + data.message + ":" + data.id + ":" + data.turn;
+    if (data.provider === "deepseek") response.write("data: " + JSON.stringify({
+      v: { response: { fragments: [{ id: 41, type: "THINK", content: "private thought" }] } },
+    }) + "\n\n");
     let index = 0;
     const timer = setInterval(() => {
       const text = index === 0 ? answer.slice(0, 3) : answer.slice(3);
       let frame: unknown;
       if (data.provider === "chatgpt") frame = { message: { id: "m1", author: { role: "assistant" }, content: { parts: [index === 0 ? text : answer] }, status: "in_progress" } };
-      else if (data.provider === "deepseek") frame = index === 0 ? { response: { fragments: [{ id: 0, type: "RESPONSE", content: text }] } } : { p: "response/fragments/0/content", o: "APPEND", v: text };
-      else if (data.provider === "kimi") frame = { event: "cmpl", text };
+      else if (data.provider === "deepseek") frame = index === 0 ? { p: "response/fragments", o: "APPEND", v: [{ id: 42, type: "RESPONSE", content: text }] } : { p: "response/fragments/-1/content", o: "APPEND", v: text };
+      else if (data.provider === "kimi") frame = { op: index === 0 ? "set" : "append", mask: "block.text.content", block: { id: "answer", text: { content: text } } };
       else frame = { type: "content_block_delta", delta: { type: "text_delta", text } };
-      response.write("data: " + JSON.stringify(frame) + "\n\n");
+      if (data.provider === "kimi") response.write(connectFrame(frame));
+      else response.write("data: " + JSON.stringify(frame) + "\n\n");
       if (++index === 2 && data.message !== "hang") {
-        const end = data.provider === "kimi" ? JSON.stringify({ event: "all_done" }) :
-          data.provider === "claude" ? JSON.stringify({ type: "message_stop" }) : "[DONE]";
-        response.end("data: " + end + "\n\n"); clearInterval(timer);
+        if (data.provider === "kimi") {
+          if (data.message === "truncated") response.end();
+          else {
+            response.write(connectFrame({ done: {} }));
+            setTimeout(() => response.end(connectFrame({}, 2)), 300).unref();
+          }
+        }
+        else response.end("data: " + (data.provider === "claude" ? JSON.stringify({ type: "message_stop" }) :
+          data.provider === "deepseek" ? JSON.stringify({ p: "response", o: "BATCH", v: [{ p: "status", o: "SET", v: "FINISHED" }] }) : "[DONE]") + "\n\n");
+        clearInterval(timer);
       }
     }, 250);
     response.on("close", () => clearInterval(timer));
@@ -110,9 +155,13 @@ describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium wo
       })));
       expect(results.map((result) => result.status), JSON.stringify(results)).toEqual(["completed", "completed"]);
       expect(streams.every((parts) => parts.length >= 2)).toBe(true);
+      expect(streams.flat().join("")).not.toContain("private thought");
+      results.forEach((result, i) => expect(result.source).toBe(chats[pair * 2 + i]!.provider === "kimi" ? "connect" : "sse"));
       for (let i = 0; i < results.length; i++) expect(results[i]!.text).toContain(chats[pair * 2 + i]!.provider);
     }
     expect(new Set(requests.map((request) => request.id)).size).toBe(4);
+    const continuation = await client.submit({ conversationId: chats[2]!.id, input: "immediate-followup", requestId: "two", timeoutMs: 15_000 });
+    expect((await client.wait(continuation.id)).status).toBe("completed");
     const original = await client.get(chats[0]!.id);
     expect(original.providerConversationId).toBe(requests.find((request) => request.provider === "chatgpt")!.id);
     await restart();
@@ -123,9 +172,19 @@ describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium wo
     expect(result.text).toMatch(/:2$/);
   }, 60_000);
 
-  it("confirms stop in one browser without cancelling the other browser", async () => {
+  it("keeps truncated Connect replies uncertain even after the UI stops", async () => {
     const { client } = await startFixture();
-    const a = await client.create({ provider: "chatgpt" });
+    const chat = await client.create({ provider: "kimi" });
+    const turn = await client.submit({ conversationId: chat.id, input: "truncated", requestId: "one", timeoutMs: 10_000 });
+    const result = await client.wait(turn.id);
+    expect(result.status).toBe("uncertain");
+    expect(result.error).toMatch(/trailer/);
+    expect((await client.get(chat.id)).needsReview).toBe(true);
+  }, 20_000);
+
+  it.each(["chatgpt", "kimi", "deepseek"])("confirms %s stop without cancelling the other browser", async (provider) => {
+    const { client } = await startFixture();
+    const a = await client.create({ provider });
     const b = await client.create({ provider: "chatgpt" });
     const first = await client.submit({ conversationId: a.id, input: "hang", requestId: "one", timeoutMs: 15_000 });
     const second = await client.submit({ conversationId: b.id, input: "keep", requestId: "one", timeoutMs: 15_000 });

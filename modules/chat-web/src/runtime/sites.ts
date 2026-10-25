@@ -14,18 +14,18 @@ export const runtimeSites: SiteDefinition[] = [
   {
     name: "deepseek", homeUrl: "https://chat.deepseek.com/",
     input: "textarea", send: 'button[aria-label*="send" i], button[aria-label*="发送"]',
-    assistant: ".ds-markdown", stop: '[role="button"][aria-label*="stop" i], button[aria-label*="停止"], button[aria-label*="stop" i]',
+    assistant: ".ds-markdown", stop: '[role="button"][aria-label*="stop" i], button[aria-label*="停止"], button[aria-label*="stop" i], [role="button"].ds-button--circle:has(svg path[d^="M2 4.88"])',
     conversationPath: "/(?:a/chat/s|chat)/([^/?#]+)",
     streamPath: "/api/v[0-9]+/chat/completion(?:\\?|$)", format: "deepseek",
   },
   {
     name: "kimi", homeUrl: "https://www.kimi.com/",
     input: '[contenteditable="true"][role="textbox"], .chat-input-editor[contenteditable="true"], textarea',
-    send: 'button[aria-label*="send" i], button[aria-label*="发送"], .send-button',
-    assistant: ".segment-assistant .markdown, .segment-assistant .markdown-container, [data-role=assistant]",
-    stop: 'button[aria-label*="stop" i], button[aria-label*="停止"], .stop-button',
+    send: 'button[aria-label*="send" i], button[aria-label*="发送"], .send-button, .send-button-container:not(.stop):not(.disabled)',
+    assistant: ".segment-assistant .markdown:not(.toolcall-container .markdown):not(.thinking-container .markdown), [data-role=assistant]",
+    stop: 'button[aria-label*="stop" i], button[aria-label*="停止"], .stop-button, .send-button-container.stop',
     conversationPath: "/chat/([^/?#]+)",
-    streamPath: "/api/chat/[^/]+/completion/stream", format: "kimi", experimental: true,
+    streamPath: "/(?:api/chat/[^/]+/completion/stream|apiv2/kimi\\.gateway\\.chat\\.v1\\.ChatService/Chat)(?:\\?|$)", format: "kimi", experimental: true,
   },
   {
     name: "claude", homeUrl: "https://claude.ai/new",
