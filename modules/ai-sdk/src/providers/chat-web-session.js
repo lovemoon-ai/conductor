@@ -20,12 +20,17 @@ function normalizeChatWebProvider(value) {
 }
 
 function resolveChatWebProvider(options = {}) {
+  const supported = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET
+    ? new Set(["chatgpt", "deepseek", "kimi", "claude"]) : SUPPORTED_CHAT_WEB_PROVIDERS;
   const candidates = [options.chatWebProvider, options.provider, options.model];
   for (const candidate of candidates) {
     const normalized = normalizeChatWebProvider(candidate);
-    if (SUPPORTED_CHAT_WEB_PROVIDERS.has(normalized)) {
+    if (supported.has(normalized)) {
       return normalized;
     }
+  }
+  if ((options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET) && candidates.some((value) => typeof value === "string" && value.trim())) {
+    throw new Error("Unsupported chat runtime webpage provider");
   }
   return DEFAULT_CHAT_WEB_PROVIDER;
 }
@@ -122,8 +127,10 @@ export class ChatWebSession extends EventEmitter {
     this.backend = "chat-web";
     this.options = options;
     this.logger = normalizeLogger(options.logger);
+    this.runtimeSocket = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET || "";
+    this.runtimeConversationId = options.chatWebConversationId || (this.runtimeSocket ? options.resumeSessionId : undefined);
     this.chatWebProvider = resolveChatWebProvider(options);
-    // Match chat-web SDK's own default (headed). Per chat-web/core/browser.ts
+    // Direct mode matches chat-web SDK's own default (headed). Per chat-web/core/browser.ts
     // resolveHeadless(), headed mode is the documented safe default for
     // anti-bot heuristics — ChatGPT/AI Studio routinely serve unauthenticated
     // or challenge pages to chrome-headless-shell even when profile cookies
@@ -132,7 +139,8 @@ export class ChatWebSession extends EventEmitter {
     // chat-web's anti-bot stance whenever the caller (daemon, serve-ai)
     // didn't explicitly pass a value. Users who actually want headless must
     // now opt in with an explicit `headless: true`.
-    this.headless = options.headless === true;
+    // The daemon supports headless workers; login opens a headed worker explicitly.
+    this.headless = this.runtimeSocket ? options.headless !== false : options.headless === true;
     // Optional: use a specific Chromium-family binary (system Chrome /
     // Edge / explicit path) instead of Playwright's bundled
     // `chrome-headless-shell`. Useful when the user's network treats
@@ -216,12 +224,12 @@ export class ChatWebSession extends EventEmitter {
       sessionId: this.sessionId,
       sessionInfo: this.getSessionInfo(),
       useSessionFileReplyStream: this.usesSessionFileReplyStream(),
-      resumeReady: Boolean(this.providerConversationId),
+      resumeReady: Boolean(this.runtimeSocket ? this.runtimeConversationId : this.providerConversationId),
       manualResume: this.providerConversationUrl()
         ? { ready: true, command: this.providerConversationUrl() }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { clear: true, media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
+      capabilities: { clear: !this.runtimeSocket, media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
       chatWebProvider: this.chatWebProvider,
       providerConversationId: this.providerConversationId,
       providerUrl: this.providerConversationUrl(),
@@ -238,7 +246,7 @@ export class ChatWebSession extends EventEmitter {
     //
     // We expose `sessionIdDeferred: true` so the fire-side announce can
     // hold off until the real id arrives, then re-announce.
-    const hasRealId = Boolean(this.providerConversationId);
+    const hasRealId = Boolean(this.runtimeSocket ? this.runtimeConversationId : this.providerConversationId);
     return {
       ...this.sessionInfo,
       sessionIdDeferred: !hasRealId,
@@ -336,8 +344,9 @@ export class ChatWebSession extends EventEmitter {
     if (typeof mod.registerBuiltinProviders === "function") {
       mod.registerBuiltinProviders();
     }
-    if (typeof mod.ChatSession?.open !== "function") {
-      throw new Error("Loaded @love-moon/chat-web is missing ChatSession.open");
+    const Session = this.runtimeSocket ? mod.RuntimeChatSession : mod.ChatSession;
+    if (typeof Session?.open !== "function") {
+      throw new Error(`Loaded @love-moon/chat-web is missing ${this.runtimeSocket ? "RuntimeChatSession" : "ChatSession"}.open; upgrade chat-web`);
     }
 
     // Forward optional browser-binary overrides to chat-web. The env vars
@@ -348,7 +357,8 @@ export class ChatWebSession extends EventEmitter {
     if (this.browserChannel) launch.channel = this.browserChannel;
     if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
 
-    this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
+    this.chatSession = await Session.open(this.chatWebProvider, {
+      ...(this.runtimeSocket ? { socketPath: this.runtimeSocket, conversationId: this.runtimeConversationId, accountId: this.options.chatWebAccountId } : {}),
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
       // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger
@@ -364,10 +374,20 @@ export class ChatWebSession extends EventEmitter {
       throw this.createSessionClosedError();
     }
 
-    const loggedIn = await this.chatSession.isLoggedIn().catch(() => false);
+    if (this.runtimeSocket) {
+      this.runtimeConversationId = this.chatSession.id;
+      this.sessionId = this.runtimeConversationId;
+      this.sessionInfo = { ...this.sessionInfo, sessionId: this.sessionId };
+      this.emit("session", this.getSessionInfo());
+    }
+    const loggedIn = this.runtimeSocket
+      ? await this.chatSession.isLoggedIn()
+      : await this.chatSession.isLoggedIn().catch(() => false);
     if (!loggedIn) {
       const error = new Error(
-        `chat-web provider "${this.chatWebProvider}" is not logged in. Run: chat-web login ${this.chatWebProvider}`,
+        this.runtimeSocket
+          ? `Chat requires login. Run: chat-web chat login ${this.runtimeConversationId} --socket ${this.runtimeSocket}`
+          : `chat-web provider "${this.chatWebProvider}" is not logged in. Run: chat-web login ${this.chatWebProvider}`,
       );
       error.reason = "not_logged_in";
       this.emit("auth_required", {
@@ -392,6 +412,11 @@ export class ChatWebSession extends EventEmitter {
    * for exactly this window.
    */
   async runClear() {
+    if (this.runtimeSocket) {
+      const error = new Error("Create a new runtime conversation to clear an isolated chat");
+      error.reason = "unsupported_clear";
+      throw error;
+    }
     if (this.closeRequested) {
       throw this.createSessionClosedError();
     }
@@ -440,11 +465,11 @@ export class ChatWebSession extends EventEmitter {
     if (!normalized) return;
     if (normalized === this.providerConversationId) return;
     this.providerConversationId = normalized;
-    this.sessionId = normalized;
+    if (!this.runtimeSocket) this.sessionId = normalized;
     this.sessionInfo = {
       ...(this.sessionInfo || {}),
       backend: this.backend,
-      sessionId: normalized,
+      sessionId: this.sessionId,
       model: this.chatWebProvider,
       modelProvider: "chat-web",
       providerConversationId: normalized,
@@ -463,6 +488,12 @@ export class ChatWebSession extends EventEmitter {
     switch (this.chatWebProvider) {
       case "chatgpt":
         return `https://chatgpt.com/c/${this.providerConversationId}`;
+      case "deepseek":
+        return `https://chat.deepseek.com/a/chat/s/${this.providerConversationId}`;
+      case "kimi":
+        return `https://www.kimi.com/chat/${this.providerConversationId}`;
+      case "claude":
+        return `https://claude.ai/chat/${this.providerConversationId}`;
       case "gemini":
         // chat-web's `gemini` provider targets AI Studio
         // (aistudio.google.com/prompts/new_chat) — that's the free web
@@ -612,7 +643,8 @@ export class ChatWebSession extends EventEmitter {
   }
 
   async interruptCurrentTurn() {
-    // chat-web's ChatSession doesn't expose a turn abort — the underlying
+    if (this.runtimeSocket) await this.chatSession?.interruptCurrentTurn?.();
+    // Direct chat-web ChatSession doesn't expose a turn abort — the underlying
     // Chromium tab is still busy with the model. We mark the turn as
     // aborted so the next status emission is "interrupted", but the
     // assistant_message may still arrive once the model finishes.

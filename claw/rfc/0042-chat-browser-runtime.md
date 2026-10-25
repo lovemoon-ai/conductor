@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed。先验证浏览器宿主与网页适配方案，再决定产品化实现。
+第一版已实现 Chromium/Playwright 后台运行时、独立 worker/profile、SDK/CLI、本地事件流与恢复保护。四站点模拟页面已覆盖；真实账号兼容性待验收。Moli 作为后续资源优化项。使用方式见 [chat-web README](../../modules/chat-web/README.md)。
 
 ## Owner
 
@@ -155,7 +155,7 @@ turn 正常路径为 `queued → submitting → streaming → completed`，另�
 - 同一 conversation 的生成串行，多个客户端共用队列；生成中不允许另一客户端改写页面。
 - 不同 chat 使用独立 worker 和存储环境；各 provider / account 有独立队列、并发许可与退避计时器，共同受全局 worker 和内存预算约束。
 - Kimi、DeepSeek、ChatGPT、Claude 等站点的就绪任务可同时运行，不使用一条全局 FIFO 逐个等待生成。调度公平轮询可运行任务，某账号阻塞不能占着其他站点的执行名额。
-- 未验证的账号内并发默认 1，这只约束该账号，不串行化其他账号和站点；完成同账号不同 chat 的 2、4 路实验后再提高。
+- 第一版账号内并发默认 2，可通过 --per-account-concurrency 调整；全局默认 4 个 worker。真实站点限流需要按账号实际情况降低，不串行化其他账号和站点。
 - 队列有长度和等待期限，排队中的 turn 可取消且不触发网页操作。
 - 验证后台运行、焦点切换、最小化和休眠。按实测配置节流，避免全局关闭机制后无界创建页面。
 - profile 局部登录异常先暂停该 worker；确定是账号级问题时暂停该账号，其他账号和 provider 继续执行。限流按实际作用域退避，不全局停止，也不靠增加页面数扩展配额。
@@ -166,7 +166,7 @@ turn 正常路径为 `queued → submitting → streaming → completed`，另�
 
 建议采用版本化本地 JSON RPC，首先经 Unix domain socket 或 Windows named pipe 传输。CLI 和 AI SDK 共用客户端库，MCP 为可选适配。远程调用后续复用受认证 daemon 通道。
 
-以下为拟议接口，当前版本尚未实现：
+下列为完整目标接口；第一版已实现的接口以 [chat-web README](../../modules/chat-web/README.md) 为准，其余保留规划：
 
 | 接口 | 语义 |
 | --- | --- |
