@@ -46,8 +46,12 @@ AI SDK worker 交替对话，各自记住不同测试信息。
   AI SDK 将其映射为 queued / turn_started working_status。timeoutMs 在取得
   turn 执行权后才计时，不包含队列等待。
 - close 和 AI SDK interruptCurrentTurn 可取消自己的排队/活动操作；其他任务继续。活动操作失败时会取消等待、尝试 provider 的网站停止接口，并
-  关闭该任务标签页，之后该 session 明确报关闭错误，调用方需创建新会话。
-  broker/浏览器断线也明确报错；不自动重发可能已提交的网站消息。
+  关闭该任务标签页但保留逻辑会话。下一次用户消息在队列内恢复原 provider
+  conversationId，等待历史和页面就绪后只发送新消息；成功 turn 计数保持连续。
+  Kimi、ChatGPT、Gemini 提供恢复入口。无法安全恢复时返回
+  BROKER_RECOVERY_REQUIRED，用户可用 /clear/newChat 明确开启新对话。
+  /clear 在首轮发送失败后也有效。broker/浏览器断线明确报错；不自动重发
+  可能已提交的网站消息。
 - 最后一个客户端离开后 5 秒自动关闭共享浏览器。任务长时间空闲可以保留
   自己的页，但不会占据 turn 执行权。关闭一个任务只关闭它自己的标签页。
 - broker 使用本地用户私有 socket/命名管道；启动 owner 锁与 Chromium
@@ -83,7 +87,27 @@ AI SDK worker 交替对话，各自记住不同测试信息。
 排队、生命周期和版本回退由受控样本/既有回归测试覆盖。
 
 
-最后一轮检查结果：chat-web 22 个测试文件、164 项测试通过；AI SDK 全部 JS
+队列首版检查结果：chat-web 22 个测试文件、164 项测试通过；AI SDK 全部 JS
 回归与新增排队/中断测试通过；相关 CLI 配置、参数、fire、SDK 边界测试通过。
 chat-web 与 ai-sdk 构建通过。首版直接 ChatSession 的独占行为保持兼容，
 Conductor AI SDK 默认改用跨进程排队会话。
+
+## Review 修复与再次验收
+
+活动 turn 的清理不再销毁逻辑会话。新增 broker/client/AI SDK 串联回归覆盖
+stop 后继续与 clear、timeout/provider error 后恢复、未知/不匹配 ID、缺失
+恢复能力、迟到恢复结果和迟到创建的页。浏览器样本验证三个 provider 加载
+原历史且不发送消息，并覆盖 Kimi 恢复历史后生成状态才出现的加载时序。
+Windows 管道地址改用 String.raw，测试校验完整字符和 profile 哈希。
+
+修复后 chat-web 24 个测试文件、178 项测试全部通过；AI SDK chat-web 的
+30 项测试、相关 CLI config/fire-args 测试通过；chat-web 构建/typecheck 与
+ai-sdk 构建通过。Windows 地址测试运行在 macOS，未在 Windows 主机实测。
+
+真实已登录 Kimi 通过 AI SDK worker 再次验收：先记住测试口令与数字，在下一轮
+输出过程中执行 interruptCurrentTurn，收到 AbortError；立即继续询问，正确
+返回原口令/数字，conversationId 与首轮相同、turnIndex 为 1。随后 runClear
+成功，新消息使用不同 conversationId 且 turnIndex 为 0。
+验收日志保留在 macmini `/tmp/conductor-kimi-94f802/live-recovery.log`，结构化
+结果在同目录 `live-recovery-result.json`。ChatGPT/Gemini 的恢复用浏览器样本
+验证，未使用真实账号验收；broker/浏览器整体断线仍明确报错，不自动重发。

@@ -21,7 +21,7 @@ export function brokerPaths(provider: string): { socket: string; lock: string } 
     throw new Error(`Unsafe chat-web broker directory: ${dir}`);
   }
   return {
-    socket: process.platform === "win32" ? `\\.\pipe\chat-web-${key}` : path.join(dir, `${key}.sock`),
+    socket: process.platform === "win32" ? String.raw`\\.\pipe\chat-web-${key}` : path.join(dir, `${key}.sock`),
     lock: path.join(dir, `${key}.lock`),
   };
 }

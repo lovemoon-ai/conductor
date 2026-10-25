@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { brokerPaths } from "../src/core/broker-protocol.js";
 import { startTurnBroker } from "../src/core/turn-broker.js";
 import type { ChatProvider } from "../src/core/provider.js";
+import { ChatWebSession } from "../../ai-sdk/src/providers/chat-web-session.js";
 import { QueuedChatSession } from "../src/queued-session.js";
 
 async function until(test: () => boolean): Promise<void> {
@@ -28,22 +29,33 @@ describe("cross-session turn broker", () => {
   let pageCount: number;
   let launches: number;
   let crashBrowser: () => void;
+  let provider: ChatProvider;
+  let sdkSessions: ChatWebSession[];
+  let pageDelay: number;
 
   beforeEach(async () => {
     home = await fs.mkdtemp(path.join(os.tmpdir(), "turn-broker-"));
     previousHome = process.env.CHAT_WEB_HOME;
     process.env.CHAT_WEB_HOME = home;
-    sessions = []; events = []; closedContext = false; pageCount = 0; launches = 0;
-    const memory = new WeakMap<Page, { value: string; message: string; closed: boolean }>();
-    const provider: ChatProvider = {
+    sessions = []; sdkSessions = []; events = []; closedContext = false; pageCount = 0; launches = 0; pageDelay = 0;
+    const memory = new WeakMap<Page, { id: string; value: string; message: string; closed: boolean }>();
+    const conversations = new Map<string, string>();
+    provider = {
       name: "stub", homeUrl: "https://stub.local/",
-      async open() {}, async isLoggedIn() { return true; },
+      async open() {},
+      async resumeConversation(page, id) {
+        if (!conversations.has(id)) throw new Error("conversation missing");
+        Object.assign(memory.get(page)!, { id, value: conversations.get(id) });
+        events.push(`resume:${id}`);
+      },
+      async isLoggedIn() { return true; },
       async findInput() { throw new Error("not used"); }, async findSendButton() { return null; },
       async extractLastAssistantMessage() { return ""; },
       async sendMessage(page, message) {
         events.push(`start:${message}`);
         const state = memory.get(page)!; state.message = message;
         if (message.startsWith("remember:")) state.value = message.slice(9);
+        conversations.set(state.id, state.value);
         if (message === "fail") throw new Error("provider failure");
       },
       async waitForResponse(page, options = {}) {
@@ -67,7 +79,10 @@ describe("cross-session turn broker", () => {
         events.push(`end:${state.message}`);
         return state.value || "empty";
       },
-      async newChat(page) { memory.get(page)!.value = ""; },
+      async newChat(page) {
+        Object.assign(memory.get(page)!, { id: String(++pageCount), value: "" });
+        events.push("newChat");
+      },
       getConversationId(page) { return page.url().split("/").at(-1)!; },
       async stopGeneration(page) { events.push(`stop:${memory.get(page)!.message}`); },
     };
@@ -76,13 +91,15 @@ describe("cross-session turn broker", () => {
     const context = {
       once: lifecycle.once.bind(lifecycle),
       async newPage() {
-        const id = ++pageCount;
+        const id = String(++pageCount);
         const page = {
-          url: () => `https://stub.local/chat/${id}`,
+          url: () => `https://stub.local/chat/${memory.get(page)!.id}`,
           async bringToFront() {},
           async close() { const state = memory.get(page)!; state.closed = true; events.push(`close:${state.message}`); },
         } as unknown as Page;
-        memory.set(page, { value: "", message: "", closed: false });
+        memory.set(page, { id, value: "", message: "", closed: false });
+        const delay = pageDelay; pageDelay = 0;
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
         return page;
       },
       async close() { closedContext = true; lifecycle.emit("close"); },
@@ -95,6 +112,7 @@ describe("cross-session turn broker", () => {
   });
 
   afterEach(async () => {
+    await Promise.all(sdkSessions.map((session) => session.close()));
     await Promise.all(sessions.map((session) => session.close()));
     await broker.close();
     if (previousHome === undefined) delete process.env.CHAT_WEB_HOME; else process.env.CHAT_WEB_HOME = previousHome;
@@ -104,6 +122,15 @@ describe("cross-session turn broker", () => {
   async function open(): Promise<QueuedChatSession> {
     const session = await QueuedChatSession.open("stub");
     sessions.push(session);
+    return session;
+  }
+
+  function sdk(): ChatWebSession {
+    const session = new ChatWebSession("chat-web", {
+      model: "kimi", turnTimeoutMs: 10000,
+      chatWebModule: { registerBuiltinProviders() {}, QueuedChatSession: { open } },
+    });
+    sdkSessions.push(session);
     return session;
   }
 
@@ -173,7 +200,8 @@ describe("cross-session turn broker", () => {
     expect((await next).response).toBe("B");
     expect(events.indexOf("close:fail")).toBeLessThan(events.indexOf("start:remember:B"));
     expect(events).toContain("stop:fail");
-    await expect(a.send("retry")).rejects.toMatchObject({ code: "BROKER_SESSION_CLOSED" });
+    expect((await a.send("retry")).response).toBe("empty");
+    expect(events.filter((e) => e === "start:fail")).toHaveLength(1);
   });
 
   it("releases a timed-out tab and continues the queue", async () => {
@@ -205,6 +233,115 @@ describe("cross-session turn broker", () => {
     expect((await next).response).toBe("B");
     expect(events).not.toContain("end:uncooperative");
     await until(() => events.includes("end:uncooperative"));
+  });
+
+
+  it.each(["follow-up", "clear"])("recovers SDK active stop -> %s without replaying the stopped message", async (operation) => {
+    const session = sdk();
+    const first = await session.runTurn("remember:RED");
+    const checked = expect(session.runTurn("slow")).rejects.toMatchObject({ name: "AbortError" });
+    await until(() => events.includes("start:slow"));
+    await session.interruptCurrentTurn();
+    await checked;
+    expect(session.booted).toBe(true);
+    expect(session.chatSession.isClosed).toBe(false);
+    if (operation === "clear") expect((await session.runClear()).clear.status).toBe("cleared");
+    const next = await session.runTurn("recall");
+    expect(next.text).toBe(operation === "clear" ? "empty" : "RED");
+    expect(next.metadata.turnIndex).toBe(operation === "clear" ? 0 : 1);
+    if (operation === "follow-up") expect(next.metadata.conversationId).toBe(first.metadata.conversationId);
+    else expect(next.metadata.conversationId).not.toBe(first.metadata.conversationId);
+    expect(events.filter((e) => e === "start:slow")).toHaveLength(1);
+  });
+
+  it.each(["timeout", "provider failure"])("recovers SDK terminal %s with original context and can clear", async (failure) => {
+    const session = sdk();
+    const first = await session.runTurn("remember:RED");
+    session.turnTimeoutMs = failure === "timeout" ? 20 : 10000;
+    await expect(session.runTurn(failure === "timeout" ? "slow" : "fail")).rejects.toMatchObject(
+      failure === "timeout" ? { code: "RESPONSE_TIMEOUT" } : { message: "provider failure" },
+    );
+    session.turnTimeoutMs = 10000;
+    const next = await session.runTurn("recall");
+    expect(next.text).toBe("RED");
+    expect(next.metadata.conversationId).toBe(first.metadata.conversationId);
+    expect(next.metadata.turnIndex).toBe(1);
+    expect(events.filter((e) => e === `start:${failure === "timeout" ? "slow" : "fail"}`)).toHaveLength(1);
+    expect((await session.runClear()).clear.status).toBe("cleared");
+    expect((await session.runTurn("recall")).text).toBe("empty");
+  });
+
+  it("requires explicit clear if the first failed submission has no conversation ID", async () => {
+    const original = provider.getConversationId!;
+    provider.getConversationId = () => null;
+    const session = sdk();
+    await expect(session.runTurn("fail")).rejects.toThrow("provider failure");
+    await expect(session.runTurn("do not submit")).rejects.toMatchObject({ code: "BROKER_RECOVERY_REQUIRED" });
+    expect(events).not.toContain("start:do not submit");
+    expect((await session.runClear()).clear.status).toBe("cleared");
+    provider.getConversationId = original;
+    expect((await session.runTurn("remember:NEW")).text).toBe("NEW");
+  });
+
+  it("refuses silent context loss when the provider cannot resume, but permits clear", async () => {
+    const session = sdk();
+    await session.runTurn("remember:RED");
+    await expect(session.runTurn("fail")).rejects.toThrow("provider failure");
+    provider.resumeConversation = undefined;
+    await expect(session.runTurn("do not submit")).rejects.toMatchObject({ code: "BROKER_RECOVERY_REQUIRED" });
+    expect(events).not.toContain("start:do not submit");
+    expect((await session.runClear()).clear.status).toBe("cleared");
+    expect((await session.runTurn("recall")).text).toBe("empty");
+  });
+
+  it("rejects a restore to the wrong conversation and retains the original target for another attempt", async () => {
+    const session = sdk();
+    const first = await session.runTurn("remember:RED");
+    await expect(session.runTurn("fail")).rejects.toThrow("provider failure");
+    const resume = provider.resumeConversation!;
+    provider.resumeConversation = async () => {};
+    await expect(session.runTurn("do not submit")).rejects.toMatchObject({ code: "BROKER_RECOVERY_REQUIRED" });
+    expect(events).not.toContain("start:do not submit");
+    provider.resumeConversation = resume;
+    const next = await session.runTurn("recall");
+    expect(next.text).toBe("RED");
+    expect(next.metadata.conversationId).toBe(first.metadata.conversationId);
+  });
+
+  it("ignores late recovery completion after timeout without harming the next operation", async () => {
+    const session = sdk();
+    const first = await session.runTurn("remember:RED");
+    await expect(session.runTurn("fail")).rejects.toThrow("provider failure");
+    const resume = provider.resumeConversation!;
+    provider.resumeConversation = async (page, id) => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      await resume(page, id);
+    };
+    session.turnTimeoutMs = 20;
+    await expect(session.runTurn("do not submit")).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+    provider.resumeConversation = resume;
+    session.turnTimeoutMs = 10000;
+    const next = await session.runTurn("recall");
+    expect(next.text).toBe("RED");
+    expect(next.metadata.conversationId).toBe(first.metadata.conversationId);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect((await session.runTurn("recall")).text).toBe("RED");
+    expect(events).not.toContain("start:do not submit");
+  });
+
+  it("closes a page created after recovery times out without replacing the next page", async () => {
+    const session = sdk();
+    await session.runTurn("remember:RED");
+    await expect(session.runTurn("fail")).rejects.toThrow("provider failure");
+    pageDelay = 120;
+    session.turnTimeoutMs = 20;
+    await expect(session.runTurn("do not submit")).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+    session.turnTimeoutMs = 10000;
+    expect((await session.runTurn("recall")).text).toBe("RED");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect((await session.runTurn("recall")).text).toBe("RED");
+    expect(events).not.toContain("start:do not submit");
+    expect(events).toContain("close:");
   });
 
   it("rejects in-flight work on broker disconnect without resending", async () => {

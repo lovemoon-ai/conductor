@@ -184,6 +184,7 @@ export class ChatWebSession extends EventEmitter {
 
     this.currentTurn = null;
     this.currentTurnStatus = null;
+    this.turnAttempted = false;
     this.sessionMessageHandler = null;
     this.workingStatusHandler = null;
     this.activeReplyTarget = "";
@@ -409,7 +410,7 @@ export class ChatWebSession extends EventEmitter {
     }
     // Nothing has been said yet — fire boots the browser at announce time, so
     // "booted" alone does not mean there is a conversation to walk away from.
-    if (!this.providerConversationId && this.history.length === 0) {
+    if (!this.providerConversationId && this.history.length === 0 && !this.turnAttempted) {
       return { clear: { status: "noop" }, usage: null, metadata: {} };
     }
     await this.boot();
@@ -427,6 +428,7 @@ export class ChatWebSession extends EventEmitter {
       providerUrl: undefined,
     };
     this.history = [];
+    this.turnAttempted = false;
     this.emit("session", this.getSessionInfo());
     // No id to report: the provider mints one on the next reply.
     return { clear: { status: "cleared" }, usage: null, metadata: {} };
@@ -526,6 +528,7 @@ export class ChatWebSession extends EventEmitter {
       await this.boot();
       if (this.closeRequested) throw this.createSessionClosedError();
 
+      this.turnAttempted = true;
       const result = await this.chatSession.send(prompt, {
         timeoutMs: this.turnTimeoutMs,
         signal: this.currentTurn.controller.signal,

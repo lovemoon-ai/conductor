@@ -123,6 +123,34 @@ export class KimiAdapter implements ChatProvider {
   async open(page: Page): Promise<void> {
     this.turns.delete(page);
     await gotoOrThrowNetworkError(page, this.homeUrl, this.name);
+    await this.waitForReady(page);
+  }
+
+  async resumeConversation(page: Page, conversationId: string): Promise<void> {
+    this.turns.delete(page);
+    await gotoOrThrowNetworkError(page, `${this.homeUrl}chat/${encodeURIComponent(conversationId)}`, this.name);
+    await this.waitForReady(page);
+    await page.locator(".segment-user").first().waitFor({ state: "visible", timeout: 20_000 });
+    // A restored history can appear before Kimi settles a server-side stop.
+    // Stop any resumed stream and require a short stable idle state before
+    // the caller submits its next (new) message. Never replay the old prompt.
+    const deadline = Date.now() + 20_000;
+    let idleSince: number | undefined;
+    while (Date.now() < deadline) {
+      const state = await page.evaluate(readKimiPage);
+      if (state.busy) {
+        idleSince = undefined;
+        await this.stopGeneration(page);
+      } else {
+        idleSince ??= Date.now();
+        if (Date.now() - idleSince >= 500) return;
+      }
+      await sleep(100);
+    }
+    throw new ResponseTimeoutError(this.name, 20_000);
+  }
+
+  private async waitForReady(page: Page): Promise<void> {
     await page.locator(INPUT).first().waitFor({ state: "visible", timeout: 20_000 });
     // The composer appears before the account query finishes. Wait for the
     // account's settled UI before ChatSession asks isLoggedIn().

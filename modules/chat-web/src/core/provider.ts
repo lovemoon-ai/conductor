@@ -35,6 +35,8 @@ export interface ChatProvider {
   extractLastAssistantMessage(page: Page): Promise<string>;
 
   newChat?(page: Page): Promise<void>;
+  /** Load an existing conversation without resending any message. */
+  resumeConversation?(page: Page, conversationId: string): Promise<void>;
   /** Best-effort website-side stop before a broker disposes a failed turn. */
   stopGeneration?(page: Page): Promise<void>;
 

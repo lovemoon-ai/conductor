@@ -4,16 +4,20 @@ import readline from "node:readline";
 
 import type { LaunchedBrowser } from "./browser.js";
 import { BROKER_PROTOCOL, wireError } from "./broker-protocol.js";
-import { ChatWebError, ResponseTimeoutError } from "./errors.js";
+import { ChatWebError, NotLoggedInError, ResponseTimeoutError } from "./errors.js";
 import type { ChatProvider } from "./provider.js";
 import { TurnQueue } from "./turn-queue.js";
-import { ChatSession, type SendOptions } from "../session.js";
+import { ChatSession, type SendOptions, type SendResult } from "../session.js";
 
 interface Client {
   socket: net.Socket;
   session?: ChatSession;
   opening: boolean;
+  opened: boolean;
   closing: boolean;
+  needsRecovery: boolean;
+  recoveryId?: string;
+  turnCounter: number;
   disposal?: Promise<void>;
   jobs: Map<number, AbortController>;
 }
@@ -60,23 +64,83 @@ export async function startTurnBroker(options: {
   const send = (client: Client, message: unknown) => {
     if (!client.socket.destroyed && !client.socket.writableEnded) client.socket.write(`${JSON.stringify(message)}\n`);
   };
+  // Retire a failed page while keeping the logical conversation/connection.
+  // No failed prompt is replayed: only a later user operation restores the URL.
+  const retirePage = (client: Client, preserveConversation: boolean): Promise<void> => {
+    if (client.disposal) return client.disposal;
+    const session = client.session;
+    if (!session) return Promise.resolve();
+    const previousId = client.recoveryId;
+    const recovering = client.needsRecovery;
+    client.session = undefined;
+    client.needsRecovery = true;
+    client.recoveryId = undefined;
+    if (preserveConversation) {
+      try { client.recoveryId = recovering ? previousId : provider.getConversationId?.(session.page) ?? previousId; } catch { /* Require explicit clear if the ID is unknown. */ }
+    }
+    client.disposal = (async () => {
+      try { await provider.stopGeneration?.(session.page); } catch { /* Close the page regardless. */ }
+      await session.close();
+    })();
+    return client.disposal;
+  };
   const dispose = (client: Client): Promise<void> => {
     client.closing = true;
     for (const controller of client.jobs.values()) controller.abort();
-    if (!client.disposal && client.session) {
-      client.disposal = (async () => {
-        // A timeout/abort must not leave this tab generating while B starts.
-        try { await provider.stopGeneration?.(client.session!.page); } catch { /* Close the page regardless. */ }
-        await client.session!.close();
-      })();
-    }
-    return client.disposal ?? Promise.resolve();
+    return retirePage(client, false);
   };
-  const assertSession = (client: Client): ChatSession => {
-    if (client.closing || !client.session || client.session.isClosed) {
+  const assertConnected = (client: Client): void => {
+    if (client.closing || !client.opened) {
       throw new ChatWebError("BROKER_SESSION_CLOSED", "The shared chat-web session is closed; create a new session.", { provider: provider.name });
     }
+  };
+  const recoveryRequired = () => new ChatWebError(
+    "BROKER_RECOVERY_REQUIRED",
+    "Could not restore the previous conversation safely. No message was sent. Use /clear to explicitly start a new conversation.",
+    { provider: provider.name, hint: "Use newChat() or /clear; the failed message will not be retried." },
+  );
+  const createSession = async (client: Client, signal?: AbortSignal): Promise<ChatSession> => {
+    if (client.disposal) await client.disposal;
+    browser ??= options.launch().then((launched) => {
+      launched.context.once?.("close", () => { void close(); });
+      return launched;
+    });
+    const launched = await browser;
+    if (client.closing || signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const page = await launched.context.newPage();
+    if (client.closing || signal?.aborted) { await page.close(); throw new DOMException("Aborted", "AbortError"); }
+    client.disposal = undefined;
+    client.session = ChatSession.fromBrowser({
+      provider, page, context: launched.context, userDataDir: launched.userDataDir, closeContext: false,
+    });
+    if (client.closing) { await dispose(client); throw new DOMException("Aborted", "AbortError"); }
     return client.session;
+  };
+  const ensureSession = async (client: Client, discardConversation = false, signal?: AbortSignal): Promise<ChatSession> => {
+    assertConnected(client);
+    if (client.session && !client.session.isClosed) return client.session;
+    const targetId = client.recoveryId;
+    if (!discardConversation && (!targetId || !provider.resumeConversation)) throw recoveryRequired();
+    const session = await createSession(client, signal);
+    try {
+      if (discardConversation) await provider.open(session.page);
+      else {
+        await provider.resumeConversation!(session.page, targetId!);
+        if (!await session.isLoggedIn()) throw new NotLoggedInError(provider.name);
+        if (provider.getConversationId?.(session.page) !== targetId) throw recoveryRequired();
+      }
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      client.needsRecovery = false;
+      return session;
+    } catch (error) {
+      // A timed-out restore may finish after the next turn has started.
+      // It must never retire that newer page or overwrite its recovery state.
+      if (client.session === session) {
+        await retirePage(client, false);
+        client.recoveryId = discardConversation ? undefined : targetId;
+      }
+      throw error;
+    }
   };
   const perform = async (client: Client, request: { id: number; method: string; args?: Record<string, unknown> }) => {
     const { id, method } = request;
@@ -86,7 +150,7 @@ export async function startTurnBroker(options: {
       send(client, { id, result: null });
       return;
     }
-    if (client.closing) assertSession(client);
+    if (client.closing) assertConnected(client);
     if (method === "open") {
       if (args.protocol !== BROKER_PROTOCOL) throw new Error("Incompatible chat-web broker protocol; close existing chat-web sessions and retry.");
       if (client.opening || client.session) throw new Error("This broker connection already owns a session.");
@@ -98,31 +162,23 @@ export async function startTurnBroker(options: {
       let result: unknown;
       if (method === "open") {
         result = await queue.run(async () => {
-          browser ??= options.launch().then((launched) => {
-            // Do not keep a live broker advertising a browser that has died.
-            launched.context.once?.("close", () => { void close(); });
-            return launched;
-          });
-          const launched = await browser;
-          if (client.closing) throw new DOMException("Aborted", "AbortError");
-          const page = await launched.context.newPage();
-          client.session = ChatSession.fromBrowser({
-            provider, page, context: launched.context, userDataDir: launched.userDataDir, closeContext: false,
-          });
-          if (client.closing) { await dispose(client); throw new DOMException("Aborted", "AbortError"); }
+          const session = await createSession(client);
           try {
-            if (args.autoOpen !== false) await provider.open(page);
-            return { userDataDir: launched.userDataDir };
+            if (args.autoOpen !== false) await provider.open(session.page);
+            client.opened = true;
+            return { userDataDir: session.userDataDir };
           } catch (error) { await dispose(client); throw error; }
         }, { signal: controller.signal });
       } else if (method === "send" || method === "newChat") {
         result = await queue.run(async () => {
-          const session = assertSession(client);
           try {
             const timeoutMs = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs) && args.timeoutMs > 0
               ? args.timeoutMs : 180_000;
-            return await withTurnDeadline(async () => {
+            const result = await withTurnDeadline(async () => {
+              const session = await ensureSession(client, method === "newChat" || args.newChat === true, controller.signal);
+              if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
               await session.page.bringToFront();
+              if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
               if (method === "newChat") { await session.newChat(); return null; }
               const sendOptions: SendOptions = {
                 timeoutMs,
@@ -133,17 +189,38 @@ export async function startTurnBroker(options: {
               };
               return await session.send(String(args.message ?? ""), sendOptions);
             }, controller, timeoutMs, provider.name);
-          } catch (error) { await dispose(client); throw error; }
+            // Update logical state only after success, never from a late result
+            // of an operation that already timed out or was cancelled.
+            if (method === "newChat") {
+              client.turnCounter = 0;
+              client.recoveryId = undefined;
+            } else {
+              const turn = result as SendResult;
+              if (args.newChat === true) client.turnCounter = 0;
+              turn.turnIndex = client.turnCounter++;
+              client.recoveryId = turn.conversationId;
+            }
+            return result;
+          } catch (error) {
+            await retirePage(client, method === "send" && args.newChat !== true);
+            throw error;
+          }
         }, {
           signal: controller.signal,
           onPosition: (position) => send(client, { id, type: "queue", position }),
         });
       } else if (method === "isLoggedIn") {
-        result = await assertSession(client).isLoggedIn();
+        result = client.session && !client.needsRecovery
+          ? await client.session.isLoggedIn()
+          : await queue.run(async () => (await ensureSession(client)).isLoggedIn(), { signal: controller.signal });
       } else if (method === "diagnose") {
-        result = await assertSession(client).diagnose();
+        result = client.session && !client.needsRecovery
+          ? await client.session.diagnose()
+          : await queue.run(async () => (await ensureSession(client)).diagnose(), { signal: controller.signal });
       } else if (method === "snapshot") {
-        result = await assertSession(client).snapshot();
+        result = client.session && !client.needsRecovery
+          ? await client.session.snapshot()
+          : await queue.run(async () => (await ensureSession(client)).snapshot(), { signal: controller.signal });
       } else {
         throw new Error(`Unknown chat-web broker method: ${method}`);
       }
@@ -153,7 +230,7 @@ export async function startTurnBroker(options: {
   const server = net.createServer((socket) => {
     if (stopping) { socket.destroy(); return; }
     if (idleTimer) clearTimeout(idleTimer);
-    const client: Client = { socket, opening: false, closing: false, jobs: new Map() };
+    const client: Client = { socket, opening: false, opened: false, closing: false, needsRecovery: false, turnCounter: 0, jobs: new Map() };
     clients.add(client);
     socket.on("error", () => { socket.destroy(); });
     const lines = readline.createInterface({ input: socket });
