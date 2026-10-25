@@ -133,10 +133,42 @@ describe("ChatWebSession", () => {
     );
   });
 
-  it("ignores unknown model values and falls back to chatgpt", () => {
+  it("rejects an unknown explicit provider instead of silently opening ChatGPT", () => {
     const { mod } = createStubChatWebModule();
-    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "claude" });
-    assert.equal(s.chatWebProvider, "chatgpt");
+    for (const key of ["chatWebProvider", "provider", "model"]) {
+      assert.throws(
+        () => new ChatWebSession("chat-web", { chatWebModule: mod, [key]: "typo" }),
+        (error) => error.reason === "unknown_chat_web_provider",
+      );
+    }
+    assert.throws(
+      () => new ChatWebSession("chat-web", { chatWebModule: mod, chatWebProvider: "typo", model: "kimi" }),
+      /Unknown chat-web provider/,
+    );
+  });
+
+  it("routes Kimi selectors and keeps multiple turns in the same browser session", async () => {
+    for (const key of ["chatWebProvider", "provider", "model"]) {
+      const { mod, state } = createStubChatWebModule({
+        sendImpl: async (message, options) => {
+          options.onProgress?.("partial Kimi response");
+          return { response: `Kimi: ${message}`, conversationId: "integration-chat" };
+        },
+      });
+      const s = new ChatWebSession("chat-web", { chatWebModule: mod, [key]: "kimi" });
+      const first = await s.runTurn("remember my number: 42");
+      const second = await s.runTurn("what is my number?");
+      assert.equal(state.openCalls.length, 1);
+      assert.equal(state.openCalls[0].provider, "kimi");
+      assert.equal(state.sendCalls.length, 2);
+      assert.equal(first.metadata.chatWebProvider, "kimi");
+      assert.equal(second.metadata.providerUrl, "https://www.kimi.com/chat/integration-chat");
+      assert.equal(s.getSnapshot().providerConversationId, "integration-chat");
+      await s.runClear();
+      assert.equal(state.newChatCalls, 1);
+      assert.equal(s.getSnapshot().providerUrl, undefined);
+      await s.close();
+    }
   });
 
   it("boots a headed ChatSession and registers builtin providers exactly once", async () => {

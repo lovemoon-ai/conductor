@@ -143,13 +143,14 @@ describe("conductor-config", () => {
     assert.equal(typeof allowCliList.kimi, "string");
     assert.equal(typeof allowCliList.opencode, "string");
     assert.equal(typeof allowCliList.copilot, "string");
-    // chat-web ships as an optional dependency of conductor-cli, so the two
+    // chat-web ships as an optional dependency of conductor-cli, so the
     // canonical sub-provider aliases should be written by default. The bare
     // `chat-web` backend name is intentionally NOT advertised — users must go
     // through an explicit alias that pins a --model choice. Regression guard
     // for m1-chat-web-backends-not-advertised-20260525.
     assert.equal(allowCliList["web-chatgpt"], "chat-web --model chatgpt");
     assert.equal(allowCliList["web-gemini"], "chat-web --model gemini");
+    assert.equal(allowCliList["web-kimi"], "chat-web --model kimi");
     assert.equal(allowCliList["chat-web"], undefined);
   });
 

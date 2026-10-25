@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed — 页面与代码调研完成，等待讨论；尚未实现功能。
+Accepted — 用户已确认首版文本多轮对话；实现与自动化验证已完成，真实账号验收待登录。
 
 ## Owner
 
@@ -147,7 +147,7 @@ AI SDK worker/event 链路，只新增 Kimi 的页面逻辑。符合现有 provi
 拿到真实会话 ID 后再增加 `providerConversationUrl()` 的 Kimi 分支。
 
 在 `cli/bin/conductor-config.js` 注册 `web-kimi`（runtimeBackend 为 chat-web），
-扩展配置生成和 backend 解析测试。目标配置及 SDK 用法如下（尚不可用）：
+扩展配置生成和 backend 解析测试。配置及 SDK 用法如下：
 
 ```yaml
 allow_cli_list:
@@ -193,10 +193,33 @@ K3.1 Pro 等具体模型。第一版沿用 profile 中的网站默认选择，�
 - ChatSession 串行对话、AI SDK provider 路由、working_status / assistant_message、
   已验证的会话链接、CLI 配置生成均有相应测试；真实 Kimi 多轮走通。
 - 既有 chat-web providers 与 kimi CLI 的相关测试通过。
-- 本次仅新增方案文档；以上为未来实现验收项，不代表已通过。
+- 上述为完整验收项；当前自动化结果与真实网站验证边界见下方实现记录。
 
 ## Open Questions
 
 - 建议第一版先完成普通文本多轮对话，附件与复杂 Agent 功能后续扩展。
 - 建议先保持站内默认模型；是否需要紧接着增加显式的 Kimi 模型/思考强度配置？
 - 是否要求首版即可跨进程恢复及真实停止？若要求，需要相应扩展现有公共接口。
+
+
+## Implementation Notes
+
+- 已增加独立 KimiAdapter、provider 注册、AI SDK kimi 网页路由和 web-kimi
+  配置入口。未知网页 provider 现在报错，防止错误路由到 ChatGPT。
+- 以本轮新增用户/助手 segment 作为边界，结合 stop/loading/pending 与正文
+  稳定时间等待完成。硬超时不把部分答案视为成功；保留代码块、基本链接及
+  标题/列表等正文格式，排除思考区和工具卡片。
+- 2026-10-25 进一步检查公开网站脚本，确认 `.segment-assistant`、
+  `.segment-content-box .markdown`、`.thinking-container`、发送控件的
+  `stop` / `loading`、账号入口 `sidebar-user-menu-trigger` 及 `/chat/{id}` 路由。
+  在无登录真实网站点击发送已验证会弹出登录窗口。
+- 自动化覆盖：账号状态、真实 Chromium 中的 DOM 提取/代码块、多轮上下文、
+  串行发送、新对话、同样答案的连续两轮、长思考、超时、中断等待、provider
+  路由与 CLI 配置/参数解析。浏览器集成使用受控 HTML 样本，避免依赖账号
+  或外部网络；安装 Chromium 时运行，否则明确跳过该组测试。
+- 已在 macmini 打开 chat-web 自有持久化 Kimi profile 等待用户登录。
+  尚未通过已登录真实 Kimi 账号完成多轮验收；自动化通过不等于该项已验证。
+- 调用方式：先运行构建后的 `node modules/chat-web/dist/cli.js login kimi`，
+  再添加上述 allow_cli_list 配置并使用 `conductor fire --backend web-kimi`。
+  SDK 创建 `createAiSession("chat-web", { model: "kimi" })` 后，可在同一 session
+  连续调用 `runTurn()`；独立 chat-web SDK 使用 ChatSession.send()。
