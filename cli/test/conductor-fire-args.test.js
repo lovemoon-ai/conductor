@@ -78,6 +78,26 @@ describe("daemon -> fire first message", () => {
 });
 
 describe("conductor-fire defaults", () => {
+  it("routes web-kimi to chat-web with the kimi sub-provider", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-kimi-"));
+    try {
+      const configPath = path.join(tempDir, "config.yaml");
+      fs.writeFileSync(configPath, "allow_cli_list:\n  web-kimi: chat-web --model kimi\n  kimi: kimi\n");
+      const args = await parseCliArgs([
+        "node", "conductor-fire", "--config-file", configPath, "--backend", "web-kimi", "--", "hello",
+      ]);
+      assert.equal(args.backend, "web-kimi");
+      assert.equal(args.sessionBackend, "chat-web");
+      assert.deepEqual(args.sessionOptions, { model: "kimi" });
+      const cli = await parseCliArgs([
+        "node", "conductor-fire", "--config-file", configPath, "--backend", "kimi", "--", "hello",
+      ]);
+      assert.equal(cli.sessionBackend, "kimi");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses the first ai-sdk-supported allow_cli_list entry when --backend is omitted", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-"));
     const configPath = path.join(tempDir, "config.yaml");

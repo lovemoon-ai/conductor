@@ -11,6 +11,7 @@ describe("provider registry", () => {
     expect(names).toContain("chatgpt");
     expect(names).toContain("deepseek");
     expect(names).toContain("gemini");
+    expect(names).toContain("kimi");
   });
 
   it("targets AI Studio's prompts/new_chat (what users call 'Gemini free web chat')", () => {

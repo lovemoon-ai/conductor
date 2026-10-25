@@ -6,6 +6,9 @@
  * branch on the code and surface a useful remediation step.
  */
 export type ChatWebErrorCode =
+  | "BROKER_UNAVAILABLE"
+  | "BROKER_SESSION_CLOSED"
+  | "BROKER_RECOVERY_REQUIRED"
   | "NOT_LOGGED_IN"
   | "INPUT_NOT_FOUND"
   | "SEND_BUTTON_NOT_FOUND"

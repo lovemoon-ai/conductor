@@ -19,9 +19,9 @@ const BUILT_IN_RUNTIME_BACKEND_SET = new Set(BUILT_IN_RUNTIME_BACKENDS);
 //
 // chat-web is intentionally NOT here even though it's also command-optional
 // (it drives a Chromium browser, not a CLI). The reason: chat-web has
-// configurable sub-providers (chatgpt / gemini / deepseek) selected via
+// configurable sub-providers (chatgpt / gemini / kimi) selected via
 // `--model`, and surfacing a bare `chat-web` backend alongside user
-// aliases like `web-chatgpt` / `web-gemini` is just confusing — the alias
+// aliases like `web-chatgpt` / `web-gemini` / `web-kimi` is just confusing — the alias
 // IS the sub-provider choice. Users who want chat-web must declare an
 // explicit allow_cli_list entry (which is also where `--model` lives).
 const COMMAND_OPTIONAL_BUILT_IN_RUNTIME_BACKENDS = ["copilot", "dsh"];

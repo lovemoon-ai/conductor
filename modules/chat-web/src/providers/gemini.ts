@@ -52,6 +52,12 @@ export class GeminiAdapter implements ChatProvider {
     await this.waitForComposerReady(page).catch(() => undefined);
   }
 
+  async resumeConversation(page: Page, conversationId: string): Promise<void> {
+    await gotoOrThrowNetworkError(page, `https://aistudio.google.com/prompts/${encodeURIComponent(conversationId)}`, this.name);
+    await this.waitForComposerReady(page);
+    await page.locator("ms-chat-turn").first().waitFor({ state: "visible", timeout: 20_000 });
+  }
+
   async isLoggedIn(page: Page): Promise<boolean> {
     const url = page.url();
     if (url.includes("accounts.google.com") || url.includes("/signin/")) return false;

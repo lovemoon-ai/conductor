@@ -6,7 +6,7 @@ import { assertMediaCapabilities, resolveTurnMedia } from "../media-input.js";
 import { normalizeContextFiles } from "../context-files.js";
 import { emitLog, normalizeLogger } from "../shared.js";
 
-const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini"]);
+const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini", "kimi"]);
 const DEFAULT_CHAT_WEB_PROVIDER = "chatgpt";
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -23,9 +23,13 @@ function resolveChatWebProvider(options = {}) {
   const candidates = [options.chatWebProvider, options.provider, options.model];
   for (const candidate of candidates) {
     const normalized = normalizeChatWebProvider(candidate);
-    if (SUPPORTED_CHAT_WEB_PROVIDERS.has(normalized)) {
-      return normalized;
+    if (!normalized) continue;
+    if (!SUPPORTED_CHAT_WEB_PROVIDERS.has(normalized)) {
+      const error = new Error(`Unknown chat-web provider "${normalized}". Supported: ${[...SUPPORTED_CHAT_WEB_PROVIDERS].join(", ")}`);
+      error.reason = "unknown_chat_web_provider";
+      throw error;
     }
+    return normalized;
   }
   return DEFAULT_CHAT_WEB_PROVIDER;
 }
@@ -94,10 +98,10 @@ function isPlaywrightMissingError(error) {
 /**
  * AI SDK provider that delegates to the chat-web runtime
  * (`@love-moon/chat-web`), which automates a real Chromium browser against
- * ChatGPT / Gemini / DeepSeek and ferries conversations through their web
+ * ChatGPT / Gemini / Kimi and ferries conversations through their web
  * UIs. Choose the underlying chat-web provider via:
  *
- *   - `options.chatWebProvider`: "chatgpt" | "gemini"  (preferred)
+ *   - `options.chatWebProvider`: "chatgpt" | "gemini" | "kimi"  (preferred)
  *   - `options.provider`:        same surface
  *   - `options.model`:           same surface (fallback for ergonomic
  *                                `createAiSession("chat-web", { model: "gemini" })`)
@@ -106,10 +110,10 @@ function isPlaywrightMissingError(error) {
  *
  * Lifecycle:
  *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
- *     providers, and opens a long-lived `ChatSession` (headed by default).
+ *     providers, and opens a queued conversation tab (headed by default).
  *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
  *     `assistant_message` with the model's reply.
- *   - `close()` tears the Chromium context down.
+ *   - `close()` releases this task's tab; the broker closes an idle browser.
  *
  * Resume: chat-web's "session" is a Chromium browser context, not a
  * conversation ID — there is no native cross-process resume. We synthesise
@@ -180,6 +184,7 @@ export class ChatWebSession extends EventEmitter {
 
     this.currentTurn = null;
     this.currentTurnStatus = null;
+    this.turnAttempted = false;
     this.sessionMessageHandler = null;
     this.workingStatusHandler = null;
     this.activeReplyTarget = "";
@@ -336,7 +341,10 @@ export class ChatWebSession extends EventEmitter {
     if (typeof mod.registerBuiltinProviders === "function") {
       mod.registerBuiltinProviders();
     }
-    if (typeof mod.ChatSession?.open !== "function") {
+    // New runtimes share a browser and schedule complete turns across workers.
+    // Keep the existing session surface for older optional chat-web versions.
+    const Session = mod.QueuedChatSession ?? mod.ChatSession;
+    if (typeof Session?.open !== "function") {
       throw new Error("Loaded @love-moon/chat-web is missing ChatSession.open");
     }
 
@@ -348,7 +356,7 @@ export class ChatWebSession extends EventEmitter {
     if (this.browserChannel) launch.channel = this.browserChannel;
     if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
 
-    this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
+    this.chatSession = await Session.open(this.chatWebProvider, {
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
       // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger
@@ -402,7 +410,7 @@ export class ChatWebSession extends EventEmitter {
     }
     // Nothing has been said yet — fire boots the browser at announce time, so
     // "booted" alone does not mean there is a conversation to walk away from.
-    if (!this.providerConversationId && this.history.length === 0) {
+    if (!this.providerConversationId && this.history.length === 0 && !this.turnAttempted) {
       return { clear: { status: "noop" }, usage: null, metadata: {} };
     }
     await this.boot();
@@ -420,6 +428,7 @@ export class ChatWebSession extends EventEmitter {
       providerUrl: undefined,
     };
     this.history = [];
+    this.turnAttempted = false;
     this.emit("session", this.getSessionInfo());
     // No id to report: the provider mints one on the next reply.
     return { clear: { status: "cleared" }, usage: null, metadata: {} };
@@ -463,6 +472,8 @@ export class ChatWebSession extends EventEmitter {
     switch (this.chatWebProvider) {
       case "chatgpt":
         return `https://chatgpt.com/c/${this.providerConversationId}`;
+      case "kimi":
+        return `https://www.kimi.com/chat/${encodeURIComponent(this.providerConversationId)}`;
       case "gemini":
         // chat-web's `gemini` provider targets AI Studio
         // (aistudio.google.com/prompts/new_chat) — that's the free web
@@ -503,7 +514,7 @@ export class ChatWebSession extends EventEmitter {
       throw error;
     }
 
-    this.currentTurn = { aborted: false };
+    this.currentTurn = { aborted: false, controller: new AbortController() };
     await this.emitWorkingStatus(
       {
         phase: "turn_started",
@@ -517,8 +528,19 @@ export class ChatWebSession extends EventEmitter {
       await this.boot();
       if (this.closeRequested) throw this.createSessionClosedError();
 
+      this.turnAttempted = true;
       const result = await this.chatSession.send(prompt, {
         timeoutMs: this.turnTimeoutMs,
+        signal: this.currentTurn.controller.signal,
+        onQueue: (position) => {
+          void this.emitWorkingStatus({
+            phase: position > 0 ? "queued" : "turn_started",
+            reply_in_progress: true,
+            status_line: position > 0
+              ? `chat-web (${this.chatWebProvider}) queued: ${position} ahead`
+              : `chat-web (${this.chatWebProvider}) is working`,
+          }, onProgress);
+        },
         onProgress: (text) => {
           // chat-web's onProgress fires while streaming text grows; we
           // forward those as working_status updates with a short preview.
@@ -612,12 +634,11 @@ export class ChatWebSession extends EventEmitter {
   }
 
   async interruptCurrentTurn() {
-    // chat-web's ChatSession doesn't expose a turn abort — the underlying
-    // Chromium tab is still busy with the model. We mark the turn as
-    // aborted so the next status emission is "interrupted", but the
-    // assistant_message may still arrive once the model finishes.
     if (this.currentTurn) {
       this.currentTurn.aborted = true;
+      // The shared broker removes a pending turn, or stops/closes the active
+      // task's tab before moving to the next task. No queued prompt is sent.
+      this.currentTurn.controller.abort();
     }
   }
 

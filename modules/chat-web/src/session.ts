@@ -33,6 +33,8 @@ export interface SendOptions {
   signal?: AbortSignal;
   /** Streaming progress callback. */
   onProgress?: (text: string) => void;
+  /** Shared-profile queue position: 0 means this turn has started. */
+  onQueue?: (position: number) => void;
 }
 
 export interface SendResult {
@@ -105,6 +107,8 @@ export class ChatSession {
     page: Page;
     userDataDir: string;
     logger?: Logger;
+    /** Broker sessions own only their tab, not the shared browser context. */
+    closeContext?: boolean;
   }): ChatSession {
     return new ChatSession(
       args.provider,
@@ -112,6 +116,7 @@ export class ChatSession {
       args.page,
       args.userDataDir,
       args.logger ?? defaultLogger,
+      args.closeContext ?? true,
     );
   }
 
@@ -127,6 +132,7 @@ export class ChatSession {
     private readonly pageImpl: Page,
     public readonly userDataDir: string,
     private readonly logger: Logger,
+    private readonly closeContext = true,
   ) {}
 
   get provider(): string {
@@ -161,6 +167,7 @@ export class ChatSession {
     this.assertOpen();
     return this.enqueue(async () => {
       const started = Date.now();
+      if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
 
       const loggedIn = await this.providerImpl.isLoggedIn(this.pageImpl);
       if (!loggedIn) {
@@ -176,6 +183,7 @@ export class ChatSession {
       this.logger.debug(
         `[${this.providerImpl.name}] turn ${this.turnCounter}: ${truncate(message)}`,
       );
+      if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       await this.providerImpl.sendMessage(this.pageImpl, message);
 
       const response = await this.providerImpl.waitForResponse(this.pageImpl, {
@@ -269,6 +277,10 @@ export class ChatSession {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (!this.closeContext) {
+      await this.pageImpl.close().catch(() => undefined);
+      return;
+    }
     await this.context.close().catch(() => undefined);
     // Drop the owner sidecar so a later launch doesn't mistake a cleanly
     // closed profile for a live chat (see core/profile-lock.ts).
@@ -289,7 +301,8 @@ export class ChatSession {
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     // Chain on prior task; do NOT block on its failure (we don't want
     // one bad message to wedge the queue forever).
-    const ran = this.queue.then(task, task);
+    const checked = () => { this.assertOpen(); return task(); };
+    const ran = this.queue.then(checked, checked);
     this.queue = ran.then(
       () => undefined,
       () => undefined,
