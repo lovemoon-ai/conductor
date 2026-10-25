@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — 用户已确认首版文本多轮对话；实现与自动化验证已完成，真实账号验收待登录。
+Implemented — 首版文本多轮对话、自动化测试与已登录真实 Kimi 账号验收均已通过。
 
 ## Owner
 
@@ -35,7 +35,7 @@ Conductor 使用 `web-kimi` 别名；现有 `kimi` 继续表示 Kimi CLI。
   `web-kimi`；这些配置值由 Conductor 解析，不是直接执行的 chat-web CLI 命令。
 - 现有架构文档存在过时描述，本方案依据上述源码判断能力。
 
-### 页面调研与证据边界
+### 初始页面调研与证据边界（后续真实验收见实现记录）
 
 在 macmini 的现有 Chrome 中，通过 AppleScript 读取到当前 Kimi 标签页 URL
 为 `https://www.kimi.com/`，标题为
@@ -58,7 +58,7 @@ Conductor 使用 `web-kimi` 别名；现有 `kimi` 继续表示 Kimi CLI。
 | 未登录状态 | 有 `Log in` / `登录`、历史同步登录入口，但输入框仍存在且填字后发送控件可用 | 不能以“存在输入框/可发送”作为登录成功依据 |
 | 模型入口 | 观察到 `[data-testid="model-select-trigger"]`；菜单含 K3.1 Pro、K2.8、Instant 及思考配置 | 网站模型与 SDK 的 provider 选择应使用不同概念；渲染有延迟，定位需等待 |
 
-尚未验证：登录后账号标志、真实发送是否触发登录、助手消息与思考区 DOM、
+初始调研阶段尚未验证：登录后账号标志、真实发送是否触发登录、助手消息与思考区 DOM、
 生成中/停止/完成/错误状态、真实会话 URL、网络流格式和结束事件、
 刷新后的上下文行为。不能据首页推断这些细节或写死 `/chat/{id}` 一类路径。
 
@@ -217,9 +217,33 @@ K3.1 Pro 等具体模型。第一版沿用 profile 中的网站默认选择，�
   串行发送、新对话、同样答案的连续两轮、长思考、超时、中断等待、provider
   路由与 CLI 配置/参数解析。浏览器集成使用受控 HTML 样本，避免依赖账号
   或外部网络；安装 Chromium 时运行，否则明确跳过该组测试。
-- 已在 macmini 打开 chat-web 自有持久化 Kimi profile 等待用户登录。
-  尚未通过已登录真实 Kimi 账号完成多轮验收；自动化通过不等于该项已验证。
+- 用户完成 macmini 上 chat-web 自有 Kimi profile 登录后，已补齐真实网站
+  验收，包括独立适配器、AI SDK 默认 worker、多轮上下文、新对话、登录
+  持久化与真实代码块提取；具体结果见下方。
 - 调用方式：先运行构建后的 `node modules/chat-web/dist/cli.js login kimi`，
   再添加上述 allow_cli_list 配置并使用 `conductor fire --backend web-kimi`。
   SDK 创建 `createAiSession("chat-web", { model: "kimi" })` 后，可在同一 session
   连续调用 `runTurn()`；独立 chat-web SDK 使用 ChatSession.send()。
+
+
+## Live Verification — 2026-10-25
+
+验证对象为分支 `94f802` 的 `0a9488e6` 构建产物，使用 macmini 的真实 Kimi
+网页和用户已登录的 `~/.chat-web/profiles/kimi`。依赖链接限定在工作树内，
+确保 ai-sdk worker 加载同一工作树的 chat-web 构建产物。
+
+| 路径 | 验证内容 | 结果 |
+| --- | --- | --- |
+| KimiAdapter + 真实页面 | 第一轮记住合成口令和数字，第二轮只提问、不重复提供信息 | 正确复述口令和数字；两轮 conversation URL 一致 |
+| `createAiSession("chat-web", { model: "kimi" })` 默认 worker | 第一轮记住另一组合成信息；第二轮提问复述 | 正确回答；conversationId 相同，turnIndex 从 0 递增到 1 |
+| 同一 worker 的 `runClear()` | 清除后询问之前是否提供过测试口令 | 回答“没有口令”；新 conversationId，turnIndex 重置为 0 |
+| AI SDK 事件 | 捕获 working_status 和 session message 回调 | 收到 message_aggregation、turn_completed，以及三条最终助手消息 |
+| 关闭后重新打开 persistent profile | 独立进程通过 ChatSession.open("kimi") 打开页面 | 已登录，无需再次人工登录 |
+| ChatSession + 真实页面 | 发送三行提示，要求返回两行 Python 代码 | 只产生一个用户 segment；返回一个带 python 标记、两行代码和换行的 fenced code block |
+
+worker 三轮耗时分别约 9.4、9.8、8.6 秒，代码块测试约 7.6 秒。真实网络
+流未新增私有协议依赖，本次使用页面 DOM 提取成功。测试结束后已关闭测试
+浏览器与临时调研服务，保留用户的持久化登录状态。
+
+本次真实验收未触发限流、验证码或强制登录失效；相关错误分支由自动化样本
+覆盖。附件、站内模型配置、跨进程恢复旧对话和网站侧停止仍不属于首版范围。
