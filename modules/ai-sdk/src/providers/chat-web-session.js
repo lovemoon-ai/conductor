@@ -110,10 +110,10 @@ function isPlaywrightMissingError(error) {
  *
  * Lifecycle:
  *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
- *     providers, and opens a long-lived `ChatSession` (headed by default).
+ *     providers, and opens a queued conversation tab (headed by default).
  *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
  *     `assistant_message` with the model's reply.
- *   - `close()` tears the Chromium context down.
+ *   - `close()` releases this task's tab; the broker closes an idle browser.
  *
  * Resume: chat-web's "session" is a Chromium browser context, not a
  * conversation ID — there is no native cross-process resume. We synthesise
@@ -340,7 +340,10 @@ export class ChatWebSession extends EventEmitter {
     if (typeof mod.registerBuiltinProviders === "function") {
       mod.registerBuiltinProviders();
     }
-    if (typeof mod.ChatSession?.open !== "function") {
+    // New runtimes share a browser and schedule complete turns across workers.
+    // Keep the existing session surface for older optional chat-web versions.
+    const Session = mod.QueuedChatSession ?? mod.ChatSession;
+    if (typeof Session?.open !== "function") {
       throw new Error("Loaded @love-moon/chat-web is missing ChatSession.open");
     }
 
@@ -352,7 +355,7 @@ export class ChatWebSession extends EventEmitter {
     if (this.browserChannel) launch.channel = this.browserChannel;
     if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
 
-    this.chatSession = await mod.ChatSession.open(this.chatWebProvider, {
+    this.chatSession = await Session.open(this.chatWebProvider, {
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
       // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger
@@ -509,7 +512,7 @@ export class ChatWebSession extends EventEmitter {
       throw error;
     }
 
-    this.currentTurn = { aborted: false };
+    this.currentTurn = { aborted: false, controller: new AbortController() };
     await this.emitWorkingStatus(
       {
         phase: "turn_started",
@@ -525,6 +528,16 @@ export class ChatWebSession extends EventEmitter {
 
       const result = await this.chatSession.send(prompt, {
         timeoutMs: this.turnTimeoutMs,
+        signal: this.currentTurn.controller.signal,
+        onQueue: (position) => {
+          void this.emitWorkingStatus({
+            phase: position > 0 ? "queued" : "turn_started",
+            reply_in_progress: true,
+            status_line: position > 0
+              ? `chat-web (${this.chatWebProvider}) queued: ${position} ahead`
+              : `chat-web (${this.chatWebProvider}) is working`,
+          }, onProgress);
+        },
         onProgress: (text) => {
           // chat-web's onProgress fires while streaming text grows; we
           // forward those as working_status updates with a short preview.
@@ -618,12 +631,11 @@ export class ChatWebSession extends EventEmitter {
   }
 
   async interruptCurrentTurn() {
-    // chat-web's ChatSession doesn't expose a turn abort — the underlying
-    // Chromium tab is still busy with the model. We mark the turn as
-    // aborted so the next status emission is "interrupted", but the
-    // assistant_message may still arrive once the model finishes.
     if (this.currentTurn) {
       this.currentTurn.aborted = true;
+      // The shared broker removes a pending turn, or stops/closes the active
+      // task's tab before moving to the next task. No queued prompt is sent.
+      this.currentTurn.controller.abort();
     }
   }
 

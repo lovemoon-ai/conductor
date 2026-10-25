@@ -221,6 +221,14 @@ export class KimiAdapter implements ChatProvider {
     await this.open(page);
   }
 
+  async stopGeneration(page: Page): Promise<void> {
+    const stop = page.locator(`${SEND}.stop`).first();
+    if (await stop.isVisible()) {
+      await stop.click({ timeout: 2_000 });
+      await page.locator(`${SEND}.stop, ${SEND}.loading`).waitFor({ state: "hidden", timeout: 5_000 });
+    }
+  }
+
   getConversationId(page: Page): string | null {
     try {
       const url = new URL(page.url());

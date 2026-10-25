@@ -940,10 +940,10 @@ async function main() {
       env: process.env,
     });
 
-    // chat-web tasks drive a real Chromium browser that holds a per-profile
-    // singleton lock for as long as the task lives. A task that never ends
-    // pins that browser indefinitely (and blocks other chats for the same
-    // provider), so we cap its active lifetime and auto-stop it when exceeded.
+    // chat-web tasks retain a tab in the shared profile browser while alive.
+    // New runtimes schedule turns across tasks; older runtimes exclusively
+    // own the profile. Cap task lifetime so abandoned sessions release their
+    // browser resources in either runtime.
     // The conversation itself is preserved (it lives in the provider account
     // and the persisted profile; closing the browser does not delete it).
     const runtimeBackendToken = String(sessionCommandLine || "")

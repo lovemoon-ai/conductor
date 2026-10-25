@@ -1,8 +1,9 @@
 /**
  * Public entry point for `@love-moon/chat-web`.
  *
- * The primary SDK surface is `ChatSession` — multi-turn dialogue against
- * a persistent browser profile. CLI users get `login`, `doctor`, `info`;
+ * `QueuedChatSession` shares a browser and turn queue across tasks/processes.
+ * `ChatSession` offers exclusive ownership and direct Playwright Page access.
+ * Both preserve multi-turn conversations. CLI users get `login`, `doctor`, `info`;
  * everything else (ask, daemon, ...) lives at the SDK level.
  *
  * @example
@@ -27,6 +28,8 @@ export {
   type SendResult,
   type SessionOpenOptions,
 } from "./session.js";
+
+export { QueuedChatSession } from "./queued-session.js";
 
 // Provider plumbing.
 export * from "./core/provider.js";
