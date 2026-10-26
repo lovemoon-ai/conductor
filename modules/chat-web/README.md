@@ -55,6 +55,22 @@ chat-web runtime stop
 
 取消排队中的 turn 不会发送网页消息。取消已提交的 turn 会尝试点击该页面的 stop，并检查控件消失。未确认停止时记录 uncertain，不宣称服务端已停。close 只操作对应 chat，并阻止继续发送，直到显式 resume。
 
+## DeepSeek DeepThink
+
+创建时指定每轮默认值，或发送时覆盖单轮：
+
+~~~bash
+chat-web chat create deepseek --deepthink
+chat-web chat send CHAT_ID "分析这个方案" --deepthink
+chat-web chat send CHAT_ID "直接回答" --no-deepthink
+~~~
+
+--deepthink 开启，--no-deepthink 关闭；两者不可同时使用，仅支持 DeepSeek。发送参数优先于 chat 创建时的默认值；两者都不指定则保持该页面当前状态。单轮覆盖不修改保存的 chat 默认值，但会改变该 profile 的网页开关。SDK 对应 deepThink: true/false，支持 client.create、client.submit、RuntimeChatSession.open 和 session.send；session.send 优先于 session.open 的默认值。
+
+运行时在发送前读取 DeepThink 控件的 aria-pressed/aria-checked，仅在状态不符时点击，并确认切换成功。控件缺失或状态无法确认时，本轮失败且不发送消息。设置随 turn 持久化，同一 requestId 更换设置会报冲突。新客户端会先检查 daemon 能力，旧版 daemon 需要重启升级。
+
+AI SDK 的 runtime 模式可使用 chatWebProvider: "deepseek"、chatWebDeepThink: true/false；该选项不支持旧版直连模式。2026-10-26 UTC 已使用真实账号验证开启、重复开启、关闭和保持现状四轮，均确认页面实际状态及 SSE 回复。
+
 ## SDK
 
 ```ts

@@ -65,8 +65,8 @@ export class BrowserWorker implements ChatWorker {
   }
 
   open(): Promise<WorkerResult> { return this.request("open"); }
-  send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void): Promise<WorkerResult> {
-    return this.request("send", { input, timeoutMs }, timeoutMs + 60_000, notify);
+  send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void, options: { deepThink?: boolean } = {}): Promise<WorkerResult> {
+    return this.request("send", { input, timeoutMs, deepThink: options.deepThink }, timeoutMs + 60_000, notify);
   }
   cancel(): void {
     if (this.child.connected) this.child.send({ command: "cancel" }, () => undefined);

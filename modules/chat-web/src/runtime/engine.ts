@@ -72,22 +72,23 @@ export class ChatRuntime {
   get(id: string): Conversation { return this.conversation(this.store.read(), id); }
   getTurn(id: string): Turn { return this.turn(this.store.read(), id); }
   status() {
-    return { version: 1, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
+    return { version: 1, capabilities: { deepThink: true }, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
       workers: this.workers.size, activeTurns: this.active.size, stopping: this.stopping, failure: this.failure,
       pinnedChats: [...this.workers].filter(([, entry]) => entry.pinned).map(([id]) => id),
       providers: this.sites.map(({ name, experimental }) => ({ name, experimental: !!experimental })) };
   }
 
-  async create(params: { provider: string; accountId?: string; headless?: boolean }): Promise<Conversation> {
+  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean }): Promise<Conversation> {
     if (this.stopping) throw new RuntimeError("SHUTTING_DOWN", "Runtime is shutting down");
     if (!this.sites.some((site) => site.name === params.provider)) throw new RuntimeError("UNSUPPORTED_PROVIDER", "Unsupported webpage provider");
+    this.validateDeepThink(params.provider, params.deepThink);
     const accountId = params.accountId ?? "default";
     if (typeof accountId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(accountId)) throw new RuntimeError("INVALID_PARAMS", "Invalid accountId");
     if (params.headless !== undefined && typeof params.headless !== "boolean") throw new RuntimeError("INVALID_PARAMS", "headless must be boolean");
     return this.store.update((state) => {
       if (Object.keys(state.conversations).length >= 256) throw new RuntimeError("CAPACITY", "Conversation limit reached");
       const record: Conversation = { id: randomUUID(), provider: params.provider, accountId,
-        headless: params.headless ?? true, createdAt: new Date().toISOString(), needsReview: false, closed: false };
+        headless: params.headless ?? true, ...(params.deepThink === undefined ? {} : { deepThink: params.deepThink }), createdAt: new Date().toISOString(), needsReview: false, closed: false };
       state.conversations[record.id] = record;
       return record;
     });
@@ -132,7 +133,7 @@ export class ChatRuntime {
     } finally { this.closing.delete(id); this.schedule(); }
   }
 
-  async submit(params: { conversationId: string; requestId: string; input: string; timeoutMs?: number }): Promise<Turn> {
+  async submit(params: { conversationId: string; requestId: string; input: string; timeoutMs?: number; deepThink?: boolean }): Promise<Turn> {
     if (this.stopping) throw new RuntimeError("SHUTTING_DOWN", "Runtime is shutting down");
     if (typeof params.input !== "string" || !params.input.trim() || params.input.length > 100_000 ||
         typeof params.requestId !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(params.requestId)) {
@@ -141,23 +142,32 @@ export class ChatRuntime {
     const timeoutMs = params.timeoutMs ?? 180_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 1_800_000) throw new RuntimeError("INVALID_PARAMS", "Invalid timeoutMs");
     const turn = await this.store.update((state) => {
+      const chat = this.conversation(state, params.conversationId);
+      this.validateDeepThink(chat.provider, params.deepThink);
+      const deepThink = params.deepThink ?? chat.deepThink;
+      this.validateDeepThink(chat.provider, deepThink);
       const existing = Object.values(state.turns).find((turn) => turn.conversationId === params.conversationId && turn.requestId === params.requestId);
       if (existing) {
-        if (existing.input !== params.input || existing.timeoutMs !== timeoutMs) throw new RuntimeError("REQUEST_CONFLICT", "requestId was already used with different input or timeout");
+        if (existing.input !== params.input || existing.timeoutMs !== timeoutMs || existing.deepThink !== deepThink) throw new RuntimeError("REQUEST_CONFLICT", "requestId was already used with different input, timeout or DeepThink setting");
         return existing;
       }
-      const chat = this.conversation(state, params.conversationId);
       if (chat.closed) throw new RuntimeError("CHAT_CLOSED", "Resume the chat before sending");
       if (chat.needsReview) throw new RuntimeError("REVIEW_REQUIRED", "Inspect the uncertain turn and explicitly acknowledge it before sending again");
       if (Object.keys(state.turns).length >= 4096) throw new RuntimeError("CAPACITY", "Turn retention limit reached");
       const turn: Turn = { id: randomUUID(), conversationId: chat.id, requestId: params.requestId,
-        input: params.input, timeoutMs, status: "queued", text: "", events: [], createdAt: new Date().toISOString() };
+        input: params.input, timeoutMs, ...(deepThink === undefined ? {} : { deepThink }), status: "queued", text: "", events: [], createdAt: new Date().toISOString() };
       this.append(turn, "queued");
       state.turns[turn.id] = turn;
       return turn;
     });
     this.schedule();
     return turn;
+  }
+
+  private validateDeepThink(provider: string, value: unknown): void {
+    if (value === undefined) return;
+    if (typeof value !== "boolean") throw new RuntimeError("INVALID_PARAMS", "deepThink must be boolean");
+    if (provider !== "deepseek") throw new RuntimeError("INVALID_PARAMS", "DeepThink is only supported on DeepSeek");
   }
 
   async cancel(id: string): Promise<Turn> {
@@ -335,7 +345,7 @@ export class ChatRuntime {
         if (notice.type === "submitting") attempted = true;
         pending = pending.then(() => this.notice(id, notice));
         void pending.catch(() => worker.cancel());
-      });
+      }, { deepThink: original.deepThink });
       await pending;
       await this.finish(id, "completed", result);
     } catch (error: any) {

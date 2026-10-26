@@ -130,6 +130,10 @@ export class ChatWebSession extends EventEmitter {
     this.runtimeSocket = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET || "";
     this.runtimeConversationId = options.chatWebConversationId || (this.runtimeSocket ? options.resumeSessionId : undefined);
     this.chatWebProvider = resolveChatWebProvider(options);
+    if (options.chatWebDeepThink !== undefined &&
+        (typeof options.chatWebDeepThink !== "boolean" || this.chatWebProvider !== "deepseek" || !this.runtimeSocket)) {
+      throw new Error("chatWebDeepThink requires a boolean, DeepSeek and chatWebRuntimeSocket");
+    }
     // Direct mode matches chat-web SDK's own default (headed). Per chat-web/core/browser.ts
     // resolveHeadless(), headed mode is the documented safe default for
     // anti-bot heuristics — ChatGPT/AI Studio routinely serve unauthenticated
@@ -358,7 +362,7 @@ export class ChatWebSession extends EventEmitter {
     if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
 
     this.chatSession = await Session.open(this.chatWebProvider, {
-      ...(this.runtimeSocket ? { socketPath: this.runtimeSocket, conversationId: this.runtimeConversationId, accountId: this.options.chatWebAccountId } : {}),
+      ...(this.runtimeSocket ? { socketPath: this.runtimeSocket, conversationId: this.runtimeConversationId, accountId: this.options.chatWebAccountId, deepThink: this.options.chatWebDeepThink } : {}),
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
       // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger

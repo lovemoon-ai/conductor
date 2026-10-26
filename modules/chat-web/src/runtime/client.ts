@@ -31,12 +31,25 @@ export class ChatRuntimeClient {
     });
   }
 
-  create(params: { provider: string; accountId?: string; headless?: boolean }): Promise<Conversation> { return this.call("conversations.create", params); }
+  private async checkDeepThink(value: unknown): Promise<void> {
+    if (value === undefined) return;
+    if (typeof value !== "boolean") throw new RuntimeError("INVALID_PARAMS", "deepThink must be boolean");
+    const status = await this.call<{ capabilities?: { deepThink?: boolean } }>("runtime.status");
+    if (status.capabilities?.deepThink !== true) throw new RuntimeError("UNSUPPORTED_OPTION", "Runtime does not support DeepThink; restart it with the updated chat-web package");
+  }
+
+  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean }): Promise<Conversation> {
+    await this.checkDeepThink(params.deepThink);
+    return this.call("conversations.create", params);
+  }
   list(): Promise<Conversation[]> { return this.call("conversations.list"); }
   get(id: string): Promise<Conversation> { return this.call("conversations.get", { id }); }
   resume(id: string, options: { headed?: boolean; acknowledgeUncertain?: boolean } = {}): Promise<Conversation & WorkerResult> { return this.call("conversations.resume", { id, ...options }); }
   closeConversation(id: string): Promise<Conversation> { return this.call("conversations.close", { id }); }
-  submit(params: { conversationId: string; input: string; requestId: string; timeoutMs?: number }): Promise<Turn> { return this.call("turns.create", params); }
+  async submit(params: { conversationId: string; input: string; requestId: string; timeoutMs?: number; deepThink?: boolean }): Promise<Turn> {
+    await this.checkDeepThink(params.deepThink);
+    return this.call("turns.create", params);
+  }
   getTurn(id: string): Promise<Turn> { return this.call("turns.get", { id }); }
   cancel(id: string): Promise<Turn> { return this.call("turns.cancel", { id }); }
 
@@ -107,18 +120,22 @@ export class RuntimeChatSession {
   private localWait?: AbortController;
   private turns = 0;
   private closed = false;
-  private constructor(readonly id: string, provider: string, socket: string | undefined) {
+  private constructor(readonly id: string, provider: string, socket: string | undefined, private deepThink?: boolean) {
     this.provider = provider;
     this.client = new ChatRuntimeClient(socket);
   }
-  static async open(provider: string, options: { socketPath?: string; conversationId?: string; accountId?: string; headless?: boolean } = {}): Promise<RuntimeChatSession> {
+  static async open(provider: string, options: { socketPath?: string; conversationId?: string; accountId?: string; headless?: boolean; deepThink?: boolean } = {}): Promise<RuntimeChatSession> {
+    if (options.deepThink !== undefined && (provider !== "deepseek" || typeof options.deepThink !== "boolean")) {
+      throw new RuntimeError("INVALID_PARAMS", "DeepThink requires a boolean and the DeepSeek provider");
+    }
     const client = new ChatRuntimeClient(options.socketPath);
-    const chat = options.conversationId ? await client.get(options.conversationId) : await client.create({ provider, accountId: options.accountId, headless: options.headless });
+    const chat = options.conversationId ? await client.get(options.conversationId) : await client.create({ provider, accountId: options.accountId, headless: options.headless, deepThink: options.deepThink });
     if (chat.provider !== provider) throw new RuntimeError("PROVIDER_MISMATCH", "Saved conversation uses a different provider");
-    return new RuntimeChatSession(chat.id, provider, options.socketPath);
+    return new RuntimeChatSession(chat.id, provider, options.socketPath, options.deepThink);
   }
   async isLoggedIn(): Promise<boolean> { return !!(await this.client.resume(this.id)).ready; }
-  async send(message: string, options: { requestId?: string; timeoutMs?: number; onProgress?: (text: string) => void } = {}) {
+  async send(message: string, options: { requestId?: string; timeoutMs?: number; onProgress?: (text: string) => void; deepThink?: boolean } = {}) {
+    if (options.deepThink !== undefined && typeof options.deepThink !== "boolean") throw new RuntimeError("INVALID_PARAMS", "deepThink must be boolean");
     if (this.closed) throw new RuntimeError("CHAT_CLOSED", "SDK session is closed");
     if (this.sending) throw new RuntimeError("CHAT_BUSY", "This SDK session already has an active send");
     this.sending = true;
@@ -126,7 +143,7 @@ export class RuntimeChatSession {
     this.localWait = new AbortController();
     const start = Date.now();
     try {
-      const turn = await this.client.submit({ conversationId: this.id, input: message, requestId: options.requestId ?? randomUUID(), timeoutMs: options.timeoutMs });
+      const turn = await this.client.submit({ conversationId: this.id, input: message, requestId: options.requestId ?? randomUUID(), timeoutMs: options.timeoutMs, deepThink: options.deepThink ?? this.deepThink });
       this.activeTurnId = turn.id;
       if (this.interruptRequested) await this.client.cancel(turn.id);
       let text = "";

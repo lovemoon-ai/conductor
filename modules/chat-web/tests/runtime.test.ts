@@ -18,15 +18,15 @@ async function until(test: () => boolean | Promise<boolean>): Promise<void> {
   throw new Error("Condition did not become true");
 }
 function monitor() {
-  const calls: { id: string; input: string; profile: string; provider: string }[] = [];
+  const calls: { id: string; input: string; profile: string; provider: string; deepThink?: boolean }[] = [];
   const pending = new Map<string, { resolve: (value: WorkerResult) => void; reject: (error: Error) => void; notify: (notice: WorkerNotice) => void; config: WorkerConfig }>();
   const closed: string[] = [];
   return {
     calls, pending, closed,
     factory: (config: WorkerConfig): ChatWorker => ({
       async open() { return { ready: true, url: "https://fixture.local/chat/" + config.conversation.id }; },
-      async send(input: string, _timeout: number, notify: (notice: WorkerNotice) => void) {
-        calls.push({ id: config.conversation.id, input, profile: config.profileDir, provider: config.site.name });
+      async send(input: string, _timeout: number, notify: (notice: WorkerNotice) => void, options?: { deepThink?: boolean }) {
+        calls.push({ id: config.conversation.id, input, profile: config.profileDir, provider: config.site.name, deepThink: options?.deepThink });
         notify({ type: "submitting" });
         notify({ type: "progress", text: "first:" + input });
         return new Promise<WorkerResult>((resolve, reject) => pending.set(input, { resolve, reject, notify, config }));
@@ -285,4 +285,85 @@ describe("isolated runtime RPC and SDK", () => {
     expect((await client.wait(queued.id)).status).toBe("completed");
   });
 
+});
+
+describe("DeepSeek DeepThink options", () => {
+  it("persists defaults and queued overrides, and includes the effective option in deduplication", async () => {
+    const first = await start();
+    const chat = await first.client.create({ provider: "deepseek", deepThink: true });
+    expect(chat.deepThink).toBe(true);
+    const running = await first.client.submit({ conversationId: chat.id, input: "default", requestId: "one" });
+    const queued = await first.client.submit({ conversationId: chat.id, input: "override", requestId: "two", deepThink: false });
+    expect(queued.deepThink).toBe(false);
+    await until(() => first.m.calls.length === 1);
+    expect(first.m.calls[0]!.deepThink).toBe(true);
+    expect((await first.client.submit({ conversationId: chat.id, input: "override", requestId: "two", deepThink: false })).id).toBe(queued.id);
+    await expect(first.client.submit({ conversationId: chat.id, input: "override", requestId: "two", deepThink: true })).rejects.toMatchObject({ code: "REQUEST_CONFLICT" });
+    first.m.release("default"); await first.client.wait(running.id);
+    await until(() => first.m.calls.length === 2);
+    expect(first.m.calls[1]!.deepThink).toBe(false);
+    first.m.release("override"); await first.client.wait(queued.id);
+    await first.server.close();
+    const second = await start(monitor(), first.directory);
+    expect((await second.client.getTurn(queued.id)).deepThink).toBe(false);
+    expect((await second.client.get(chat.id)).deepThink).toBe(true);
+    const next = await second.client.submit({ conversationId: chat.id, input: "default-again", requestId: "three" });
+    await until(() => second.m.calls.length === 1);
+    expect(second.m.calls[0]!.deepThink).toBe(true);
+    second.m.release("default-again"); await second.client.wait(next.id);
+  });
+
+  it("rejects non-boolean or non-DeepSeek options before queuing", async () => {
+    const { client } = await start();
+    await expect(client.call("conversations.create", { provider: "deepseek", deepThink: "true" })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(client.create({ provider: "kimi", deepThink: false })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    const deepseek = await client.create({ provider: "deepseek" });
+    const kimi = await client.create({ provider: "kimi" });
+    await expect(client.call("turns.create", { conversationId: deepseek.id, input: "bad", requestId: "bad", deepThink: null })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(client.submit({ conversationId: kimi.id, input: "bad", requestId: "bad", deepThink: true })).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  });
+
+  it("rejects an older runtime before creating a chat or submitting a turn", async () => {
+    const { client, server, m } = await start();
+    const status = server.runtime.status.bind(server.runtime);
+    server.runtime.status = () => ({ ...status(), capabilities: { deepThink: false } });
+    await expect(client.create({ provider: "deepseek", deepThink: true })).rejects.toMatchObject({ code: "UNSUPPORTED_OPTION" });
+    expect(await client.list()).toHaveLength(0);
+    const chat = await client.create({ provider: "deepseek" });
+    await expect(client.submit({ conversationId: chat.id, input: "never-send", requestId: "one", deepThink: false })).rejects.toMatchObject({ code: "UNSUPPORTED_OPTION" });
+    expect(m.calls).toHaveLength(0);
+  });
+
+  it("supports CLI defaults, explicit off, and rejects conflicting flags", async () => {
+    const { server, client, m } = await start();
+    const output: string[] = [];
+    const run = (args: string[]) => runRuntimeCli([...args, "--socket", server.socketPath], line => output.push(line));
+    await run(["chat", "create", "deepseek", "--deepthink"]);
+    const chat = JSON.parse(output.pop()!);
+    expect(chat.deepThink).toBe(true);
+    await run(["chat", "send", chat.id, "off", "--no-deepthink", "--detach"]);
+    const turn = JSON.parse(output.pop()!);
+    await until(() => m.calls.length === 1);
+    expect(m.calls[0]!.deepThink).toBe(false);
+    m.release("off"); await client.wait(turn.id);
+    await expect(run(["chat", "create", "deepseek", "--deepthink", "--no-deepthink"])).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await expect(run(["chat", "create", "kimi", "--deepthink"])).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+  });
+
+  it("forwards SDK session defaults and per-turn overrides on an existing chat", async () => {
+    const { client, m } = await start();
+    const { RuntimeChatSession } = await import("../src/runtime/client.js");
+    const chat = await client.create({ provider: "deepseek" });
+    const session = await RuntimeChatSession.open("deepseek", { socketPath: client.socketPath, conversationId: chat.id, deepThink: true });
+    try {
+      const first = session.send("on");
+      await until(() => m.calls.length === 1);
+      expect(m.calls[0]!.deepThink).toBe(true);
+      m.release("on"); await first;
+      const second = session.send("off", { deepThink: false });
+      await until(() => m.calls.length === 2);
+      expect(m.calls[1]!.deepThink).toBe(false);
+      m.release("off"); await second;
+    } finally { await session.close(); }
+  });
 });

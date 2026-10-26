@@ -28,12 +28,21 @@ function fixtureHtml(provider: string): string {
     : provider === "deepseek"
     ? '<div id="composer-submit-button" role="button">Send</div><div id="stop-control" role="button" class="ds-button--circle" hidden><svg><path d="M2 4.88 fixture"/></svg></div>'
     : '<button id="composer-submit-button" data-testid="send-button" aria-label="Send message">Send</button><button id="stop-control" class="stop-button" data-testid="stop-button" aria-label="Stop generating" hidden>Stop</button>';
+  const thinkingControl = provider === "deepseek" ? '<div id="deepthink" class="ds-toggle-button" aria-pressed="false">DeepThink</div><div class="ds-toggle-button" aria-pressed="true">Search</div>' : "";
   return `<!doctype html><html><body>${input}
-    ${controls}
+    ${controls}${thinkingControl}
     <main></main><script>
     let controller, xhr;
     const composer = document.querySelector('textarea, [contenteditable]');
     const stop = document.querySelector('#stop-control');
+    const deepthink = document.querySelector('#deepthink');
+    if (deepthink) {
+      deepthink.setAttribute('aria-pressed', localStorage.getItem('thinking') || 'false');
+      deepthink.onclick = () => {
+        const value = deepthink.getAttribute('aria-pressed') !== 'true';
+        deepthink.setAttribute('aria-pressed', String(value)); localStorage.setItem('thinking', String(value));
+      };
+    }
     if (${JSON.stringify(provider)} === "claude") { composer.hidden = true; setTimeout(() => { composer.hidden = false; }, 350); }
     stop.onclick = () => { controller?.abort(); xhr?.abort(); stop.hidden = true; };
     document.querySelector('#composer-submit-button').onclick = async () => {
@@ -53,7 +62,7 @@ function fixtureHtml(provider: string): string {
             xhr.open('POST', ${JSON.stringify(endpoint)});
             xhr.onload = resolve; xhr.onerror = reject; xhr.onabort = reject;
             xhr.onprogress = () => { document.querySelector('main .ds-markdown:last-child').textContent = 'private thought'; };
-            xhr.send(JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}));
+            xhr.send(JSON.stringify({message, id, turn, thinking_enabled: deepthink.getAttribute('aria-pressed') === 'true', provider: ${JSON.stringify(provider)}}));
           });
         } else {
           const response = await fetch(${JSON.stringify(endpoint)}, { method: 'POST', body: JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}), signal: controller.signal });
@@ -84,8 +93,8 @@ function connectFrame(value: unknown, flags = 0): Buffer {
   return Buffer.concat([header, body]);
 }
 
-async function startFixture() {
-  const requests: { provider: string; message: string; id: string; turn: number }[] = [];
+async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {}) {
+  const requests: { provider: string; message: string; id: string; turn: number; thinking_enabled?: boolean }[] = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url!, "http://localhost");
     if (request.method !== "POST") {
@@ -135,7 +144,9 @@ async function startFixture() {
   const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-browser-"));
   cleanup.push(() => fs.rm(directory, { recursive: true, force: true }));
   const options = { directory, maxWorkers: 2, perAccountConcurrency: 2, executablePath: executable,
-    sites: runtimeSites.map((site) => ({ ...site, homeUrl: origin + "/" + site.name + "/" })) };
+    sites: runtimeSites.map((site) => ({ ...site, homeUrl: origin + "/" + site.name + "/",
+      ...(site.name === "deepseek" && fixtureOptions.deepThinkSelector !== undefined ? { deepThink: fixtureOptions.deepThinkSelector } : {}),
+    })) };
   let runtime = await startRuntimeServer(options);
   cleanup.push(async () => runtime.close());
   const client = new ChatRuntimeClient(runtime.socketPath);
@@ -171,6 +182,37 @@ describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium wo
     expect(result.text).toContain(original.providerConversationId);
     expect(result.text).toMatch(/:2$/);
   }, 60_000);
+
+  it("sets DeepThink idempotently, applies turn overrides and preserves separate chat defaults", async () => {
+    const { client, requests, restart } = await startFixture();
+    const a = await client.create({ provider: "deepseek", deepThink: true });
+    const b = await client.create({ provider: "deepseek", deepThink: false });
+    const send = async (chatId: string, input: string, deepThink?: boolean) => {
+      const turn = await client.submit({ conversationId: chatId, input, requestId: input, deepThink, timeoutMs: 15_000 });
+      const result = await client.wait(turn.id);
+      expect(result.status, result.error).toBe("completed");
+    };
+    await Promise.all([send(a.id, "a-on"), send(b.id, "b-off")]);
+    await send(a.id, "still-on");
+    await send(a.id, "override-off", false);
+    await send(a.id, "default-on");
+    expect(requests.filter(r => r.message !== "b-off").map(r => r.thinking_enabled)).toEqual([true, true, false, true]);
+    expect(requests.find(r => r.message === "b-off")?.thinking_enabled).toBe(false);
+    await restart();
+    await send(a.id, "restored-default");
+    expect(requests.at(-1)?.thinking_enabled).toBe(true);
+  }, 45_000);
+
+  it("fails without sending when the DeepThink control is unavailable", async () => {
+    const { client, requests } = await startFixture({ deepThinkSelector: "#missing" });
+    const chat = await client.create({ provider: "deepseek" });
+    const turn = await client.submit({ conversationId: chat.id, input: "must-not-send", requestId: "one", deepThink: true, timeoutMs: 10_000 });
+    const result = await client.wait(turn.id);
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/DeepThink control is unavailable/);
+    expect(requests).toHaveLength(0);
+    expect((await client.get(chat.id)).needsReview).toBe(false);
+  }, 20_000);
 
   it("keeps truncated Connect replies uncertain even after the UI stops", async () => {
     const { client } = await startFixture();

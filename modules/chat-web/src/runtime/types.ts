@@ -5,6 +5,7 @@ export interface Conversation {
   provider: string;
   accountId: string;
   headless: boolean;
+  deepThink?: boolean;
   createdAt: string;
   url?: string;
   providerConversationId?: string;
@@ -29,6 +30,7 @@ export interface Turn {
   requestId: string;
   input: string;
   timeoutMs: number;
+  deepThink?: boolean;
   status: TurnStatus;
   text: string;
   events: TurnEvent[];
@@ -55,6 +57,7 @@ export interface SiteDefinition {
   streamPath: string;
   format: "chatgpt" | "deepseek" | "kimi" | "claude" | "text";
   experimental?: boolean;
+  deepThink?: string;
 }
 
 export interface WorkerResult {
@@ -72,7 +75,7 @@ export interface WorkerNotice {
 }
 export interface ChatWorker {
   open(): Promise<WorkerResult>;
-  send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void): Promise<WorkerResult>;
+  send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void, options?: { deepThink?: boolean }): Promise<WorkerResult>;
   cancel(): void;
   close(): Promise<void>;
 }

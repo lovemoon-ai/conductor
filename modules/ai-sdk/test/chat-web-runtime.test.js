@@ -49,3 +49,24 @@ describe("AI SDK socket chat runtime", () => {
     }
   });
 });
+
+describe("AI SDK DeepThink", () => {
+  it("forwards explicit false on resume and rejects unsupported usage", async () => {
+    let opened;
+    const session = new ChatWebSession("chat-web", {
+      chatWebProvider: "deepseek", chatWebRuntimeSocket: "/unused/runtime.sock",
+      chatWebConversationId: "existing", chatWebDeepThink: false,
+      chatWebModule: { RuntimeChatSession: { async open(provider, options) {
+        opened = { provider, ...options };
+        return { id: "existing", async isLoggedIn() { return true; }, async close() {} };
+      } } },
+    });
+    try {
+      await session.ensureSessionInfo();
+      assert.equal(opened.deepThink, false);
+      assert.equal(opened.conversationId, "existing");
+    } finally { await session.close(); }
+    assert.throws(() => new ChatWebSession("chat-web", { chatWebProvider: "deepseek", chatWebDeepThink: true }), /chatWebRuntimeSocket/);
+    assert.throws(() => new ChatWebSession("chat-web", { chatWebProvider: "kimi", chatWebRuntimeSocket: "/unused", chatWebDeepThink: true }), /DeepSeek/);
+  });
+});

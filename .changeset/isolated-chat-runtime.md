@@ -9,3 +9,6 @@ Add experimental Kimi and Claude webpage adapters and optional AI SDK socket tra
 
 Support Kimi Connect JSON envelopes and DeepSeek XHR SSE patches, with verified
 parallel real-account text chats, independent cancellation, and restart recovery.
+
+Add DeepSeek --deepthink / --no-deepthink controls and SDK options with persisted
+chat defaults, per-turn overrides, verified UI state, and runtime capability checks.

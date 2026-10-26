@@ -209,7 +209,31 @@ class Session {
     };
   }
 
-  async send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void): Promise<WorkerResult> {
+  private async setDeepThink(enabled: boolean | undefined): Promise<void> {
+    if (enabled === undefined) return;
+    const selector = this.config.site.deepThink;
+    if (this.config.site.name !== "deepseek" || !selector) throw new RuntimeError("DEEPTHINK_UNAVAILABLE", "DeepThink control is unavailable");
+    let toggle = await this.visible(selector);
+    for (let i = 0; !toggle && i < 60; i++) {
+      if (this.controller?.signal.aborted) throw new RuntimeError("CANCELLED", "Cancelled before submission");
+      await pause(50);
+      toggle = await this.visible(selector);
+    }
+    if (!toggle) throw new RuntimeError("DEEPTHINK_UNAVAILABLE", "DeepThink control is unavailable");
+    const state = async () => (await toggle.getAttribute("aria-pressed")) ?? (await toggle.getAttribute("aria-checked"));
+    const current = await state();
+    if (current !== "true" && current !== "false") throw new RuntimeError("DEEPTHINK_UNAVAILABLE", "Cannot determine DeepThink state");
+    if ((current === "true") === enabled) return;
+    await toggle.click();
+    for (let i = 0; i < 60; i++) {
+      if (await state() === String(enabled)) return;
+      if (this.controller?.signal.aborted) throw new RuntimeError("CANCELLED", "Cancelled before submission");
+      await pause(50);
+    }
+    throw new RuntimeError("DEEPTHINK_UNAVAILABLE", "DeepThink did not switch to the requested state");
+  }
+
+  async send(input: string, timeoutMs: number, notify: (notice: WorkerNotice) => void, options: { deepThink?: boolean } = {}): Promise<WorkerResult> {
     await this.open();
     const page = this.page!;
     const composer = await this.waitForInput();
@@ -226,6 +250,7 @@ class Session {
     let observedStop = false;
     const deadline = Date.now() + timeoutMs;
     try {
+      await this.setDeepThink(options.deepThink);
       await composer.fill(input);
       if (this.controller.signal.aborted) throw new RuntimeError("CANCELLED", "Cancelled before submission");
       // Parent records this phase before considering any subsequent failure safe to retry.
@@ -304,7 +329,7 @@ process.on("message", async (message: any) => {
     let result: WorkerResult = {};
     if (message.command === "open") result = await session.open();
     else if (message.command === "send") result = await session.send(message.input, message.timeoutMs,
-      (notice) => process.send?.({ id: message.id, notice }));
+      (notice) => process.send?.({ id: message.id, notice }), { deepThink: message.deepThink });
     else if (message.command === "close") await session.close();
     else throw new RuntimeError("INVALID_REQUEST", "Unknown worker command");
     process.send?.({ id: message.id, result });

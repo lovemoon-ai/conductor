@@ -6,9 +6,9 @@ import { RuntimeError } from "./types.js";
 const help = `Isolated chat runtime:
   chat-web serve [--socket PATH] [--max-workers 4] [--per-account-concurrency 2]
   chat-web runtime status|stop [--socket PATH]
-  chat-web chat create <chatgpt|deepseek|kimi|claude> [--account ID] [--headed]
+  chat-web chat create <chatgpt|deepseek|kimi|claude> [--account ID] [--headed] [--deepthink|--no-deepthink]
   chat-web chat list|get|resume|login|close [CHAT_ID] [--acknowledge]
-  chat-web chat send CHAT_ID MESSAGE [--request-id ID] [--timeout MS] [--detach|--jsonl]
+  chat-web chat send CHAT_ID MESSAGE [--request-id ID] [--timeout MS] [--detach|--jsonl] [--deepthink|--no-deepthink]
   chat-web turn get|events|cancel TURN_ID [--after SEQ]
 All client commands accept --socket PATH. Login opens only this chat's window.
 `;
@@ -17,7 +17,7 @@ export async function runRuntimeCli(argv: string[], write: (text: string) => voi
   const args: string[] = [];
   const flags = new Map<string, string | boolean>();
   const values = new Set(["socket", "max-workers", "per-account-concurrency", "account", "request-id", "timeout", "after", "runtime-dir", "browser-executable", "browser-channel"]);
-  const booleans = new Set(["headed", "headless", "acknowledge", "detach", "jsonl", "help"]);
+  const booleans = new Set(["headed", "headless", "acknowledge", "detach", "jsonl", "help", "deepthink", "no-deepthink"]);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--") { args.push(...argv.slice(i + 1)); break; }
@@ -28,6 +28,11 @@ export async function runRuntimeCli(argv: string[], write: (text: string) => voi
     else throw new RuntimeError("INVALID_PARAMS", "Unknown option or missing value: " + arg);
   }
   if (flags.has("help")) { write(help); return 0; }
+  if (flags.has("deepthink") && flags.has("no-deepthink")) throw new RuntimeError("INVALID_PARAMS", "Choose --deepthink or --no-deepthink");
+  const deepThink = flags.has("deepthink") ? true : flags.has("no-deepthink") ? false : undefined;
+  if (deepThink !== undefined && !(args[0] === "chat" && ["create", "send"].includes(args[1] ?? ""))) {
+    throw new RuntimeError("INVALID_PARAMS", "DeepThink options require chat create or chat send");
+  }
   const value = (name: string) => typeof flags.get(name) === "string" ? flags.get(name) as string : undefined;
   const required = (index: number) => {
     if (!args[index]) throw new RuntimeError("INVALID_PARAMS", help);
@@ -59,7 +64,7 @@ export async function runRuntimeCli(argv: string[], write: (text: string) => voi
     switch (action) {
       case "create":
         if (flags.has("headed") && flags.has("headless")) throw new RuntimeError("INVALID_PARAMS", "Choose headed or headless");
-        emit(await client.create({ provider: required(2), accountId: value("account"), headless: !flags.has("headed") }));
+        emit(await client.create({ provider: required(2), accountId: value("account"), headless: !flags.has("headed"), deepThink }));
         break;
       case "list": emit(await client.list()); break;
       case "get": emit(await client.get(required(2))); break;
@@ -74,7 +79,7 @@ export async function runRuntimeCli(argv: string[], write: (text: string) => voi
         const chat = required(2);
         const input = args.slice(3).join(" ");
         const turn = await client.submit({ conversationId: chat, input,
-          requestId: value("request-id") ?? randomUUID(), timeoutMs: value("timeout") ? Number(value("timeout")) : undefined });
+          requestId: value("request-id") ?? randomUUID(), timeoutMs: value("timeout") ? Number(value("timeout")) : undefined, deepThink });
         if (flags.has("detach")) { emit(turn); break; }
         const result = await client.wait(turn.id, flags.has("jsonl") ? emit : undefined);
         if (!flags.has("jsonl")) emit(result);

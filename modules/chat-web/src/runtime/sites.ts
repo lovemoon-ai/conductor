@@ -13,6 +13,7 @@ export const runtimeSites: SiteDefinition[] = [
   },
   {
     name: "deepseek", homeUrl: "https://chat.deepseek.com/",
+    deepThink: '.ds-toggle-button:has-text("DeepThink"), .ds-toggle-button:has-text("深度思考"), button[aria-label="DeepThink"], [role="switch"][aria-label="DeepThink"]',
     input: "textarea", send: 'button[aria-label*="send" i], button[aria-label*="发送"]',
     assistant: ".ds-markdown", stop: '[role="button"][aria-label*="stop" i], button[aria-label*="停止"], button[aria-label*="stop" i], [role="button"].ds-button--circle:has(svg path[d^="M2 4.88"])',
     conversationPath: "/(?:a/chat/s|chat)/([^/?#]+)",
