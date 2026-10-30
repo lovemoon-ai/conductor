@@ -18,6 +18,42 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.17.2] - 2026-10-30
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.17.2`
+- `@love-moon/conductor-sdk` `0.17.2`
+- `@love-moon/ai-sdk` `0.17.2`
+- `@love-moon/app-sdk` `0.17.2`
+- `@love-moon/chat-web` `0.17.2`
+
+### Changes
+
+### Patch Changes
+
+- 0a9488e: Add Kimi website text conversations with persistent login, multi-turn context,
+  reply progress, new chats and browser diagnostics. Expose the provider through
+  ai-sdk's chat-web backend and the web-kimi Conductor configuration alias.
+
+  Explicit unknown chat-web providers now fail with a clear error instead of
+  silently opening ChatGPT. The existing kimi CLI backend is unchanged.
+
+- b16c1ae: Allow a shared daemon to run the AI side of a Global AI Backend task while code
+  stays on one of the user's own daemons. Advertise
+  `shared_ai_global_backend_v1` and forward the task id on remote exec, file, and
+  MCP requests so the backend can authorize only that task's remote binding.
+
+  Keep remote grants tied to active tasks: shared credentials cannot mint remote
+  bindings, renew them through restarts or persistent rounds, or reactivate ended
+  tasks through status updates. Check shared AI compatibility when restarting or
+  starting later rounds of an existing remote task too.
+
+- Updated dependencies [b124565]
+- Updated dependencies [0a9488e]
+  - @love-moon/ai-sdk@0.17.2
+  - @love-moon/conductor-sdk@0.17.2
+
 ## [0.17.1] - 2026-10-15
 
 ### Released packages
