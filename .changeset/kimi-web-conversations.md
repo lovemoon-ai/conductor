@@ -1,7 +1,7 @@
 ---
-"@love-moon/chat-web": minor
-"@love-moon/ai-sdk": minor
-"@love-moon/conductor-cli": minor
+"@love-moon/chat-web": patch
+"@love-moon/ai-sdk": patch
+"@love-moon/conductor-cli": patch
 ---
 
 Add Kimi website text conversations with persistent login, multi-turn context,

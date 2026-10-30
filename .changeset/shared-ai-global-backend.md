@@ -1,5 +1,5 @@
 ---
-"@love-moon/conductor-cli": minor
+"@love-moon/conductor-cli": patch
 ---
 
 Allow a shared daemon to run the AI side of a Global AI Backend task while code

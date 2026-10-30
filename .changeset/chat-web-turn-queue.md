@@ -1,6 +1,6 @@
 ---
-"@love-moon/chat-web": minor
-"@love-moon/ai-sdk": minor
+"@love-moon/chat-web": patch
+"@love-moon/ai-sdk": patch
 ---
 
 Add QueuedChatSession with a shared local browser broker and a FIFO turn queue
