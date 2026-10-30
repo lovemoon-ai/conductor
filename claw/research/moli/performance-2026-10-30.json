@@ -1,0 +1,677 @@
+{
+  "dateUTC": "2026-10-30",
+  "environment": {
+    "host": "macmini",
+    "os": "macOS 26.4",
+    "arch": "arm64",
+    "chip": "Apple M4",
+    "memoryGiB": 16,
+    "logicalCores": 10,
+    "node": "22.18.0",
+    "moli": "1.1.20",
+    "archiveSHA256": "03f47913a3795fc29a8d50e7c22be7ccbb8e74b715ffdf0b8da6b5e02390c89e"
+  },
+  "metric": {
+    "memory": "sum of proc_pid_rusage ri_phys_footprint over live descendants, MiB",
+    "cpu": "mach-timebase-converted CPU seconds divided by sample wall seconds; 100 percent is one logical core",
+    "sampleIntervalMs": 500,
+    "phaseWarmupSamplesExcluded": 5,
+    "scope": "controller plus live descendants; excludes detached crash reporters and unrelated applications"
+  },
+  "fourAuthenticatedChatsMeasured": false,
+  "deepseek": "Three dedicated test profiles reached sign_in; no valid 2 Kimi + 2 DeepSeek generation benchmark",
+  "scenarios": [
+    {
+      "name": "native-kimi",
+      "description": "Production ChatRuntime, two headed Chromium workers",
+      "startedAt": "2026-10-30T16:50:15.908Z",
+      "endedAt": "2026-10-30T16:52:14.947Z",
+      "restoreMs": 2602,
+      "phases": {
+        "idle-before": {
+          "samples": 30,
+          "medianMiB": 1361.58,
+          "p95MiB": 1407.95,
+          "peakMiB": 1411.01,
+          "meanCPUPercent": 7.74,
+          "p95CPUPercent": 22.15,
+          "medianProcessCount": 17.0,
+          "medianRoleMiB": {
+            "node-worker": 231.78,
+            "renderer": 676.87,
+            "gpu": 135.14,
+            "browser-main": 140.55,
+            "utility": 88.86,
+            "controller": 88.6
+          }
+        },
+        "active-1": {
+          "samples": 34,
+          "medianMiB": 1614.0,
+          "p95MiB": 1668.0,
+          "peakMiB": 1681.3,
+          "meanCPUPercent": 75.75,
+          "p95CPUPercent": 128.29,
+          "medianProcessCount": 17.0,
+          "medianRoleMiB": {
+            "node-worker": 196.98,
+            "renderer": 712.91,
+            "gpu": 369.39,
+            "browser-main": 141.16,
+            "utility": 89.0,
+            "controller": 90.99
+          }
+        },
+        "idle-between": {
+          "samples": 4,
+          "medianMiB": 1435.02,
+          "p95MiB": 1533.05,
+          "peakMiB": 1533.05,
+          "meanCPUPercent": 4.04,
+          "p95CPUPercent": 7.53,
+          "medianProcessCount": 17.0,
+          "medianRoleMiB": {
+            "node-worker": 197.37,
+            "renderer": 760.81,
+            "gpu": 153.56,
+            "browser-main": 141.3,
+            "utility": 88.89,
+            "controller": 93.09
+          }
+        },
+        "active-2": {
+          "samples": 28,
+          "medianMiB": 1655.88,
+          "p95MiB": 1708.22,
+          "peakMiB": 1709.97,
+          "meanCPUPercent": 82.16,
+          "p95CPUPercent": 131.27,
+          "medianProcessCount": 17.0,
+          "medianRoleMiB": {
+            "node-worker": 201.44,
+            "renderer": 771.71,
+            "gpu": 361.49,
+            "browser-main": 138.94,
+            "utility": 88.93,
+            "controller": 93.51
+          }
+        },
+        "idle-after": {
+          "samples": 48,
+          "medianMiB": 1176.21,
+          "p95MiB": 1562.1,
+          "peakMiB": 1664.91,
+          "meanCPUPercent": 6.94,
+          "p95CPUPercent": 38.15,
+          "medianProcessCount": 17.0,
+          "medianRoleMiB": {
+            "node-worker": 193.07,
+            "renderer": 537.56,
+            "gpu": 133.74,
+            "browser-main": 130.08,
+            "utility": 83.89,
+            "controller": 97.76
+          }
+        }
+      },
+      "turns": [
+        {
+          "provider": "kimi",
+          "index": 1,
+          "round": 1,
+          "durationMs": 16291,
+          "firstTextMs": 5474,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 83,
+          "wireChunkCount": null
+        },
+        {
+          "provider": "kimi",
+          "index": 0,
+          "round": 1,
+          "durationMs": 21374,
+          "firstTextMs": 9915,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 96,
+          "wireChunkCount": null
+        },
+        {
+          "provider": "kimi",
+          "index": 1,
+          "round": 2,
+          "durationMs": 17095,
+          "firstTextMs": 6093,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 96,
+          "wireChunkCount": null
+        },
+        {
+          "provider": "kimi",
+          "index": 0,
+          "round": 2,
+          "durationMs": 18013,
+          "firstTextMs": 6877,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 95,
+          "wireChunkCount": null
+        }
+      ]
+    },
+    {
+      "name": "moli-kimi-poll",
+      "description": "Unmodified Moli 1.1.20, raw CDP controller, two Kimi processes, DOM polling every 100 ms",
+      "startedAt": "2026-10-30T16:47:22.466Z",
+      "endedAt": "2026-10-30T16:49:17.576Z",
+      "restoreMs": 4139,
+      "phases": {
+        "idle-before": {
+          "samples": 31,
+          "medianMiB": 646.3,
+          "p95MiB": 661.35,
+          "peakMiB": 661.49,
+          "meanCPUPercent": 31.22,
+          "p95CPUPercent": 57.83,
+          "medianProcessCount": 3,
+          "medianRoleMiB": {
+            "controller": 41.89,
+            "moli": 604.39
+          }
+        },
+        "active-1": {
+          "samples": 32,
+          "medianMiB": 621.46,
+          "p95MiB": 655.58,
+          "peakMiB": 656.01,
+          "meanCPUPercent": 46.87,
+          "p95CPUPercent": 111.09,
+          "medianProcessCount": 3.0,
+          "medianRoleMiB": {
+            "controller": 34.27,
+            "moli": 586.32
+          }
+        },
+        "idle-between": {
+          "samples": 4,
+          "medianMiB": 610.29,
+          "p95MiB": 623.51,
+          "peakMiB": 623.51,
+          "meanCPUPercent": 26.67,
+          "p95CPUPercent": 30.63,
+          "medianProcessCount": 3.0,
+          "medianRoleMiB": {
+            "controller": 36.33,
+            "moli": 573.96
+          }
+        },
+        "active-2": {
+          "samples": 32,
+          "medianMiB": 635.73,
+          "p95MiB": 686.48,
+          "peakMiB": 715.23,
+          "meanCPUPercent": 48.07,
+          "p95CPUPercent": 148.62,
+          "medianProcessCount": 3.0,
+          "medianRoleMiB": {
+            "controller": 38.05,
+            "moli": 597.67
+          }
+        },
+        "idle-after": {
+          "samples": 48,
+          "medianMiB": 675.27,
+          "p95MiB": 675.62,
+          "peakMiB": 675.66,
+          "meanCPUPercent": 29.8,
+          "p95CPUPercent": 55.95,
+          "medianProcessCount": 3.0,
+          "medianRoleMiB": {
+            "controller": 41.83,
+            "moli": 633.44
+          }
+        },
+        "blank-after": {
+          "samples": 22,
+          "medianMiB": 192.26,
+          "p95MiB": 192.27,
+          "peakMiB": 192.27,
+          "meanCPUPercent": 1.19,
+          "p95CPUPercent": 2.88,
+          "medianProcessCount": 3.0,
+          "medianRoleMiB": {
+            "controller": 41.83,
+            "moli": 150.42
+          }
+        }
+      },
+      "turns": [
+        {
+          "provider": "kimi",
+          "index": 0,
+          "round": 1,
+          "durationMs": 16533,
+          "firstTextMs": 16029,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 1,
+          "wireChunkCount": 1
+        },
+        {
+          "provider": "kimi",
+          "index": 1,
+          "round": 1,
+          "durationMs": 20181,
+          "firstTextMs": 19675,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 1,
+          "wireChunkCount": 1
+        },
+        {
+          "provider": "kimi",
+          "index": 0,
+          "round": 2,
+          "durationMs": 16481,
+          "firstTextMs": 15978,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 1,
+          "wireChunkCount": 1
+        },
+        {
+          "provider": "kimi",
+          "index": 1,
+          "round": 2,
+          "durationMs": 20736,
+          "firstTextMs": 20231,
+          "complete": true,
+          "chars": 1491,
+          "source": "connect",
+          "textChangeCount": 1,
+          "wireChunkCount": 1
+        }
+      ]
+    }
+  ],
+  "memoryNormalization": {
+    "method": "Moli total minus Moli controller plus observed Chromium controller and Node workers; additive estimate, not measured Moli SDK integration",
+    "phases": {
+      "active-1": {
+        "estimatedSameWorkerLayerMiB": 875.16,
+        "estimatedMemoryReductionPercent": 45.78
+      },
+      "active-2": {
+        "estimatedSameWorkerLayerMiB": 892.63,
+        "estimatedMemoryReductionPercent": 46.09
+      },
+      "idle-after": {
+        "estimatedSameWorkerLayerMiB": 924.27,
+        "estimatedMemoryReductionPercent": 21.42
+      }
+    }
+  },
+  "fixture": [
+    {
+      "engine": "moli",
+      "browser": "Chrome/145.0.0.0",
+      "moliVersion": "1.1.20",
+      "cases": [
+        {
+          "case": "fetch:text/event-stream",
+          "headersMs": 0.6,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.3,
+              "lastChunkMs": 3017.7
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.5,
+              "lastChunkMs": 3017.9
+            }
+          },
+          "completeMs": 3018.4,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json",
+          "headersMs": 1.6,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.3,
+              "lastChunkMs": 3020.9
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.5,
+              "lastChunkMs": 3021
+            }
+          },
+          "completeMs": 3021.5,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/octet-stream",
+          "headersMs": 1.7,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.1,
+              "lastChunkMs": 3019.9
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.2,
+              "lastChunkMs": 3020
+            }
+          },
+          "completeMs": 3020.4,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:text/plain",
+          "headersMs": 1.5,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 302.1,
+              "lastChunkMs": 3017.1
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 302.2,
+              "lastChunkMs": 3017.2
+            }
+          },
+          "completeMs": 3017.4,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:follow",
+          "headersMs": 1.5,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.9,
+              "lastChunkMs": 3021.1
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 305,
+              "lastChunkMs": 3021.3
+            }
+          },
+          "completeMs": 3021.8,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:error",
+          "headersMs": 3016.4,
+          "readers": {
+            "original": {
+              "chunks": 1,
+              "firstChunkMs": 3016.9,
+              "lastChunkMs": 3016.9
+            },
+            "clone": {
+              "chunks": 1,
+              "firstChunkMs": 3016.9,
+              "lastChunkMs": 3016.9
+            }
+          },
+          "completeMs": 3017.0,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:manual",
+          "headersMs": 3019.6,
+          "readers": {
+            "original": {
+              "chunks": 1,
+              "firstChunkMs": 3020.1,
+              "lastChunkMs": 3020.1
+            },
+            "clone": {
+              "chunks": 1,
+              "firstChunkMs": 3020.1,
+              "lastChunkMs": 3020.1
+            }
+          },
+          "completeMs": 3020.1,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "xhr:text/event-stream",
+          "headersMs": 1.5,
+          "readers": {
+            "xhr": {
+              "chunks": 10,
+              "firstChunkMs": 302.8,
+              "lastChunkMs": 3018.5
+            }
+          },
+          "completeMs": 3019.9,
+          "bodyEqualityChecked": true
+        }
+      ]
+    },
+    {
+      "engine": "chromium",
+      "browser": "Chrome/148.0.7778.96",
+      "moliVersion": null,
+      "cases": [
+        {
+          "case": "fetch:text/event-stream",
+          "headersMs": 3,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 302,
+              "lastChunkMs": 3014.1
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 302.1,
+              "lastChunkMs": 3014.1
+            }
+          },
+          "completeMs": 3014.3,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json",
+          "headersMs": 1.5,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 303.7,
+              "lastChunkMs": 3020.5
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 303.8,
+              "lastChunkMs": 3020.6
+            }
+          },
+          "completeMs": 3021.2,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/octet-stream",
+          "headersMs": 3,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 305.4,
+              "lastChunkMs": 3021.6
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 305.5,
+              "lastChunkMs": 3021.8
+            }
+          },
+          "completeMs": 3022.3,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:text/plain",
+          "headersMs": 3,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 305.4,
+              "lastChunkMs": 3014
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 305.7,
+              "lastChunkMs": 3014.2
+            }
+          },
+          "completeMs": 3014.7,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:follow",
+          "headersMs": 2,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.1,
+              "lastChunkMs": 3023.8
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.2,
+              "lastChunkMs": 3023.9
+            }
+          },
+          "completeMs": 3024.3,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:error",
+          "headersMs": 2.5,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.1,
+              "lastChunkMs": 3020.3
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.2,
+              "lastChunkMs": 3020.5
+            }
+          },
+          "completeMs": 3021,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "fetch:application/connect+json:request-options:manual",
+          "headersMs": 3,
+          "readers": {
+            "original": {
+              "chunks": 10,
+              "firstChunkMs": 304.5,
+              "lastChunkMs": 3017.8
+            },
+            "clone": {
+              "chunks": 10,
+              "firstChunkMs": 304.7,
+              "lastChunkMs": 3017.9
+            }
+          },
+          "completeMs": 3018.4,
+          "bodyEqualityChecked": true
+        },
+        {
+          "case": "xhr:text/event-stream",
+          "headersMs": 305.7,
+          "readers": {
+            "xhr": {
+              "chunks": 10,
+              "firstChunkMs": 305.8,
+              "lastChunkMs": 3022.9
+            }
+          },
+          "completeMs": 3023.5,
+          "bodyEqualityChecked": true
+        }
+      ]
+    }
+  ],
+  "realKimiTraces": [
+    {
+      "engine": "moli",
+      "diagnosticRedirectOverride": false,
+      "complete": true,
+      "chars": 1491,
+      "durationMs": 18910,
+      "requestOptions": {
+        "type": "application/connect+json",
+        "connectAcceptEncoding": null,
+        "redirect": "error",
+        "bodyType": "Uint8Array"
+      },
+      "headersMs": 18858,
+      "firstBodyMs": 18858,
+      "firstTextMs": 18858,
+      "chunks": 1,
+      "wireBytes": 106299,
+      "networkCompletedMs": 18858,
+      "networkBytes": 106299
+    },
+    {
+      "engine": "chromium",
+      "diagnosticRedirectOverride": false,
+      "complete": true,
+      "chars": 1491,
+      "durationMs": 18197,
+      "requestOptions": {
+        "type": "application/connect+json",
+        "connectAcceptEncoding": null
+      },
+      "headersMs": 144,
+      "firstBodyMs": 144,
+      "firstTextMs": 6984,
+      "chunks": 747,
+      "wireBytes": 106563,
+      "networkCompletedMs": null,
+      "networkBytes": null
+    },
+    {
+      "engine": "moli-follow",
+      "diagnosticRedirectOverride": true,
+      "complete": false,
+      "chars": 0,
+      "durationMs": 120090,
+      "requestOptions": {
+        "type": "application/connect+json",
+        "connectAcceptEncoding": null,
+        "redirect": "error",
+        "bodyType": "Uint8Array"
+      },
+      "headersMs": 838,
+      "firstBodyMs": 854,
+      "firstTextMs": null,
+      "chunks": 1,
+      "wireBytes": 21,
+      "networkCompletedMs": 17797,
+      "networkBytes": 106823
+    }
+  ]
+}

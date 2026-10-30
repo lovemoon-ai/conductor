@@ -1,10 +1,12 @@
 # Moli 多站点聊天运行时调研
 
-调研日期为 2026-10-25。源码快照为 [26d2d182](https://github.com/lexmount/moli/tree/26d2d1826dd23878cff8ab3613f2bdf8842e0f3b)，本地实验使用官方 [v1.1.19 macOS arm64 release](https://github.com/lexmount/moli/releases/tag/v1.1.19)。源码 main 与发布二进制分别记录，不将两者视为同一构建。
+基础能力调研日期为 2026-10-25。源码快照为 [26d2d182](https://github.com/lexmount/moli/tree/26d2d1826dd23878cff8ab3613f2bdf8842e0f3b)，本地实验使用官方 [v1.1.19 macOS arm64 release](https://github.com/lexmount/moli/releases/tag/v1.1.19)。源码 main 与发布二进制分别记录，不将两者视为同一构建。
 
 ## 结论与适用范围
 
-Moli 有帮助，值得成为 [RFC 0042](../../rfc/0042-chat-browser-runtime.md) 的可选执行引擎。它的无常驻窗口、按需布局设计与面向 AI 的后台运行时一致。本地实验验证了存储隔离、并行增量流和独立进程的故障边界；真实 Kimi、DeepSeek、ChatGPT、Claude 的登录、连续对话和生产并发仍需逐站点验证。
+第一版继续使用 Chromium。2026-10-30 的 [真实 Kimi 并行负载评估](performance.md) 发现，Moli 1.1.20 有内存优势，但真实 Kimi 的增量采集和完成确认尚未通过，空闲 CPU 也更高。下文七项实验验证的是本地 fixture 的基础能力，不能替代真实站点验收。
+
+Moli 的无常驻窗口、按需布局设计与面向 AI 的后台运行时一致，仍可作为 [RFC 0042](../../rfc/0042-chat-browser-runtime.md) 的后续可选执行引擎。真实 DeepSeek、ChatGPT、Claude 的兼容性和混合并发需要分别验证。
 
 建议先通过独立进程接入，保留 Chromium 后端。每个 chat 使用一个 `moli serve`、专用 profile 和独立 CDP 连接；外部 AI 继续使用统一聊天协议。通过目标站点验证后，再决定是否把适配能力进一步内嵌到 Rust 宿主。
 
@@ -64,7 +66,7 @@ node claw/research/moli/smoke.mjs /absolute/path/to/moli /tmp/moli-smoke-results
 
 脚本无需额外 npm 依赖，使用 Node 22 的 fetch 与 WebSocket，创建临时 profile 和本地服务，结束时清理自己启动的进程。临时 profile 留在系统临时目录供排查，内容只含自建 fixture。七项检查覆盖基础能力，其中一项验证的是预期的能力拒绝，不代表七项产品功能已完成。
 
-本轮未测试 IndexedDB、真实站点认证、文件上传、模型切换、服务端 stop、真实对话恢复或账号限流。未对真实聊天负载测量内存、吞吐或长期稳定性；上游抓取 benchmark 的内存优势不能直接用于估计 N 个 chat 的容量。
+2026-10-25 的基础实验未测试 IndexedDB、真实站点认证、文件上传、模型切换、服务端 stop、真实对话恢复或账号限流。未对真实聊天负载测量内存、吞吐或长期稳定性；上游抓取 benchmark 的内存优势不能直接用于估计 N 个 chat 的容量。
 
 ## 建议的接入顺序
 
