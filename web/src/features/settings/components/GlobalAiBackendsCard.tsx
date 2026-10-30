@@ -16,7 +16,8 @@ type DaemonRow = {
 
 /**
  * RFC 0041: pick which daemon × AI backends every project may run tasks on.
- * Only your own daemons are listed (shared ones run on someone else's machine).
+ * Shared daemons are listed too: they can run the AI while the code stays on
+ * the project's own daemon.
  * A daemon that is offline keeps its saved entries, greyed out; they can be
  * removed but not added until it reconnects.
  */
@@ -29,12 +30,10 @@ export function GlobalAiBackendsCard({ agents }: { agents: Agent[] }) {
 
   const rows = useMemo<DaemonRow[]>(() => {
     const enabled = new Set(backends.map(globalAiBackendKey));
-    const ownDaemons = agents.filter(
-      (agent) => !agent.host.startsWith('conductor-fire-') && !agent.shared,
-    );
-    const hosts = [...new Set([...ownDaemons.map((agent) => agent.host), ...backends.map((entry) => entry.host)])];
+    const onlineDaemons = agents.filter((agent) => !agent.host.startsWith('conductor-fire-'));
+    const hosts = [...new Set([...onlineDaemons.map((agent) => agent.host), ...backends.map((entry) => entry.host)])];
     return hosts.map((host) => {
-      const agent = ownDaemons.find((candidate) => candidate.host === host) ?? null;
+      const agent = onlineDaemons.find((candidate) => candidate.host === host) ?? null;
       const supported = agent?.supportedBackends ?? [];
       const saved = backends.filter((entry) => entry.host === host).map((entry) => entry.backend);
       return {

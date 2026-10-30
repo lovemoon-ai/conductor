@@ -154,6 +154,50 @@ test("runRemoteExec posts argv to the target daemon and returns its exit code", 
   });
 });
 
+test("remote JSON requests forward the task id on exec, cancellation and wait polling", async (t) => {
+  const previousTaskId = process.env.CONDUCTOR_TASK_ID;
+  process.env.CONDUCTOR_TASK_ID = " task-123 ";
+  t.after(() => {
+    if (previousTaskId === undefined) delete process.env.CONDUCTOR_TASK_ID;
+    else process.env.CONDUCTOR_TASK_ID = previousTaskId;
+  });
+
+  const { fetch, calls } = makeFetch([
+    { body: { runId: "run-task", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: { runId: "run-task", status: "cancelled", exitCode: null, stdoutTail: "" } },
+    { body: { runId: "run-task", status: "running", exitCode: null, stdoutTail: "" } },
+    { body: completedRun({ runId: "run-task" }) },
+  ]);
+  let clock = 0;
+  await runRemoteExec(["-t", "ubuntu", "--timeout", "1s", "--kill-on-timeout", "sleep", "60"], {
+    console: makeConsole(), fetch, config, sleep: async () => {}, now: () => (clock += 5_000),
+  });
+  await runRemoteWait(["-t", "ubuntu", "run-task"], {
+    console: makeConsole(), fetch, config, sleep: async () => {},
+  });
+
+  assert.deepEqual(calls.map((call) => call.init.method), ["POST", "DELETE", "GET", "GET"]);
+  assert.ok(calls.every((call) => call.init.headers["X-Conductor-Task-Id"] === "task-123"));
+});
+
+test("remote requests omit the task id header when the env var is unset or blank", async (t) => {
+  const previousTaskId = process.env.CONDUCTOR_TASK_ID;
+  t.after(() => {
+    if (previousTaskId === undefined) delete process.env.CONDUCTOR_TASK_ID;
+    else process.env.CONDUCTOR_TASK_ID = previousTaskId;
+  });
+
+  for (const taskId of [undefined, "", " \t\n"]) {
+    if (taskId === undefined) delete process.env.CONDUCTOR_TASK_ID;
+    else process.env.CONDUCTOR_TASK_ID = taskId;
+    const { fetch, calls } = makeFetch([{ body: completedRun() }]);
+    await runRemoteExec(["-t", "ubuntu", "ls"], { console: makeConsole(), fetch, config });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].init.headers.Authorization, "Bearer test-token");
+    assert.equal("X-Conductor-Task-Id" in calls[0].init.headers, false);
+  }
+});
+
 // Regression: the POST used to be handed the whole `--timeout`, so a single
 // request blocked for the entire deadline and `now() < deadline` was already
 // false by the time the poll loop was reached — the polling path (and the

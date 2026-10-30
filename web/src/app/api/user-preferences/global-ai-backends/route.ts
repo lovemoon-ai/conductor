@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth/middleware";
 import { realtimeHub } from "@/lib/realtime/hub";
 import { isConductorFireHost } from "@/lib/subscription/plan-limits";
-import { describeGlobalBackend, findSharedGuestHosts } from "@/lib/tasks/global-backend";
+import { describeGlobalBackend } from "@/lib/tasks/global-backend";
 import {
   getGlobalAiBackends,
   MAX_GLOBAL_AI_BACKENDS,
@@ -59,16 +59,13 @@ export async function PUT(request: NextRequest) {
   }
   const requested = normalizeGlobalAiBackends(rawList);
 
-  // New entries must name a backend an own, online daemon advertises right
-  // now; entries already saved stay valid while their daemon is offline.
+  // New entries must name a backend an online daemon advertises right now;
+  // entries already saved stay valid while their daemon is offline. A shared
+  // daemon may be the AI side, never the remote code side (RFC 0041).
   const existing = await getGlobalAiBackends(user.id);
   const agents = realtimeHub.getAgentsForUser(user.id);
-  const shared = await findSharedGuestHosts(
-    user.id,
-    [...new Set(requested.map((entry) => entry.host))],
-  );
   for (const entry of requested) {
-    const problem = validateEntry(entry, { existing, agents, shared });
+    const problem = validateEntry(entry, { existing, agents });
     if (problem) {
       return NextResponse.json({ error: problem }, { status: 400 });
     }
@@ -110,15 +107,11 @@ const validateEntry = (
   context: {
     existing: GlobalAiBackend[];
     agents: Array<{ host: string; supportedBackends: string[] }>;
-    shared: Set<string>;
   },
 ): string | null => {
   const label = describeGlobalBackend(entry);
   if (isConductorFireHost(entry.host)) {
     return `${label}: a conductor fire process cannot be a global AI backend`;
-  }
-  if (context.shared.has(entry.host)) {
-    return `${label}: ${entry.host} is shared with you; only your own daemons can be global AI backends`;
   }
   if (context.existing.some((saved) => saved.host === entry.host && saved.backend === entry.backend)) {
     return null;

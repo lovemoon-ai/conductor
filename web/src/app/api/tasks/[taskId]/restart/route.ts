@@ -66,6 +66,8 @@ import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
 import {
+  findSharedGuestHosts,
+  SHARED_AI_GLOBAL_BACKEND_CAPABILITY,
   isGlobalBackendAgentHost,
   readTaskGlobalBackend,
   resolveCrossDaemonRemoteBinding,
@@ -534,6 +536,30 @@ export async function POST(
       },
       { status: 409 },
     );
+  }
+
+  // An inherited remote binding bypasses resolveCrossDaemonRemoteBinding.
+  // Check it too: an old shared AI cannot send the task authorization header.
+  const inheritedRemote =
+    parseRemoteWorktreeLaunchConfig(sourceLaunchConfig) ??
+    parseRemoteWorkspaceLaunchConfig(sourceLaunchConfig);
+  if (inheritedRemote && !isCodeMoveRequest && inheritedRemote.host !== restartAgentHost) {
+    const shared = await findSharedGuestHosts(user.id, [restartAgentHost, inheritedRemote.host]);
+    if (shared.has(inheritedRemote.host)) {
+      return NextResponse.json(
+        { error: "global_backend cannot use a shared daemon for code" },
+        { status: 403 },
+      );
+    }
+    if (
+      shared.has(restartAgentHost) &&
+      !restartAgentCapabilities.includes(SHARED_AI_GLOBAL_BACKEND_CAPABILITY)
+    ) {
+      return NextResponse.json(
+        { error: `Upgrade the conductor CLI on ${restartAgentHost} to use a shared daemon as a global AI backend` },
+        { status: 409 },
+      );
+    }
   }
 
   const requestId = randomUUID();

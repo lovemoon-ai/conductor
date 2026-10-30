@@ -823,14 +823,19 @@ test("Claude gets an stdio mcpServers entry and an allow rule, merged with the u
   assert.ok(!JSON.stringify(options).includes("secret"), "the token must never reach argv");
 });
 
-test("Codex gets -c mcp_servers overrides that forward the token by name only", () => {
+test("Codex gets -c mcp_servers overrides that forward the token and task id by name only", () => {
   const options = buildRemoteWorktreeSessionOptions({
     backend: "codex",
     binding,
     configFile: "/home/u/.conductor/config-dev.yaml",
     execPath: "/usr/bin/node",
     remoteScript: "/cli/bin/conductor-remote.js",
-    env: { CONDUCTOR_AGENT_TOKEN: "secret", CONDUCTOR_BACKEND_URL: "https://x", CONDUCTOR_HOME: "" },
+    env: {
+      CONDUCTOR_AGENT_TOKEN: "secret",
+      CONDUCTOR_BACKEND_URL: "https://x",
+      CONDUCTOR_TASK_ID: "task-123",
+      CONDUCTOR_HOME: "",
+    },
   });
   assert.deepEqual(options.configOverrides, [
     'mcp_servers.conductor_remote.command="/usr/bin/node"',
@@ -838,10 +843,11 @@ test("Codex gets -c mcp_servers overrides that forward the token by name only", 
       "/cli/bin/conductor-remote.js", "mcp", "--host", "b", "--root", binding.root, "--cwd", binding.cwd,
       "--config-file", "/home/u/.conductor/config-dev.yaml",
     ])}`,
-    'mcp_servers.conductor_remote.env_vars=["CONDUCTOR_AGENT_TOKEN","CONDUCTOR_BACKEND_URL"]',
+    'mcp_servers.conductor_remote.env_vars=["CONDUCTOR_AGENT_TOKEN","CONDUCTOR_BACKEND_URL","CONDUCTOR_TASK_ID"]',
     "mcp_servers.conductor_remote.tool_timeout_sec=900",
   ]);
   assert.ok(!JSON.stringify(options).includes("secret"));
+  assert.ok(!JSON.stringify(options).includes("task-123"));
 });
 
 test("a permission mode the user chose is not widened by an allow rule", () => {

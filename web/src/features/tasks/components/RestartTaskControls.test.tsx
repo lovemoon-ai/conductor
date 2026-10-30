@@ -14,6 +14,7 @@ let agentsState = {
     supportedBackends: string[];
     runtimeBackendMap?: Record<string, string>;
     capabilities?: string[];
+    shared?: boolean;
   }>,
 };
 let projectsState = {
@@ -1042,7 +1043,7 @@ describe('RestartTaskControls', () => {
 
   describe('global AI in the Backend dropdown', () => {
     const REMOTE_CAPS = ['remote_exec', 'remote_file'];
-    const GLOBAL_CAPS = ['global_backend_v1'];
+    const GLOBAL_CAPS = ['global_backend_v1', 'shared_ai_global_backend_v1'];
     const baseTask = {
       id: 'task-1',
       title: 'Stopped Task',
@@ -1093,6 +1094,40 @@ describe('RestartTaskControls', () => {
           agentHost: 'gpu-box',
         });
       });
+    });
+
+    it('allows a shared daemon as the global AI while keeping code on an own daemon', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: REMOTE_CAPS },
+          { host: 'gpu-box', supportedBackends: ['claude'], capabilities: GLOBAL_CAPS, shared: true },
+        ],
+      };
+      globalBackendsState = { ...globalBackendsState, backends: [{ host: 'gpu-box', backend: 'claude' }] };
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      const option = screen.getByRole('option', { name: 'claude @ gpu-box' }) as HTMLOptionElement;
+      expect(option).toBeEnabled();
+      fireEvent.change(screen.getByLabelText('Backend'), { target: { value: option.value } });
+      expect(screen.getByText(/AI runs on gpu-box and works on daemon-1/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'New task' })).toBeEnabled();
+    });
+
+    it('greys out global AI when the selected code daemon is shared', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: ['codex'], capabilities: REMOTE_CAPS, shared: true },
+          { host: 'gpu-box', supportedBackends: ['claude'], capabilities: GLOBAL_CAPS },
+        ],
+      };
+      globalBackendsState = { ...globalBackendsState, backends: [{ host: 'gpu-box', backend: 'claude' }] };
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      expect(screen.getByRole('option', {
+        name: 'claude @ gpu-box — daemon-1 is shared with you; choose your own daemon for task code',
+      })).toBeDisabled();
     });
 
     it('greys out a global AI when the code daemon cannot be driven remotely', () => {

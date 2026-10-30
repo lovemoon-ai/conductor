@@ -83,7 +83,7 @@ describe("/api/user-preferences/global-ai-backends", () => {
     expect((await extractJson(response)).error).toBe("codex @ studio: daemon studio is offline");
   });
 
-  it("rejects unsupported backends, fire hosts, shared daemons and malformed entries", async () => {
+  it("rejects unsupported backends, fire hosts and malformed entries", async () => {
     let response = await put({ backends: [{ host: "ubuntu", backend: "claude" }] });
     expect(response.status).toBe(400);
     expect((await extractJson(response)).error).toMatch(/does not support claude/);
@@ -91,16 +91,18 @@ describe("/api/user-preferences/global-ai-backends", () => {
     response = await put({ backends: [{ host: "conductor-fire-macmini-1", backend: "claude" }] });
     expect(response.status).toBe(400);
 
-    vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "ubuntu" }] as any);
-    response = await put({ backends: [{ host: "ubuntu", backend: "codex" }] });
-    expect(response.status).toBe(400);
-    expect((await extractJson(response)).error).toMatch(/shared with you/);
-
     response = await put({ backends: [{ host: "macmini" }] });
     expect(response.status).toBe(400);
     response = await put({ backends: "macmini" });
     expect(response.status).toBe(400);
     expect(db.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("allows a shared daemon as an AI backend", async () => {
+    vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "ubuntu" }] as any);
+    const response = await put({ backends: [{ host: "ubuntu", backend: "codex" }] });
+    expect(response.status).toBe(200);
+    expect(await extractJson(response)).toEqual({ backends: [{ host: "ubuntu", backend: "codex" }] });
   });
 
   it("is unavailable to a shared daemon token", async () => {

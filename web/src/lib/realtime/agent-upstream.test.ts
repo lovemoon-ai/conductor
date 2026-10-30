@@ -296,6 +296,56 @@ describe("commitTaskStatusUpdate", () => {
     expect(enqueueAndAttemptAgentCommand).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["completed", "killed"])("does not let a shared AI reactivate a %s global task", async (status) => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1", projectId: "project-1", status,
+      agentHost: "daemon-a", executionHost: "daemon-a", taskType: "ai_task",
+      metadata: JSON.stringify({ globalBackend: { host: "daemon-a", backend: "codex" } }),
+    } as any);
+
+    const result = await commitTaskStatusUpdate({
+      userId: "user-1", tokenScope: "daemon_share", agentHost: "daemon-a",
+      taskId: "task-1", status: "running",
+    });
+
+    expect(result.status).toBe(status);
+    expect(db.task.update).not.toHaveBeenCalled();
+    expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
+  it("guards shared global task progress against a concurrent stop at write time", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1", projectId: "project-1", status: "init",
+      agentHost: "daemon-a", executionHost: "daemon-a", taskType: "ai_task",
+      metadata: { globalBackend: { host: "daemon-a", backend: "codex" } },
+    } as any);
+
+    await commitTaskStatusUpdate({
+      userId: "user-1", tokenScope: "daemon_share", agentHost: "daemon-a",
+      taskId: "task-1", status: "running", statusEventId: "evt-progress",
+    });
+
+    expect(db.task.update).toHaveBeenCalledWith({
+      where: { id: "task-1", achievedAt: null, status: { notIn: ["completed", "killed", "killing"] } },
+      data: { status: "running" },
+    });
+  });
+
+  it("fails closed if a stop wins a race with a shared AI running report", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue({
+      id: "task-1", projectId: "project-1", status: "init",
+      agentHost: "daemon-a", executionHost: "daemon-a", taskType: "ai_task",
+      metadata: { globalBackend: { host: "daemon-a", backend: "codex" } },
+    } as any);
+    vi.mocked(db.task.update).mockRejectedValueOnce({ code: "P2025" });
+
+    await expect(commitTaskStatusUpdate({
+      userId: "user-1", tokenScope: "daemon_share", agentHost: "daemon-a",
+      taskId: "task-1", status: "running",
+    })).rejects.toMatchObject({ code: "P2025" });
+    expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+  });
+
   it("ignores a terminal confirmation for an achieved task without another stop", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-1",

@@ -137,6 +137,26 @@ describe("daemon-share scope gate", () => {
       expect.anything(),
       "/api/agents/shared-alice-mbp/files/abc-123/content",
       null,
+      null,
+    );
+  });
+
+  it("passes the remote task id to the share-scope check", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      token: "share-token",
+      url: "http://localhost/api/agents/own-code/exec",
+      headers: { "X-Conductor-Task-Id": "task-1" },
+      body: { command: "pwd", args: [] },
+    });
+
+    await getAuthUser(request as NextRequest);
+
+    expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
+      expect.anything(),
+      "/api/agents/own-code/exec",
+      { command: "pwd", args: [] },
+      "task-1",
     );
   });
 
@@ -203,6 +223,7 @@ describe("daemon-share scope gate", () => {
     expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
       expect.objectContaining({ guestHost: "shared-alice-mbp" }),
       "/api/tasks/t1",
+      null,
       null,
     );
   });

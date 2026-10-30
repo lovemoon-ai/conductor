@@ -3928,6 +3928,9 @@ export function startDaemon(config = {}, deps = {}) {
     // another daemon over `conductor remote` and binds the remote_* MCP tools
     // to a remoteWorkspace as well as a remoteWorktree.
     "global_backend_v1",
+    // A shared AI also sends CONDUCTOR_TASK_ID on every remote request so the
+    // backend can grant only that task's A → B remote permission.
+    "shared_ai_global_backend_v1",
     "backend_session_list",
     CUSTOM_COMMANDS_CAPABILITY,
     UPDATE_DAEMON_CAPABILITY,

@@ -98,6 +98,7 @@ const buildTask = (overrides: Record<string, unknown> = {}) => ({
 describe("/api/tasks/[taskId]/restart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.daemonShare.findMany).mockResolvedValue([]);
     vi.spyOn(authService, "authenticateToken").mockResolvedValue({
       id: "user-1",
       email: "test@example.com",
@@ -316,6 +317,38 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect((restartOutbox![0] as any).data.agentHost).toBe("daemon-2");
   });
 
+  it.each([
+    { sharedHost: "daemon-2", capabilities: ["global_backend_v1"], status: 409 },
+    { sharedHost: "ubuntu", capabilities: ["global_backend_v1", "shared_ai_global_backend_v1"], status: 403 },
+    { sharedHost: "daemon-2", capabilities: ["global_backend_v1", "shared_ai_global_backend_v1"], status: 200 },
+  ])("validates shared daemons for inherited remote bindings: %j", async ({ sharedHost, capabilities, status }) => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({
+      metadata: JSON.stringify({ globalBackend: { host: "daemon-1", backend: "codex" } }),
+      launchConfig: JSON.stringify({
+        remoteWorkspace: { host: "ubuntu", projectId: "proj-code", repoRoot: "/repo", workspacePath: "/repo" },
+      }),
+    }) as any);
+    vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: sharedHost }] as any);
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "a1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "a2", host: "daemon-2", supportedBackends: ["codex"], capabilities },
+    ] as any);
+
+    const response = await POST(createMockRequest({
+      method: "POST", token: createTestToken("user-1"),
+      body: { strategy: "new_task", agent_host: "daemon-2" },
+    }), { params: Promise.resolve({ taskId: "task-1" }) });
+
+    expect(response.status).toBe(status);
+    if (status !== 200) {
+      expect(db.task.create).not.toHaveBeenCalled();
+      expect(db.agentOutbox.create).not.toHaveBeenCalled();
+    } else {
+      const created = vi.mocked(db.task.create).mock.calls.at(-1)?.[0] as any;
+      expect(JSON.parse(created.data.launchConfig).remoteWorkspace.host).toBe("ubuntu");
+    }
+  });
+
   it("carries the source task's labels over to a new-task successor", async () => {
     // Regression: "new task from this" continues the same work, but the
     // successor's metadata was built from scratch, so every restart silently
@@ -411,7 +444,7 @@ describe("/api/tasks/[taskId]/restart", () => {
 
   describe("new task on another daemon binds the source workspace remotely", () => {
     const REMOTE_CAPS = ["remote_exec", "remote_file"];
-    const TARGET_CAPS = ["global_backend_v1", "restart_first_message"];
+    const TARGET_CAPS = ["global_backend_v1", "shared_ai_global_backend_v1", "restart_first_message"];
     const agents = (sourceCaps: string[] = REMOTE_CAPS) => [
       { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: sourceCaps },
       { id: "agent-2", host: "daemon-2", supportedBackends: ["codex"], capabilities: TARGET_CAPS },
@@ -684,13 +717,21 @@ describe("/api/tasks/[taskId]/restart", () => {
       expect(JSON.parse(lastCreate().data.metadata).globalBackend).toBeUndefined();
     });
 
-    it("falls back when a daemon is shared from another account", async () => {
+    it("allows a shared AI target but falls back for a shared code source", async () => {
       vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue(agents() as any);
-      vi.mocked(db.daemonShare.findMany).mockResolvedValueOnce([{ guestHost: "daemon-2" }] as any);
+      mockPrismaQuery(db.daemonShare.findMany).mockImplementation(async ({ where }: any) =>
+        where.guestHost.in.includes("daemon-2") ? [{ guestHost: "daemon-2" }] as any : [],
+      );
 
-      const response = await restartOn();
+      const allowed = await restartOn();
 
-      expect(response.status).toBe(200);
+      expect(allowed.status).toBe(200);
+      expect(JSON.parse(lastCreate().data.launchConfig).remoteWorkspace).toMatchObject({ host: "daemon-1" });
+      expect(JSON.parse(lastCreate().data.metadata).globalBackend).toEqual({ host: "daemon-2", backend: "codex" });
+
+      vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "daemon-1" }] as any);
+      const refused = await restartOn();
+      expect(refused.status).toBe(200);
       expect(lastCreate().data.launchConfig).toBeNull();
     });
 

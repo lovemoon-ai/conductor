@@ -42,7 +42,7 @@ dang217
 
 ## Non-Goals
 
-- 不跨账号：全局后端和目标项目都必须属于当前用户；DaemonShare 分享来的 daemon 既不能设为全局后端，也不能作为目标。
+- 不跨账号读写项目：目标项目必须属于当前用户。DaemonShare 分享来的 daemon 可以作为 AI 端 A，但不能作为代码端 B；仅 full token 创建的指定任务获得 A → B 的任务级 remote 权限。
 - MCP 远程文件工具由 RFC 0040（`conductor remote mcp`）提供：`remoteWorktree` 与本 RFC 的 `remoteWorkspace` 都会让 fire 挂上绑定到 B 的 `remote_*` 工具（direct 模式绑定到仓库根，起始目录为项目目录）。
 - 不做经后端中转的模型出网（0038 方案 A）。
 - 一期不支持多 agent 组、PTY 任务、附属终端开到 B。
@@ -59,11 +59,11 @@ dang217
 
   沿用 `lib/user-preferences.ts` 的 get/set 模式与 `user-preferences/*` 路由模式（参考 `task-list/route.ts`），不改 schema。
 - API：`GET / PUT /api/user-preferences/global-ai-backends`。PUT 校验：
-  - 每项 `host` 是当前用户自己的 daemon、不是 fire host（`conductor-fire-*`）。新加的条目要求 daemon 在线且当前声明了该后端；已保存的条目在 daemon 离线时保留（可删不可加）。
+  - 每项 `host` 是当前用户自己的 daemon 或分享来的 AI daemon、不是 fire host（`conductor-fire-*`）。新加的条目要求 daemon 在线且当前声明了该后端；已保存的条目在 daemon 离线时保留（可删不可加）。
   - `backend` 为已知后端类型（`normalizeBackendType`）。
   - `daemon_share` scope 的 token 403。
   - 去重，数量上限 32。
-- 设置页（`web/src/app/app/settings/page.tsx`）新增一节 "Global AI backends"：按 daemon 分组列出其 `supportedBackends` 的勾选框；离线 daemon 仍显示已勾选项（置灰、不可新勾）。
+- 设置页（`web/src/app/app/settings/page.tsx`）新增一节 "Global AI backends"：按 daemon 分组列出其 `supportedBackends` 的勾选框，包含可充当 AI 端的共享 daemon；离线 daemon 仍显示已勾选项（置灰、不可新勾）。
 
 ### 2. 创建任务对话框
 
@@ -96,6 +96,8 @@ dang217
 | A == B 的 daemon | 忽略 `global_backend`，按普通本地任务处理（`worktree` 照常生效） |
 | A 离线 / 不支持该后端 / runtime-health 预检不过 | 409（沿用现有检查） |
 | A 的 CLI 没有声明 `global_backend_v1`（旧版本，驱动不了 `conductor remote`、不会给 remoteWorkspace 挂 MCP 工具） | 409，对话框里该项置灰并提示升级 |
+| A 是共享 daemon，但 CLI 没有声明 `shared_ai_global_backend_v1`（不会发送任务级 remote 授权头） | 409，对话框里该项置灰并提示升级 |
+| B 是共享 daemon（包括 A == B 的本地快捷路径） | 403 |
 | B 离线 / 未声明 `remote_exec` + `remote_file` | 409 |
 
 重挂载（保持 `agentHost = project.daemonHost` 不变量，0038 §2 的理由不变）：
@@ -117,7 +119,7 @@ dang217
 
 - 停止、日志、消息：`agentHost = A`，走现有路由，零改动。
 - 重启：restart 会建后继任务。现有代码后继**不继承 `secondProjectId`**，`remoteWorkspace` 也是新 key，需要补上：源任务带 `metadata.globalBackend` 时，后继沿用 `secondProjectId`、`remoteWorktree` 或 `remoteWorkspace`、`metadata.globalBackend`（`worktree.ts` 里继承 `remoteWorktree` 的分支同样处理 `remoteWorkspace`）。已有任务重启不受"是否仍在全局后端设置中"约束（不追溯），只约束新建。
-- "New task from this" 选了**另一台 daemon**、源任务是普通本地任务时，后继绑定源 daemon 上的源任务目录，并写入 `metadata.globalBackend`：源任务在本地 worktree 里 → `remoteWorktree` 指向同一个 worktree（后继与源任务共同持有它；`hasSameTaskWorktreeRoot` 在调用方传入任务 host 后，能把本地 worktree 和同 host 上的远程 worktree 认作同一个，所以谁最后归档谁清理）；否则 → `remoteWorkspace` 直接模式。条件是目标 daemon 声明了 `global_backend_v1`、源 daemon 在线且支持 remote exec/file，并且两台都不是分享来的 daemon；不满足时回退到旧行为。反过来，把后继再移回持有文件的那台 daemon 时，恢复为本地任务（`cwd` 或同一个本地 worktree），并去掉 `globalBackend`。凡是后继仍带远程绑定，首条 prompt 都会在 handoff（或用户填的首条消息）外包一层操作规程（`[conductor:remote-workspace]`，指向已存在的目录，不重建 worktree）。
+- "New task from this" 选了**另一台 daemon**、源任务是普通本地任务时，后继绑定源 daemon 上的源任务目录，并写入 `metadata.globalBackend`：源任务在本地 worktree 里 → `remoteWorktree` 指向同一个 worktree（后继与源任务共同持有它；`hasSameTaskWorktreeRoot` 在调用方传入任务 host 后，能把本地 worktree 和同 host 上的远程 worktree 认作同一个，所以谁最后归档谁清理）；否则 → `remoteWorkspace` 直接模式。条件是目标 daemon 声明了 `global_backend_v1`、源 daemon 在线且支持 remote exec/file，并且持有代码的源 daemon 不是分享来的 daemon；共享 AI 目标还必须声明 `shared_ai_global_backend_v1`，不满足时回退到旧行为。反过来，把后继再移回持有文件的那台 daemon 时，恢复为本地任务（`cwd` 或同一个本地 worktree），并去掉 `globalBackend`。凡是后继仍带远程绑定，首条 prompt 都会在 handoff（或用户填的首条消息）外包一层操作规程（`[conductor:remote-workspace]`，指向已存在的目录，不重建 worktree）。
 - 持续任务（persistent）新一轮：`inherit` 与跨 daemon 都保留 `remoteWorktree` / `remoteWorkspace` 并重发对应操作规程；对全局后端任务，`worktree: "new"` 在 B 上新建 worktree，`"none"` 回到 B 的项目目录，而不是在 A 本地。
 - 删除 / 归档：worktree 模式按 `remoteWorktree.host` 清理 B 上的 worktree，复用 0038 的 `worktree.ts` / `teardown.ts`，零改动；direct 模式无需清理（E2E 覆盖两种）。
 - Move：改 `secondProjectId` 只影响展示，不改变远程目标，沿用现有行为。
@@ -127,6 +129,19 @@ dang217
 - 任务卡：不新增醒目标签。worktree 模式复用 0038 已有的 `host:branch` 小标签（`TaskItem.tsx:300`，host 是 B）；direct 模式没有分支，不显示标签（与本地不勾 worktree 一致）。"AI on macmini (claude)" 放在任务卡的 tooltip 里。
 - 任务详情 / 诊断信息：诊断快照已有 `agentHost`，即 AI 所在机器，无需新增。
 - 设置页是唯一的"主入口"，任务列表不出现新的视觉元素。
+
+### 6. 共享 daemon 作为 AI 端的最小授权（2026-10-31）
+
+共享 daemon 运行在机主机器上，其 `daemon_share` token 也可被机主读取，因此不能为了本功能直接放宽 token 的 host pinning。采用任务级授权：
+
+- full-token 用户创建 A → B 的 Global Backend 任务后，任务行由服务端写入 `metadata.globalBackend` 与 `remoteWorkspace` / `remoteWorktree`。A 可以是共享 daemon，B 必须是用户自己的 daemon。
+- CLI 的 fire / MCP 在所有 remote HTTP 请求上发送 `X-Conductor-Task-Id`。共享 AI 还必须声明 `shared_ai_global_backend_v1`，避免旧 CLI 创建成功后所有 remote 请求 401。
+- `daemon_share` scope 只在 `/api/agents/<B>/exec` 与 `/files` 的必要子路径上尝试跨 host 授权；校验任务属于当前用户、活跃且未归档、`agentHost = A`、metadata 与 remote binding 匹配，以及 B 的项目属于用户且 B 不是共享 daemon。
+- share token 不能直接创建或 PATCH 上述 server-owned 授权字段，防止自助伪造 A → B 绑定。共享端不能自行重启、开启持久任务的新一轮、修改任务类型或通过 PATCH / 状态上报重新激活已结束任务；这些授权续期由用户的 full token 发起。状态写入也检查数据库当前状态，防止并发停止被旧的 running 上报覆盖。
+- 已有远程绑定的重启和持久任务新一轮同样检查共享 AI 的新 capability，以及 B 不是共享 daemon。普通本地源任务通过 “New task from this” 转为远程任务时，代码项目也可能是用户未绑定 daemon 的默认项目；此时以服务端保存的 remote host 检查 B 的共享状态。
+- agent WS、app WS、daemon restart/update 等其他 host 权限保持不变。
+
+这不是对共享机主的绝对隔离：机主在任务活跃期间仍能持有同一 token 和 task id。买到的是系统不会给共享 token 预先授予常驻的全设备权限，放行范围是用户明确创建的任务方向、remote 必需路由和任务生命周期。remote exec 本身仍是代码 daemon 用户权限的 shell，不能防止已获信任的机主在授权期间读取文件、凭据或留下持久改动；本方案依赖双方互信，不提供仓库级沙箱。
 
 ## Implementation Plan
 
@@ -155,7 +170,8 @@ dang217
 ## Test Plan
 
 - 单元 / API（`cd web && pnpm test`）：
-  - global-ai-backends：GET 默认空；PUT 正常写入、去重；非本人 host、fire host、未知后端 → 400；share token → 403。
+  - global-ai-backends：GET 默认空；PUT 正常写入、去重；共享 AI host 可保存，fire host、未知后端 → 400；share token → 403。
+  - 共享 AI 鉴权：仅活跃 Global Backend 任务的 A → B remote exec/files 请求放行；无 task header、错误绑定、非 remote agents 子路由、共享 B、已结束任务均拒绝；share token 伪造 `globalBackend` / remote launch config 拒绝。
   - `POST /api/tasks` + `global_backend`：
     - 未在设置中 → 409；A 离线 / 不支持后端 → 409；B 缺 capability → 409；B 项目非 git → 409；share token → 403；与 `remoteWorktree`（0038 入口）/ agent group 同时出现 → 409；
     - A 有合并组项目 → `projectId = A 的项目`、`agentHost = A`、`secondProjectId = B`、cwd = A 的 workspacePath；

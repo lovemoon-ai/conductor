@@ -366,9 +366,11 @@ export function CreateTaskDialog({
           label: `${entry.backend} @ ${entry.host}`,
           disabledReason: !agent
             ? `${entry.host} is offline`
-            : !(agent.supportedBackends ?? []).includes(entry.backend)
-              ? `${entry.backend} is not available on ${entry.host}`
-              : null,
+            : agent.shared
+              ? `${entry.host} is shared with you; choose your own daemon for task code`
+              : !(agent.supportedBackends ?? []).includes(entry.backend)
+                ? `${entry.backend} is not available on ${entry.host}`
+                : null,
         };
       });
     }
@@ -376,18 +378,22 @@ export function CreateTaskDialog({
     return globalBackends
       .filter((entry) => entry.host !== codeHost)
       .map((entry) => {
-        const agent = daemons.find((daemon) => daemon.host === entry.host && !daemon.shared) ?? null;
-        const disabledReason = !agent
-          ? `${entry.host} is offline`
-          : !codeAgent
-            ? `${codeHost} is offline`
-            : !(agent.supportedBackends ?? []).includes(entry.backend)
-              ? `${entry.backend} is not available on ${entry.host}`
-              : !(agent.capabilities ?? []).includes('global_backend_v1')
-                ? `upgrade conductor on ${entry.host} to use it as a global backend`
-                : !supportsRemoteWorktree(codeAgent.capabilities)
-                  ? `${codeHost} does not support conductor remote; upgrade its daemon`
-                  : null;
+        const agent = daemons.find((daemon) => daemon.host === entry.host) ?? null;
+        const disabledReason = codeAgent?.shared
+          ? `${codeHost} is shared with you; choose your own daemon for task code`
+          : !agent
+            ? `${entry.host} is offline`
+            : !codeAgent
+              ? `${codeHost} is offline`
+              : !(agent.supportedBackends ?? []).includes(entry.backend)
+                ? `${entry.backend} is not available on ${entry.host}`
+                : !(agent.capabilities ?? []).includes('global_backend_v1')
+                  ? `upgrade conductor on ${entry.host} to use it as a global backend`
+                  : agent.shared && !(agent.capabilities ?? []).includes('shared_ai_global_backend_v1')
+                    ? `upgrade conductor on ${entry.host} to use a shared daemon as a global backend`
+                    : !supportsRemoteWorktree(codeAgent.capabilities)
+                      ? `${codeHost} does not support conductor remote; upgrade its daemon`
+                      : null;
         return {
           key: globalAiBackendKey(entry),
           entry,

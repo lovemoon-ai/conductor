@@ -123,6 +123,7 @@ export async function POST(request: NextRequest) {
     } else if (event.event_type === "task_status_update") {
       const result = await commitTaskStatusUpdate({
         userId: user.id,
+        tokenScope: user.tokenScope,
         agentHost,
         taskId: event.task_id,
         status: event.status,

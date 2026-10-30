@@ -325,6 +325,7 @@ const rollbackFailedPtyPatchRelaunch = async (args: {
 
 const rollbackFailedAiTaskPatch = async (args: {
   taskId: string;
+  snapshotWhere?: { id: string; status: string; metadata: string | null; launchConfig: string | null };
   previousTask: {
     projectId: string;
     title: string;
@@ -341,13 +342,13 @@ const rollbackFailedAiTaskPatch = async (args: {
 }) => {
   try {
     await db.task.update({
-      where: { id: args.taskId },
+      where: args.snapshotWhere ?? { id: args.taskId },
       data: buildTaskRollbackData(args.previousTask),
     });
   } catch (error) {
     if (isMissingIssueIdSchemaError(error)) {
       await db.task.update({
-        where: { id: args.taskId },
+        where: args.snapshotWhere ?? { id: args.taskId },
         data: buildTaskRollbackData(args.previousTask),
         select: taskSelectWithoutIssueId,
       });
@@ -357,7 +358,7 @@ const rollbackFailedAiTaskPatch = async (args: {
       throw error;
     }
     await db.task.update({
-      where: { id: args.taskId },
+      where: args.snapshotWhere ?? { id: args.taskId },
       data: buildLegacyAiTaskWriteData({
         projectId: args.previousTask.projectId,
         title: args.previousTask.title,
@@ -747,6 +748,20 @@ export async function PATCH(
   // would wipe keys other writers set meanwhile (e.g. a persistent round-start
   // claim taken while this PATCH was in flight).
   const metadataWrite = nextMetadata === existing.metadata ? undefined : nextMetadata;
+  const protectsSharedGlobalTask =
+    user.tokenScope === "daemon_share" && Boolean(existingMetadataObject?.globalBackend);
+  // Do not let a stale session-registration PATCH restore an earlier remote
+  // binding. Explicit status changes also require the status we read.
+  const taskPatchWhere = protectsSharedGlobalTask
+    ? {
+        id: taskId,
+        ...(hasStatusField ? { status: existing.status } : {}),
+        agentHost: existing.agentHost,
+        metadata: existing.metadata,
+        launchConfig: existing.launchConfig ?? null,
+      }
+    : { id: taskId };
+
   const baseAiTaskUpdateData = {
     projectId: nextProjectId,
     title: normalizedBody.title ?? existing.title,
@@ -764,19 +779,24 @@ export async function PATCH(
         : existing.sessionFilePath,
     metadata: metadataWrite,
   };
-  const legacyAiTaskUpdateData = buildLegacyAiTaskWriteData({
-    projectId: baseAiTaskUpdateData.projectId,
-    title: baseAiTaskUpdateData.title,
-    status: baseAiTaskUpdateData.status,
-    agentHost: baseAiTaskUpdateData.agentHost,
-    executionHost: baseAiTaskUpdateData.executionHost,
-    backendType: baseAiTaskUpdateData.backendType,
-    sessionId: baseAiTaskUpdateData.sessionId,
-    sessionFilePath: baseAiTaskUpdateData.sessionFilePath,
-    metadata: baseAiTaskUpdateData.metadata,
-  });
+  const legacyAiTaskUpdateData = {
+    ...buildLegacyAiTaskWriteData({
+      projectId: baseAiTaskUpdateData.projectId,
+      title: baseAiTaskUpdateData.title,
+      status: baseAiTaskUpdateData.status,
+      agentHost: baseAiTaskUpdateData.agentHost,
+      executionHost: baseAiTaskUpdateData.executionHost,
+      backendType: baseAiTaskUpdateData.backendType,
+      sessionId: baseAiTaskUpdateData.sessionId,
+      sessionFilePath: baseAiTaskUpdateData.sessionFilePath,
+      metadata: baseAiTaskUpdateData.metadata,
+    }),
+    ...(protectsSharedGlobalTask && !hasStatusField ? { status: undefined } : {}),
+  };
   const taskUpdateData = {
     ...baseAiTaskUpdateData,
+    // A session update must not overwrite a concurrent stop or completion.
+    ...(protectsSharedGlobalTask && !hasStatusField ? { status: undefined } : {}),
     taskType: nextTaskType,
     launchConfig: hasLaunchConfigField
       ? (nextLaunchConfig ? JSON.stringify(nextLaunchConfig) : null)
@@ -790,7 +810,7 @@ export async function PATCH(
       const result = await db.$transaction(async (tx) => {
         const [updatedTask, updatedPtySession] = await Promise.all([
           tx.task.update({
-            where: { id: taskId },
+            where: taskPatchWhere,
             data: taskUpdateData,
           }),
           tx.ptySession.upsert({
@@ -854,7 +874,7 @@ export async function PATCH(
     }
   } else if (existingTaskType === "pty_task") {
     task = await db.task.update({
-      where: { id: taskId },
+      where: taskPatchWhere,
       data: taskUpdateData,
     });
     await db.ptySession.deleteMany({
@@ -872,17 +892,17 @@ export async function PATCH(
             const updatedTaskRaw =
               mode === "full"
                 ? await tx.task.update({
-                    where: { id: taskId },
+                    where: taskPatchWhere,
                     data: taskUpdateData,
                   })
                 : mode === "issueId"
                   ? await tx.task.update({
-                      where: { id: taskId },
+                      where: taskPatchWhere,
                       data: taskUpdateData,
                       select: taskSelectWithoutIssueId,
                     })
                   : await tx.task.update({
-                      where: { id: taskId },
+                      where: taskPatchWhere,
                       data: legacyAiTaskUpdateData,
                       select: legacyTaskSelect,
                     });
@@ -985,6 +1005,9 @@ export async function PATCH(
               await rollbackFailedAiTaskPatch({
                 taskId,
                 previousTask: existing,
+                snapshotWhere: protectsSharedGlobalTask
+                  ? { id: taskId, status: task.status, metadata: task.metadata, launchConfig: "launchConfig" in task && typeof task.launchConfig === "string" ? task.launchConfig : null }
+                  : undefined,
               });
               return NextResponse.json(
                 {
@@ -999,6 +1022,9 @@ export async function PATCH(
             await rollbackFailedAiTaskPatch({
               taskId,
               previousTask: existing,
+              snapshotWhere: protectsSharedGlobalTask
+                ? { id: taskId, status: task.status, metadata: task.metadata, launchConfig: "launchConfig" in task && typeof task.launchConfig === "string" ? task.launchConfig : null }
+                : undefined,
             });
             return NextResponse.json(
               {
@@ -1017,11 +1043,14 @@ export async function PATCH(
         }
       } else {
         task = await db.task.update({
-          where: { id: taskId },
+          where: taskPatchWhere,
           data: taskUpdateData,
         });
       }
     } catch (error) {
+      if (protectsSharedGlobalTask && (error as { code?: unknown })?.code === "P2025") {
+        return NextResponse.json({ error: "Task changed; retry the update" }, { status: 409 });
+      }
       if (shouldStopTask) {
         return NextResponse.json(
           {
@@ -1035,7 +1064,7 @@ export async function PATCH(
       if (isMissingIssueIdSchemaError(error)) {
         // taskUpdateData has no issueId field, so we can pass it directly
         const updated = await db.task.update({
-          where: { id: taskId },
+          where: taskPatchWhere,
           data: taskUpdateData,
           select: taskSelectWithoutIssueId,
         });
@@ -1043,7 +1072,7 @@ export async function PATCH(
       } else if (isMissingPtySchemaError(error)) {
         task = applyLegacyTaskShape(
           await db.task.update({
-            where: { id: taskId },
+            where: taskPatchWhere,
             data: legacyAiTaskUpdateData,
             select: legacyTaskSelect,
           }),

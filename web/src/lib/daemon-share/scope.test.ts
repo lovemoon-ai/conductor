@@ -22,7 +22,7 @@ import {
 } from './scope';
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 describe('isPathAllowedForDaemonShare', () => {
@@ -293,6 +293,176 @@ describe('isResourceInShareScope', () => {
       ),
     ).resolves.toBe(true);
   });
+
+  it('allows only task-bound remote exec and files from a shared AI to its own code daemon', async () => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 'task-1',
+      metadata: JSON.stringify({ globalBackend: { host: binding.guestHost, backend: 'claude' } }),
+      launchConfig: JSON.stringify({
+        remoteWorkspace: { host: 'bob-macbook', projectId: 'proj-own', repoRoot: '/r', workspacePath: '/r' },
+      }),
+    });
+    mockDb.project.findFirst.mockResolvedValue({ id: 'proj-own', daemonHost: 'bob-macbook' });
+    mockDb.daemonShare.findFirst.mockResolvedValue(null);
+
+    for (const path of [
+      '/api/agents/bob-macbook/exec',
+      '/api/agents/bob-macbook/exec/runs/run-1',
+      '/api/agents/bob-macbook/files',
+      '/api/agents/bob-macbook/files/transfer-1',
+      '/api/agents/bob-macbook/files/transfer-1/content',
+      '/api/agents/bob-macbook/files/transfer-1/deliver',
+    ]) {
+      await expect(isResourceInShareScope(binding, path, null, 'task-1')).resolves.toBe(true);
+    }
+    expect(mockDb.task.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: 'task-1',
+        project: { userId: 'user-b' },
+        agentHost: binding.guestHost,
+        taskType: 'ai_task',
+        status: { in: ['pending', 'init', 'running', 'unknown', 'killing'] },
+        achievedAt: null,
+      },
+      select: { id: true, metadata: true, launchConfig: true },
+    });
+  });
+
+  it('allows a remote successor from an owned unbound default project, checking the bound host for sharing', async () => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 'task-1',
+      metadata: { globalBackend: { host: binding.guestHost, backend: 'claude' } },
+      launchConfig: { remoteWorkspace: { host: 'Bob-Macbook', projectId: 'proj-default' } },
+    });
+    mockDb.project.findFirst.mockResolvedValue({ id: 'proj-default', daemonHost: null });
+    mockDb.daemonShare.findFirst.mockResolvedValue(null);
+    await expect(isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'task-1'))
+      .resolves.toBe(true);
+    expect(mockDb.daemonShare.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ guestHost: 'Bob-Macbook' }),
+    }));
+    mockDb.daemonShare.findFirst.mockResolvedValue({ id: 'shared-code' });
+    await expect(isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'task-1'))
+      .resolves.toBe(false);
+  });
+
+  it('fails closed when the remote task binding is absent, mismatched, or uses shared code', async () => {
+    await expect(
+      isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null),
+    ).resolves.toBe(false);
+    expect(mockDb.task.findFirst).not.toHaveBeenCalled();
+
+    mockDb.task.findFirst.mockResolvedValue(null);
+    await expect(
+      isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'missing'),
+    ).resolves.toBe(false);
+
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 'task-1',
+      metadata: JSON.stringify({ globalBackend: { host: binding.guestHost, backend: 'claude' } }),
+      launchConfig: JSON.stringify({
+        remoteWorktree: { host: 'bob-macbook', projectId: 'proj-own', repoRoot: '/r', workspacePath: '/r', branch: 'b' },
+      }),
+    });
+    mockDb.project.findFirst.mockResolvedValue({ id: 'proj-own', daemonHost: 'bob-macbook' });
+    mockDb.daemonShare.findFirst.mockResolvedValue({ id: 'share-code' });
+    await expect(
+      isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'task-1'),
+    ).resolves.toBe(false);
+
+    await expect(
+      isResourceInShareScope(binding, '/api/agents/bob-macbook/restart', null, 'task-1'),
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a share token that forges Global Backend authorization fields', async () => {
+    for (const [path, body] of [
+      ['/api/tasks', { projectId: 'p1', globalBackend: { host: 'other', backend: 'claude' } }],
+      ['/api/tasks', { projectId: 'p1', metadata: { globalBackend: { host: 'other', backend: 'claude' } } }],
+      ['/api/tasks', { projectId: 'p1', launch_config: { remoteWorkspace: { host: 'other' } } }],
+      ['/api/tasks/t1', { metadata: JSON.stringify({ globalBackend: { host: 'other', backend: 'claude' } }) }],
+      ['/api/tasks/t1', { launchConfig: { remote_worktree: { host: 'other' } } }],
+    ] as const) {
+      await expect(isResourceInShareScope(binding, path, body)).resolves.toBe(false);
+    }
+    expect(mockDb.task.findFirst).not.toHaveBeenCalled();
+    expect(mockDb.project.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('cannot extend a remote grant through restart, rounds, status, or task type changes', async () => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 't1', status: 'running',
+      metadata: JSON.stringify({ globalBackend: { host: binding.guestHost, backend: 'claude' } }),
+    });
+    for (const [path, body] of [
+      ['/api/tasks/t1/restart', { strategy: 'new_task' }],
+      ['/api/tasks/t1/rounds', { content: 'continue' }],
+      ['/api/tasks/t1/persistent', { enabled: true }],
+      ['/api/tasks/t1/scheduled-messages', { content: 'continue later' }],
+      ['/api/tasks/t1', { status: 'running' }],
+      ['/api/tasks/t1', { taskType: 'pty_task' }],
+      ['/api/tasks/t1', { metadata: { persistent: { enabled: true } } }],
+      ['/api/tasks/t1/', { metadata: { globalBackend: { host: binding.guestHost } } }],
+    ] as const) {
+      await expect(isResourceInShareScope(binding, path, body)).resolves.toBe(false);
+    }
+    await expect(isResourceInShareScope(binding, '/api/tasks/t1', { status: 'killed' })).resolves.toBe(true);
+    await expect(isResourceInShareScope(binding, '/api/tasks/t1', { sessionId: 's1' })).resolves.toBe(true);
+    await expect(isResourceInShareScope(binding, '/api/tasks/t1/messages', null)).resolves.toBe(true);
+  });
+
+  it.each(['completed', 'killed'])('cannot reactivate a %s remote task by sending a message', async (status) => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 't1', status,
+      metadata: { globalBackend: { host: binding.guestHost, backend: 'claude' } },
+    });
+    await expect(isResourceInShareScope(binding, '/api/tasks/t1/messages', {
+      role: 'user', content: 'continue',
+    })).resolves.toBe(false);
+  });
+
+  it('cannot implicitly start a new remote persistent round through insert', async () => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 't1', status: 'running',
+      metadata: {
+        globalBackend: { host: binding.guestHost, backend: 'claude' },
+        persistent: { enabled: true, roundEndedAt: '2026-10-30T00:00:00Z' },
+      },
+    });
+    await expect(isResourceInShareScope(binding, '/api/tasks/t1/insert', {
+      content: 'continue',
+    })).resolves.toBe(false);
+  });
+
+  it.each([
+    { metadata: {} },
+    { metadata: { globalBackend: { host: 'other-shared-ai' } } },
+    { launchConfig: { remoteWorkspace: { host: 'other-code', projectId: 'proj-own' } } },
+    { launchConfig: { remoteWorkspace: { host: 'bob-macbook' } } },
+  ])('rejects malformed or mismatched remote bindings: %j', async (patch) => {
+    mockDb.task.findFirst.mockResolvedValue({
+      id: 'task-1',
+      metadata: { globalBackend: { host: binding.guestHost, backend: 'claude' } },
+      launchConfig: { remoteWorkspace: { host: 'bob-macbook', projectId: 'proj-own' } },
+      ...patch,
+    });
+    await expect(isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'task-1'))
+      .resolves.toBe(false);
+    expect(mockDb.project.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: 'proj-own', daemonHost: 'other-host' }])(
+    'rejects code projects that are missing, no longer owned, or rebound: %j', async (project) => {
+      mockDb.task.findFirst.mockResolvedValue({
+        id: 'task-1',
+        metadata: { globalBackend: { host: binding.guestHost, backend: 'claude' } },
+        launchConfig: { remoteWorkspace: { host: 'bob-macbook', projectId: 'proj-own' } },
+      });
+      mockDb.project.findFirst.mockResolvedValue(project);
+      await expect(isResourceInShareScope(binding, '/api/agents/bob-macbook/exec', null, 'task-1'))
+        .resolves.toBe(false);
+    },
+  );
 
   it('lets host-pinned agent routes through without a resource lookup', async () => {
     vi.clearAllMocks();

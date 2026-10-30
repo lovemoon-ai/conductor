@@ -78,6 +78,17 @@ describe("conductor settings global-backends", () => {
     assert.match(out, /Added ubuntu \/ codex/);
   });
 
+  it("adds a shared daemon's AI backend using the same settings command", async () => {
+    const { code, calls } = await runWithFetch(main, ["global-backends", "add", "shared-alice-mbp", "codex"], {
+      [`GET ${P}/global-ai-backends`]: current,
+      [`PUT ${P}/global-ai-backends`]: (call) => call.body,
+    });
+    assert.equal(code, 0);
+    assert.deepEqual(calls[1].body.backends, [
+      ...current.backends, { host: "shared-alice-mbp", backend: "codex" },
+    ]);
+  });
+
   it("add --dry-run reads but does not write", async () => {
     const { code, out, calls } = await runWithFetch(main, ["global-backends", "add", "ubuntu", "codex", "--dry-run", "--json"], {
       [`GET ${P}/global-ai-backends`]: current,
