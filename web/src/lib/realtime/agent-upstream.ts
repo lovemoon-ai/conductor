@@ -472,6 +472,45 @@ export async function commitSdkMessage(input: {
   const clientMessageId = normalizeOptionalString(input.messageId);
   let message: { id: string; createdAt: Date };
   let duplicate = false;
+  let promotedInitTask = false;
+
+  // The snapshot can become stopped/packed while ownership/outbox work is
+  // awaiting. Only the database row that is still init may become running.
+  // Keep both message-id paths on the same conditional write.
+  const persistMessage = async () => {
+    const [created, taskWrite] = await db.$transaction([
+      db.message.create({
+        data: {
+          taskId: task.id,
+          role: "sdk",
+          content: input.content,
+          metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+          ...(clientMessageId ? { clientMessageId } : {}),
+        },
+        select: { id: true, createdAt: true },
+      }),
+      shouldPromoteInitTask
+        ? db.task.updateMany({
+            where: {
+              id: task.id,
+              status: "init",
+              // Legacy task selects may omit achievedAt.
+              ...("achievedAt" in task ? { achievedAt: null } : {}),
+            },
+            data: {
+              updatedAt: new Date(),
+              status: "running",
+              ...(normalizedAgentHost ? { executionHost: normalizedAgentHost } : {}),
+            },
+          })
+        : db.task.update({
+            where: { id: task.id },
+            data: { updatedAt: new Date() },
+          }),
+    ]);
+    promotedInitTask = shouldPromoteInitTask && "count" in taskWrite && taskWrite.count > 0;
+    return created;
+  };
 
   if (clientMessageId) {
     const existingMessage = await db.message.findUnique({
@@ -483,28 +522,7 @@ export async function commitSdkMessage(input: {
       duplicate = true;
     } else {
       try {
-        [message] = await db.$transaction([
-          db.message.create({
-            data: {
-              taskId: task.id,
-              role: "sdk",
-              content: input.content,
-              metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-              clientMessageId,
-            },
-            select: { id: true, createdAt: true },
-          }),
-          db.task.update({
-            where: { id: task.id },
-            data: {
-              updatedAt: new Date(),
-              ...(shouldPromoteInitTask ? { status: "running" } : {}),
-              ...(shouldPromoteInitTask && normalizedAgentHost
-                ? { executionHost: normalizedAgentHost }
-                : {}),
-            },
-          }),
-        ]);
+        message = await persistMessage();
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -525,31 +543,11 @@ export async function commitSdkMessage(input: {
       }
     }
   } else {
-    [message] = await db.$transaction([
-      db.message.create({
-        data: {
-          taskId: task.id,
-          role: "sdk",
-          content: input.content,
-          metadata: input.metadata ? JSON.stringify(input.metadata) : null,
-        },
-        select: { id: true, createdAt: true },
-      }),
-      db.task.update({
-        where: { id: task.id },
-        data: {
-          updatedAt: new Date(),
-          ...(shouldPromoteInitTask ? { status: "running" } : {}),
-          ...(shouldPromoteInitTask && normalizedAgentHost
-            ? { executionHost: normalizedAgentHost }
-            : {}),
-        },
-      }),
-    ]);
+    message = await persistMessage();
   }
 
   if (!duplicate) {
-    if (shouldPromoteInitTask) {
+    if (promotedInitTask) {
       await projectTaskStatusUpdate({
         userId: input.userId,
         projectId: task.projectId,

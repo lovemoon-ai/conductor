@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mockPrismaQuery } from "@/__tests__/mock-prisma-query";
 
 vi.mock("@prisma/client", () => ({
   Prisma: {
@@ -64,7 +65,7 @@ vi.mock("@/lib/tasks/persistent-task", () => ({
 
 const { db } = await import("@/lib/db");
 const { capturePersistentRoundSummary } = await import("@/lib/tasks/persistent-task");
-const { projectTaskStatusUpdate } = await import("@/lib/channel/task-event-projector");
+const { projectTaskStatusUpdate, projectTaskMessage } = await import("@/lib/channel/task-event-projector");
 const { acknowledgeAgentCommand, deliverAgentOutboxForHost, enqueueAndAttemptAgentCommand } = await import("@/lib/realtime/agent-outbox");
 const { realtimeHub } = await import("@/lib/realtime/hub");
 const { commitAgentCommandAck, commitSdkMessage, commitTaskStatusUpdate } = await import("./agent-upstream");
@@ -185,6 +186,78 @@ describe("commitSdkMessage split-brain guard", () => {
       taskMetadata: '{"persistent":{"enabled":true,"roundEndMessageId":"req-1"}}',
       content: "Released 0.14.0",
       messageMetadata: { reply_to: "req-1" },
+    });
+  });
+
+  describe.each([undefined, "sdk-message-1"])("SDK reply promotion (message id: %s)", (messageId) => {
+    const runPromotion = async (afterRead: { status: string; achievedAt: Date | null }) => {
+      const row = {
+        id: "task-1", projectId: "project-1", status: "init", achievedAt: null as Date | null,
+        agentHost: "daemon-a", executionHost: "daemon-a", taskType: "ai_task",
+        metadata: JSON.stringify({ globalBackend: { host: "daemon-a", backend: "codex" } }),
+      };
+      // Return a detached init snapshot, then stop/complete/pack the stored row
+      // before the transaction that persists the SDK reply.
+      vi.mocked(db.task.findFirst).mockResolvedValue({ ...row } as any);
+      vi.mocked(deliverAgentOutboxForHost).mockImplementationOnce(async () => {
+        Object.assign(row, afterRead);
+        return { attempted: 0, delivered: 0 };
+      });
+      vi.mocked(db.message.findUnique).mockResolvedValue(null);
+      vi.mocked(db.message.create).mockResolvedValue({
+        id: "message-1", createdAt: new Date("2026-10-31T00:00:00Z"),
+      } as any);
+      mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => {
+        Object.assign(row, data);
+        return { ...row } as any;
+      });
+      mockPrismaQuery(db.task.updateMany).mockImplementation(async ({ where, data }: any) => {
+        if ((where.status !== undefined && where.status !== row.status) ||
+            (where.achievedAt === null && row.achievedAt !== null)) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      });
+      vi.mocked(db.$transaction).mockImplementation((async (operations: any) =>
+        Promise.all(operations)) as any);
+
+      const result = await commitSdkMessage({
+        userId: "user-1", agentHost: "daemon-a", taskId: row.id,
+        content: "reply that raced with a stop", messageId,
+      });
+      return { row, result };
+    };
+
+    it.each(["killed", "killing", "completed"])(
+      "does not reactivate remote access after a concurrent %s transition", async (status) => {
+        const { row } = await runPromotion({ status, achievedAt: null });
+        expect(row.status).toBe(status);
+        expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not promote a concurrently archived task", async () => {
+      const achievedAt = new Date("2026-10-31T00:00:00Z");
+      const { row } = await runPromotion({ status: "init", achievedAt });
+      expect(row.status).toBe("init");
+      expect(row.achievedAt).toEqual(achievedAt);
+      expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+    });
+
+    it("promotes an eligible init task and projects the committed reply", async () => {
+      const { row, result } = await runPromotion({ status: "init", achievedAt: null });
+      expect(row.status).toBe("running");
+      expect(result.duplicate).toBe(false);
+      expect(projectTaskStatusUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        taskId: row.id, status: "running",
+      }));
+      expect(projectTaskMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not claim promotion when another SDK reply already promoted the task", async () => {
+      const { row } = await runPromotion({ status: "running", achievedAt: null });
+      expect(row.status).toBe("running");
+      expect(projectTaskStatusUpdate).not.toHaveBeenCalled();
+      expect(projectTaskMessage).toHaveBeenCalledTimes(1);
     });
   });
 
