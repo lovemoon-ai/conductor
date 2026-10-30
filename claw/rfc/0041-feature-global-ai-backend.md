@@ -138,6 +138,8 @@ dang217
 - CLI 的 fire / MCP 在所有 remote HTTP 请求上发送 `X-Conductor-Task-Id`。共享 AI 还必须声明 `shared_ai_global_backend_v1`，避免旧 CLI 创建成功后所有 remote 请求 401。
 - `daemon_share` scope 只在 `/api/agents/<B>/exec` 与 `/files` 的必要子路径上尝试跨 host 授权；校验任务属于当前用户、活跃且未归档、`agentHost = A`、metadata 与 remote binding 匹配，以及 B 的项目属于用户且 B 不是共享 daemon。
 - share token 不能直接创建或 PATCH 上述 server-owned 授权字段，防止自助伪造 A → B 绑定。共享端不能自行重启、开启持久任务的新一轮、修改任务类型或通过 PATCH / 状态上报重新激活已结束任务；这些授权续期由用户的 full token 发起。状态写入也检查数据库当前状态，防止并发停止被旧的 running 上报覆盖。
+- 共享鉴权根据实际路由解析请求体，不信任调用者声明的 Content-Type；JSON task PATCH 即使声称 multipart 也检查授权字段。仅真实附件 POST 和文件内容 PUT 路由跳过 JSON 缓冲，目标仍按 URL 校验。
+- SDK 消息触发的 init → running 同样在数据库写入时检查 status = init，以及可用的 achievedAt = null 条件。只在更新成功时广播 running；无 message id 与带幂等 id 的消息共用该路径，避免并发停止后恢复 remote 权限。
 - 已有远程绑定的重启和持久任务新一轮同样检查共享 AI 的新 capability，以及 B 不是共享 daemon。普通本地源任务通过 “New task from this” 转为远程任务时，代码项目也可能是用户未绑定 daemon 的默认项目；此时以服务端保存的 remote host 检查 B 的共享状态。
 - agent WS、app WS、daemon restart/update 等其他 host 权限保持不变。
 

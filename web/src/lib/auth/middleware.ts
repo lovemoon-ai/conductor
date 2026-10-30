@@ -66,8 +66,11 @@ const RAW_BODY_PATHS: RegExp[] = [
   /^\/api\/agent\/files\/[^/]+\/content$/,
 ];
 
-function isRawBodyPath(pathname: string): boolean {
-  return RAW_BODY_PATHS.some((pattern) => pattern.test(pathname));
+const ATTACHMENT_UPLOAD_PATH = /^\/api\/tasks\/[^/]+\/attachments\/?$/;
+
+function isStreamingBodyRoute(pathname: string, method: string): boolean {
+  return (method === "PUT" && RAW_BODY_PATHS.some((pattern) => pattern.test(pathname))) ||
+    (method === "POST" && ATTACHMENT_UPLOAD_PATH.test(pathname));
 }
 
 export async function getAuthUser(request: NextRequest): Promise<AuthUser | null> {
@@ -121,29 +124,16 @@ export async function getAuthUser(request: NextRequest): Promise<AuthUser | null
     const binding = await resolveActiveShareForToken(token, user.id);
     if (!binding) return null;
 
-    // Reading the body here is safe: route handlers get a fresh clone, and
-    // `NextRequest` bodies are only consumed once per instance.
+    // Inspect a clone so the handler can still consume the original body.
+    // Match the route's parser, never the caller's Content-Type: JSON routes
+    // accept JSON bytes even when the header claims multipart or text/plain.
     //
-    // Skipped for multipart, which is the one shape that is both expensive to
-    // buffer (attachment uploads) and impossible for a route to read as JSON
-    // anyway. Deliberately NOT gated on "content-type is JSON":
-    // `request.json()` in a route handler ignores the header, so trusting it
-    // here would let `content-type: text/plain` carry a JSON body past this
-    // check and straight into a route that parses it.
-    //
-    // Also skipped for the raw-body routes below, by path rather than by
-    // header for the same reason. Those stream a whole file; buffering one
-    // here would pull it into the heap in full — twice, since `clone()` tees
-    // while the route has not started reading — which is exactly what the
-    // transfer design exists to avoid. Safe because they take their target
-    // host from the URL, which layer 3 has already pinned, and they never
-    // parse their body as JSON.
+    // Only explicitly known streaming routes skip parsing. Attachments use
+    // Busboy and file transfers stream opaque bytes; their target task/host is
+    // in the URL and they never deserialize task authorization fields as JSON.
     let body: unknown = null;
-    const isMultipart = (request.headers.get("content-type") || "")
-      .toLowerCase()
-      .includes("multipart/form-data");
-    if (request.method !== "GET" && request.method !== "HEAD" && !isMultipart
-        && !isRawBodyPath(pathname)) {
+    if (request.method !== "GET" && request.method !== "HEAD" &&
+        !isStreamingBodyRoute(pathname, request.method)) {
       body = await request
         .clone()
         .json()

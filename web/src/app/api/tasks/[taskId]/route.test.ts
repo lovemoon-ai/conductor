@@ -269,6 +269,29 @@ describe("/api/tasks/[taskId]", () => {
       token: "share-token", body: { session_id: "new-session" },
     }), { params: Promise.resolve({ taskId: "ai-1" }) });
 
+    it.each([
+      "/api/tasks/ai-1",
+      "/tasks/ai-1",
+    ])("rejects forged remote grants disguised as multipart on %s", async (path) => {
+      vi.mocked(db.task.findFirst).mockResolvedValue(existingAiTask as any);
+      const request = createMockRequest({
+        method: "PATCH", url: `http://localhost${path}`,
+        token: "share-token",
+        body: {
+          metadata: JSON.parse(metadata),
+          launchConfig: JSON.parse(launchConfig),
+        },
+      });
+      // createMockRequest sets application/json; override it to reproduce the
+      // actual attack: JSON bytes with a caller-controlled multipart header.
+      request.headers.set("Content-Type", "multipart/form-data; boundary=spoofed");
+
+      const response = await PATCH(request, { params: Promise.resolve({ taskId: "ai-1" }) });
+
+      expect(response.status).toBe(401);
+      expect(db.task.update).not.toHaveBeenCalled();
+    });
+
     it("registers the session without overwriting status, while guarding the remote grant", async () => {
       expect((await register()).status).toBe(200);
       expect(db.task.update).toHaveBeenCalledWith(expect.objectContaining({

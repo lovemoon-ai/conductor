@@ -141,6 +141,39 @@ describe("daemon-share scope gate", () => {
     );
   });
 
+  it("parses JSON on task routes even when the header claims multipart", async () => {
+    const body = {
+      metadata: { globalBackend: { host: "shared-alice-mbp", backend: "codex" } },
+      launchConfig: { remoteWorkspace: { host: "own-code", projectId: "p1" } },
+    };
+    const request = createMockRequest({
+      method: "PATCH", token: "share-token",
+      url: "http://localhost/api/tasks/t1", body,
+    });
+    request.headers.set("Content-Type", "multipart/form-data; boundary=spoofed");
+    await getAuthUser(request);
+    expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
+      expect.anything(), "/api/tasks/t1", body, null,
+    );
+    // Authorization inspects a clone; the route must still receive the bytes.
+    expect(await request.json()).toEqual(body);
+  });
+
+  it.each([
+    "/api/tasks/t1/attachments",
+    "/tasks/t1/attachments",
+  ])("keeps attachment uploads streaming on %s", async (path) => {
+    const request = createMockRequest({
+      method: "POST", token: "share-token", url: `http://localhost${path}`,
+    });
+    const clone = vi.spyOn(request, "clone");
+    expect(await getAuthUser(request)).toEqual(shareUser);
+    expect(clone).not.toHaveBeenCalled();
+    expect(shareScope.isResourceInShareScope).toHaveBeenCalledWith(
+      expect.anything(), "/api/tasks/t1/attachments", null, null,
+    );
+  });
+
   it("passes the remote task id to the share-scope check", async () => {
     const request = createMockRequest({
       method: "POST",

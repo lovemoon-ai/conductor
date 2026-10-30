@@ -359,6 +359,7 @@ describe("/api/agent/events", () => {
       id: "task-1",
       projectId: "proj-1",
       status: "init",
+      achievedAt: null,
       taskType: "ai_task",
       agentHost: "debug",
       executionHost: null,
@@ -405,13 +406,13 @@ describe("/api/agent/events", () => {
       },
       data: { executionHost: "conductor-fire-debug-123" },
     });
-    expect(db.task.update).toHaveBeenCalledWith({
-      where: { id: "task-1" },
-      data: expect.objectContaining({
+    expect(db.task.updateMany).toHaveBeenCalledWith({
+      where: { id: "task-1", status: "init", achievedAt: null },
+      data: {
         status: "running",
         executionHost: "conductor-fire-debug-123",
         updatedAt: expect.any(Date),
-      }),
+      },
     });
     expect(realtimeHub.broadcast).toHaveBeenCalledWith(
       "user-1",
