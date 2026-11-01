@@ -2,7 +2,7 @@
 
 ## Status
 
-第一版已实现 Chromium/Playwright 后台运行时、独立 worker/profile、SDK/CLI、本地事件流与恢复保护。四站点模拟页面已覆盖；独立运行时已用真实 Kimi/DeepSeek 验证。2026-11-01 接入 Conductor 的默认 Kimi/DeepSeek 路由、登录和托管进程；本轮 Conductor Kimi 实测通过，DeepSeek 仍需重新登录验收。Moli 作为后续资源优化项。使用方式见 [chat-web README](../../modules/chat-web/README.md)。
+第一版已实现 Chromium/Playwright 后台运行时、独立 worker/profile、SDK/CLI、本地事件流与恢复保护。四站点模拟页面已覆盖；独立运行时已用真实 Kimi/DeepSeek 验证。2026-11-01 接入 Conductor 的默认 Kimi/DeepSeek 路由、登录和托管进程；本轮真实 Kimi/DeepSeek 的 AI SDK 子进程与 Conductor BridgeRunner 消息链路实测通过，包含 DeepSeek 双 chat 并行、上下文恢复和 DeepThink 开关。消息传输使用本地替身，已部署 Web 界面尚未覆盖。Moli 作为后续资源优化项。使用方式见 [chat-web README](../../modules/chat-web/README.md)。
 
 ## Owner
 

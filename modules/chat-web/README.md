@@ -31,7 +31,7 @@ Conductor 使用 chat-web-runtime:CHAT_ID 保存稳定身份，站点会话 id �
 
 自动启动的 daemon 在无活动 turn、无固定登录窗口且十分钟没有请求后退出；CHAT_WEB_RUNTIME_IDLE_MS 可调整该空闲时间，最小一秒。已有任务在下一次发送前会自动重新连接或启动 daemon，并恢复原 chat；不会重发已提交的消息。手工运行 serve 的 daemon 不受此自动退出策略影响。旧 daemon 缺少账号引导能力时会提示升级，不会自动中断其聊天；显式执行 conductor chat-web runtime stop 后，下次对话会启动新版本。
 
-2026-11-01 UTC 的开发验证通过实际 AI SDK 子进程和 Conductor BridgeRunner 完成 Kimi 多轮消息、双 chat 隔离、关闭后恢复，以及停止一条生成时另一条继续完成。DeepSeek 的 Conductor 路由、账号引导和协议由自动化测试覆盖；本轮真实账号登录超时，实际收发与 DeepThink 尚待重新登录后验收。此前独立运行时的真实 DeepSeek 验证见文末。
+2026-11-01 UTC 的开发验证通过实际 AI SDK 子进程和 Conductor BridgeRunner 完成 Kimi 多轮消息、双 chat 隔离、关闭后恢复，以及停止一条生成时另一条继续完成。用户重新登录后，DeepSeek 也完成两条 headless chat 的四轮并行消息与独立记忆、关闭后恢复；另两轮经 BridgeRunner 验证 DeepThink 开启和关闭，并在运行时退出后恢复同一对话。两站点的回复均由真实网页返回；BridgeRunner 的 Conductor 消息传输使用本地替身，未覆盖已部署 Web 界面的操作。此前独立运行时的真实 DeepSeek 验证见文末。
 
 ## 启动与登录
 
