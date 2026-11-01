@@ -19,7 +19,7 @@ let projectsState: any = {
   ],
 };
 
-const agentsState = {
+const agentsState: { agents: Array<{ id: string; host: string; supportedBackends: string[]; capabilities: string[]; shared?: boolean }> } = {
   agents: [
     { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude', 'codex'], capabilities: ['pty_task'] },
     { id: 'daemon-2', host: 'daemon-b', supportedBackends: ['gpt'], capabilities: [] },
@@ -817,6 +817,22 @@ describe('CreateTaskDialog', () => {
       expect(input.globalBackend).toBeUndefined();
     });
 
+    it('disables a shared global backend in the default project instead of turning it into a local task', async () => {
+      projectsState = { projects: [{ id: 'project-default', name: 'Default', isDefault: true }] };
+      agentsState.agents = [
+        ...agentsState.agents,
+        { id: 'shared', host: 'borrowed', supportedBackends: ['claude'], capabilities: ['global_backend_v1', 'shared_ai_global_backend_v1'], shared: true },
+      ];
+      globalBackendsState.backends = [{ host: 'borrowed', backend: 'claude' }];
+
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      const option = within(await screen.findByLabelText('AI backend')).getByRole('option', {
+        name: 'claude @ borrowed — borrowed is shared with you; choose your own daemon for task code',
+      }) as HTMLOptionElement;
+      expect(option).toBeDisabled();
+    });
+
     it('greys out an AI daemon whose conductor is too old to be a global backend', () => {
       globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
       agentsState.agents = [{ ...agentsState.agents[0], capabilities: [] }, agentsState.agents[1]];
@@ -853,6 +869,43 @@ describe('CreateTaskDialog', () => {
       expect(options.map((option) => option.disabled)).toEqual([false, true, true]);
       expect(options[1].title).toBe('kimi is not available on daemon-a');
       expect(options[2].title).toBe('daemon-c is offline');
+    });
+
+    it('allows a shared daemon as the global AI while keeping code on the project daemon', async () => {
+      agentsState.agents = [
+        ...agentsState.agents,
+        { id: 'shared', host: 'borrowed', supportedBackends: ['claude'], capabilities: ['global_backend_v1', 'shared_ai_global_backend_v1'], shared: true },
+      ];
+      globalBackendsState.backends = [{ host: 'borrowed', backend: 'claude' }];
+      createTaskMock.mockResolvedValue({ id: 'task-shared-global' });
+
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      const option = within(await screen.findByLabelText('AI backend')).getByRole('option', {
+        name: 'claude @ borrowed',
+      }) as HTMLOptionElement;
+      expect(option).toBeEnabled();
+      fireEvent.change(screen.getByLabelText('AI backend'), { target: { value: option.value } });
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'Shared AI' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-b',
+        globalBackend: { host: 'borrowed', backend: 'claude' },
+        backendType: 'claude',
+      })));
+    });
+
+    it('greys out global AI when the project code daemon is shared', async () => {
+      agentsState.agents = [agentsState.agents[0], { ...agentsState.agents[1], shared: true }];
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      const option = within(await screen.findByLabelText('AI backend')).getByRole('option', {
+        name: 'claude @ daemon-a — daemon-b is shared with you; choose your own daemon for task code',
+      }) as HTMLOptionElement;
+      expect(option).toBeDisabled();
     });
 
     it('submits globalBackend with the worktree choice kept independent', async () => {

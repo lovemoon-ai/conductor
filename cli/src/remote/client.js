@@ -62,7 +62,11 @@ export function loadCliConfig(configFile, env = process.env) {
 }
 
 function authHeaders(config) {
-  return { Authorization: `Bearer ${config.agentToken}` };
+  const taskId = process.env.CONDUCTOR_TASK_ID?.trim();
+  return {
+    Authorization: `Bearer ${config.agentToken}`,
+    ...(taskId ? { "X-Conductor-Task-Id": taskId } : {}),
+  };
 }
 
 async function toApiError(response) {

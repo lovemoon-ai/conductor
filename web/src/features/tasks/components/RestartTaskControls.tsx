@@ -39,6 +39,7 @@ const isConductorFireHost = (host: string | null | undefined): boolean =>
 const GLOBAL_OPTION_PREFIX = 'global:';
 // Advertised by a daemon that can run a global-backend task's AI (RFC 0041).
 const GLOBAL_BACKEND_CAPABILITY = 'global_backend_v1';
+const SHARED_AI_GLOBAL_BACKEND_CAPABILITY = 'shared_ai_global_backend_v1';
 
 // A daemon can hold code a global AI works on only if that AI can drive it
 // with `conductor remote exec` and `conductor remote cp`. Same predicate as the
@@ -211,21 +212,25 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     return entries
       .filter((entry) => entry.host !== effectiveSelectedDaemonHost && !isConductorFireHost(entry.host))
       .map((entry) => {
-        const aiAgent = agents.find((agent) => agent.host === entry.host && !agent.shared) ?? null;
+        const aiAgent = agents.find((agent) => agent.host === entry.host) ?? null;
         const aiBackends = Array.isArray(aiAgent?.supportedBackends) ? aiAgent.supportedBackends : [];
         const disabledReason = !effectiveSelectedDaemonHost
           ? 'select a daemon first'
-          : isCodeMove
-            ? `a global AI continues on the source task's code — pick ${sourceCodeHost || 'its daemon'}`
-            : !aiAgent
-              ? `${entry.host} is offline`
-              : !getCompatibleRestartBackends(currentBackend, aiBackends).includes(entry.backend)
-                ? `${entry.backend} is not available on ${entry.host}`
-                : !(aiAgent.capabilities ?? []).includes(GLOBAL_BACKEND_CAPABILITY)
-                  ? `upgrade conductor on ${entry.host} to use it as a global backend`
-                  : !supportsRemoteWorkspace(codeAgent?.capabilities)
-                    ? `${effectiveSelectedDaemonHost} does not support conductor remote; upgrade its daemon`
-                    : null;
+          : codeAgent?.shared
+            ? `${effectiveSelectedDaemonHost} is shared with you; choose your own daemon for task code`
+            : isCodeMove
+              ? `a global AI continues on the source task's code — pick ${sourceCodeHost || 'its daemon'}`
+              : !aiAgent
+                ? `${entry.host} is offline`
+                : !getCompatibleRestartBackends(currentBackend, aiBackends).includes(entry.backend)
+                  ? `${entry.backend} is not available on ${entry.host}`
+                  : !(aiAgent.capabilities ?? []).includes(GLOBAL_BACKEND_CAPABILITY)
+                    ? `upgrade conductor on ${entry.host} to use it as a global backend`
+                    : aiAgent.shared && !(aiAgent.capabilities ?? []).includes(SHARED_AI_GLOBAL_BACKEND_CAPABILITY)
+                      ? `upgrade conductor on ${entry.host} to use a shared daemon as a global backend`
+                      : !supportsRemoteWorkspace(codeAgent?.capabilities)
+                        ? `${effectiveSelectedDaemonHost} does not support conductor remote; upgrade its daemon`
+                        : null;
         return {
           value: `${GLOBAL_OPTION_PREFIX}${globalAiBackendKey(entry)}`,
           entry,

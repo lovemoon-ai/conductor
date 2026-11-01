@@ -862,24 +862,24 @@ describe('IssuesPage', () => {
 
   it.each([
     {
-      name: 'the global backend daemon is shared with the user',
+      name: 'allows a shared daemon as the global AI',
       codeShared: false,
       aiShared: true,
-      expected: 'global-backends=codex@gpu-box:gpu-box is shared with you; global backends only work between your own daemons',
+      expected: 'global-backends=codex@gpu-box:ok',
     },
     {
-      name: 'the project daemon is shared with the user',
+      name: 'greys out global AI when the project daemon is shared with the user',
       codeShared: true,
       aiShared: false,
-      expected: 'global-backends=codex@gpu-box:daemon-a is shared with you; global backends only work between your own daemons',
+      expected: 'global-backends=codex@gpu-box:daemon-a is shared with you; choose your own daemon for task code',
     },
-  ])('greys out global AI backends when $name', ({ codeShared, aiShared, expected }) => {
+  ])('$name', ({ codeShared, aiShared, expected }) => {
     searchParamsState = new URLSearchParams('projectId=project-bound');
     globalBackendsState.backends = [{ host: 'gpu-box', backend: 'codex' }];
     agentsState = {
       agents: [
         { id: 'daemon-1', host: 'daemon-a', supportedBackends: ['claude'], capabilities: ['remote_exec', 'remote_file'], shared: codeShared },
-        { id: 'daemon-2', host: 'gpu-box', supportedBackends: ['codex'], capabilities: ['global_backend_v1'], shared: aiShared },
+        { id: 'daemon-2', host: 'gpu-box', supportedBackends: ['codex'], capabilities: ['global_backend_v1', 'shared_ai_global_backend_v1'], shared: aiShared },
       ],
       fetchAgents: fetchAgentsMock,
     };

@@ -45,6 +45,8 @@ vi.mock("@/lib/diagnostics/task-diagnostics", () => ({
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
+    userToken: { findMany: vi.fn() },
+    daemonShare: { findFirst: vi.fn() },
     task: {
       findFirst: vi.fn(),
       update: vi.fn(),
@@ -245,4 +247,52 @@ describe("/api/tasks/[taskId]", () => {
       note: "safe user field",
     });
   });
+  describe("shared AI session registration", () => {
+    const metadata = JSON.stringify({ globalBackend: { host: "daemon-a", backend: "codex" } });
+    const launchConfig = JSON.stringify({
+      remoteWorkspace: { host: "own-code", projectId: "code-project", repoRoot: "/repo", workspacePath: "/repo" },
+    });
+    beforeEach(() => {
+      vi.mocked(authService.authenticateToken).mockResolvedValue({
+        id: ACTIVE_USER.id, email: null, phone: null, tokenScope: "daemon_share",
+      });
+      vi.mocked(db.userToken.findMany).mockResolvedValue([
+        { id: "tok-1", userId: ACTIVE_USER.id, daemonShareId: "share-1" },
+      ] as any);
+      vi.mocked(db.daemonShare.findFirst).mockResolvedValue({
+        id: "share-1", guestHost: "daemon-a", granteeUserId: ACTIVE_USER.id,
+      } as any);
+      vi.mocked(db.task.findFirst).mockResolvedValue({ ...existingAiTask, metadata, launchConfig } as any);
+    });
+    const register = () => PATCH(createMockRequest({
+      method: "PATCH", url: "http://localhost/api/tasks/ai-1",
+      token: "share-token", body: { session_id: "new-session" },
+    }), { params: Promise.resolve({ taskId: "ai-1" }) });
+
+    it("registers the session without overwriting status, while guarding the remote grant", async () => {
+      expect((await register()).status).toBe(200);
+      expect(db.task.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: "ai-1", agentHost: "daemon-a", metadata, launchConfig },
+        data: expect.objectContaining({ sessionId: "new-session", status: undefined }),
+      }));
+    });
+
+    it("preserves a completion that lands while the session PATCH is in flight", async () => {
+      mockPrismaQuery(db.task.update).mockImplementation(async ({ data }: any) => ({
+        ...existingAiTask, metadata, launchConfig, status: "completed",
+        ...Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined)),
+      }) as any);
+      const response = await register();
+      expect(response.status).toBe(200);
+      expect((await extractJson(response)).status).toBe("completed");
+    });
+
+    it("refuses a stale registration after a concurrent stop or grant change", async () => {
+      vi.mocked(db.task.update).mockRejectedValue({ code: "P2025" });
+      const response = await register();
+      expect(response.status).toBe(409);
+      expect(await extractJson(response)).toEqual({ error: "Task changed; retry the update" });
+    });
+  });
+
 });

@@ -38,13 +38,15 @@ describe('GlobalAiBackendsCard', () => {
     expect(screen.getByRole('checkbox', { name: 'claude @ macmini' })).toBeDisabled();
   });
 
-  it('lists only your own daemons and saves a checked backend', () => {
+  it('lists own and shared daemons, excludes fire, and saves a checked backend', () => {
     render(<GlobalAiBackendsCard agents={agents} />);
-    expect(screen.queryByText('borrowed')).toBeNull();
+    expect(screen.getByText('borrowed')).toBeInTheDocument();
     expect(screen.queryByText('conductor-fire-macmini-1')).toBeNull();
 
+    fireEvent.click(screen.getByRole('checkbox', { name: 'claude @ borrowed' }));
+    expect(saveMock).toHaveBeenLastCalledWith([{ host: 'borrowed', backend: 'claude' }]);
     fireEvent.click(screen.getByRole('checkbox', { name: 'claude @ macmini' }));
-    expect(saveMock).toHaveBeenCalledWith([{ host: 'macmini', backend: 'claude' }]);
+    expect(saveMock).toHaveBeenLastCalledWith([{ host: 'macmini', backend: 'claude' }]);
   });
 
   it('keeps an offline daemon greyed out: its entries can be removed but not added', () => {

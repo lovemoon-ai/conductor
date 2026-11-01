@@ -43,6 +43,7 @@ vi.mock("@/lib/tasks/create-ai-task", () => ({
 vi.mock("@/lib/db", () => ({
   db: {
     $transaction: vi.fn(),
+    daemonShare: { findMany: vi.fn() },
     task: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
@@ -159,6 +160,7 @@ const agents = (...capabilities: string[][]) =>
 describe("persistent task rounds API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(db.daemonShare.findMany).mockResolvedValue([]);
     useTask();
     vi.spyOn(authService, "authenticateToken").mockResolvedValue({
       id: "user-1",
@@ -305,6 +307,39 @@ describe("persistent task rounds API", () => {
           project: { ...project, id: "proj-default", daemonHost: null, workspacePath: null, repoRoot: null },
         });
       };
+
+      it.each([
+        { host: "mac-mini", caps: ["persistent_round_v1"], expected: 409 },
+        { host: "ubuntu", caps: ["persistent_round_v1", "shared_ai_global_backend_v1"], expected: 403 },
+        { host: "mac-mini", caps: ["persistent_round_v1", "shared_ai_global_backend_v1"], expected: 200 },
+      ])("validates shared AI capability and own code on later rounds: %j", async ({ host, caps, expected }) => {
+        useGlobalTask();
+        agents(caps);
+        vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: host }] as any);
+
+        const response = await call(startRound, "/rounds", "POST", { content: "go" });
+
+        expect(response.status).toBe(expected);
+        if (expected !== 200) {
+          expect(stopTaskBeforeRelaunch).not.toHaveBeenCalled();
+          expect(finalizeAiTaskCreation).not.toHaveBeenCalled();
+        }
+      });
+
+      it("rebinds the remote grant when a later round moves to a shared AI", async () => {
+        useGlobalTask();
+        agents([], ["global_backend_v1", "shared_ai_global_backend_v1"]);
+        vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "mini-2" }] as any);
+
+        const response = await call(startRound, "/rounds", "POST", {
+          content: "go", agent_host: "mini-2", backend_type: "codex",
+        });
+
+        expect(response.status).toBe(200);
+        expect(stored.agentHost).toBe("mini-2");
+        expect(JSON.parse(stored.metadata).globalBackend).toEqual({ host: "mini-2", backend: "codex" });
+        expect(JSON.parse(stored.launchConfig as string)).toEqual({ remoteWorkspace });
+      });
 
       it("keeps working in the remote project directory, with its protocol in the prompt", async () => {
         useGlobalTask();

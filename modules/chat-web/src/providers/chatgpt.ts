@@ -55,6 +55,13 @@ export class ChatGPTAdapter implements ChatProvider {
     await this.waitForComposerReady(page).catch(() => undefined);
   }
 
+  async resumeConversation(page: Page, conversationId: string): Promise<void> {
+    this.ensureCollector(page);
+    await gotoOrThrowNetworkError(page, `${this.homeUrl}c/${encodeURIComponent(conversationId)}`, this.name);
+    await this.waitForComposerReady(page);
+    await page.locator('[data-message-author-role="user"]').first().waitFor({ state: "visible", timeout: 20_000 });
+  }
+
   async isLoggedIn(page: Page): Promise<boolean> {
     // The signed-in state always exposes the ProseMirror composer.
     // We probe the strongest identifier first (id=prompt-textarea), then

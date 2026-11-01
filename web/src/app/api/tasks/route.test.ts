@@ -3683,7 +3683,7 @@ describe("/api/tasks", () => {
         repoRoot: null,
       };
       const bothOnline = [
-        { id: "a", host: "daemon-a", supportedBackends: ["claude", "codex"], capabilities: ["global_backend_v1"] },
+        { id: "a", host: "daemon-a", supportedBackends: ["claude", "codex"], capabilities: ["global_backend_v1", "shared_ai_global_backend_v1"] },
         { id: "b", host: "daemon-b", supportedBackends: [], capabilities: ["remote_exec", "remote_file"] },
       ];
       let siblingProject: Record<string, unknown> | null = projectA;
@@ -3844,10 +3844,19 @@ describe("/api/tasks", () => {
         expect(db.task.create).not.toHaveBeenCalled();
       });
 
-      it("refuses daemons shared by someone else", async () => {
-        vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "daemon-a" }] as any);
-        const response = await postGlobal();
-        expect(response.status).toBe(403);
+      it("allows a shared AI daemon but refuses shared code", async () => {
+        mockPrismaQuery(db.daemonShare.findMany).mockImplementation(async ({ where }: any) =>
+          where.guestHost.in.includes("daemon-a") ? [{ guestHost: "daemon-a" }] as any : [],
+        );
+        const allowed = await postGlobal();
+        expect(allowed.status).toBe(200);
+        expect(createdData().agentHost).toBe("daemon-a");
+
+        vi.mocked(db.task.create).mockClear();
+        vi.mocked(db.daemonShare.findMany).mockResolvedValue([{ guestHost: "daemon-b" }] as any);
+        const refused = await postGlobal();
+        expect(refused.status).toBe(403);
+        expect((await extractJson(refused)).error).toContain("shared daemon for code");
         expect(db.task.create).not.toHaveBeenCalled();
       });
 

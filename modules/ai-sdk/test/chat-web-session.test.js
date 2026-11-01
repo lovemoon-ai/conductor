@@ -133,10 +133,88 @@ describe("ChatWebSession", () => {
     );
   });
 
-  it("ignores unknown model values and falls back to chatgpt", () => {
+  it("rejects an unknown explicit provider instead of silently opening ChatGPT", () => {
     const { mod } = createStubChatWebModule();
-    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "claude" });
-    assert.equal(s.chatWebProvider, "chatgpt");
+    for (const key of ["chatWebProvider", "provider", "model"]) {
+      assert.throws(
+        () => new ChatWebSession("chat-web", { chatWebModule: mod, [key]: "typo" }),
+        (error) => error.reason === "unknown_chat_web_provider",
+      );
+    }
+    assert.throws(
+      () => new ChatWebSession("chat-web", { chatWebModule: mod, chatWebProvider: "typo", model: "kimi" }),
+      /Unknown chat-web provider/,
+    );
+  });
+
+  it("routes Kimi selectors and keeps multiple turns in the same browser session", async () => {
+    for (const key of ["chatWebProvider", "provider", "model"]) {
+      const { mod, state } = createStubChatWebModule({
+        sendImpl: async (message, options) => {
+          options.onProgress?.("partial Kimi response");
+          return { response: `Kimi: ${message}`, conversationId: "integration-chat" };
+        },
+      });
+      const s = new ChatWebSession("chat-web", { chatWebModule: mod, [key]: "kimi" });
+      const first = await s.runTurn("remember my number: 42");
+      const second = await s.runTurn("what is my number?");
+      assert.equal(state.openCalls.length, 1);
+      assert.equal(state.openCalls[0].provider, "kimi");
+      assert.equal(state.sendCalls.length, 2);
+      assert.equal(first.metadata.chatWebProvider, "kimi");
+      assert.equal(second.metadata.providerUrl, "https://www.kimi.com/chat/integration-chat");
+      assert.equal(s.getSnapshot().providerConversationId, "integration-chat");
+      await s.runClear();
+      assert.equal(state.newChatCalls, 1);
+      assert.equal(s.getSnapshot().providerUrl, undefined);
+      await s.close();
+    }
+  });
+
+  it("prefers profile-wide queued sessions and forwards queue status", async () => {
+    const { mod, state } = createStubChatWebModule({
+      sendImpl: async (_message, options) => {
+        options.onQueue(2);
+        options.onQueue(0);
+        options.onProgress("Kimi reply");
+        return { response: "Kimi reply", conversationId: "queued-kimi" };
+      },
+    });
+    let queuedOpens = 0;
+    mod.QueuedChatSession = {
+      open: async (...args) => { queuedOpens++; return mod.ChatSession.open(...args); },
+    };
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "kimi" });
+    const statuses = [];
+    s.setWorkingStatusHandler((status) => statuses.push(status));
+    await s.runTurn("hello");
+    assert.equal(queuedOpens, 1);
+    assert.equal(state.openCalls[0].provider, "kimi");
+    assert.ok(statuses.some((status) => status.phase === "queued" && status.status_line.includes("2 ahead")));
+    assert.ok(statuses.some((status) => status.phase === "message_aggregation"));
+    assert.equal(statuses.at(-1).phase, "turn_completed");
+    await s.close();
+  });
+
+  it("interrupts a queued turn through its AbortSignal", async () => {
+    let entered;
+    const ready = new Promise((resolve) => { entered = resolve; });
+    const { mod } = createStubChatWebModule({
+      sendImpl: (_message, options) => new Promise((_resolve, reject) => {
+        options.onQueue(1);
+        options.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+        entered();
+      }),
+    });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "kimi" });
+    const statuses = [];
+    s.setWorkingStatusHandler((status) => statuses.push(status));
+    const checked = assert.rejects(s.runTurn("do not send after cancellation"), { name: "AbortError" });
+    await ready;
+    await s.interruptCurrentTurn();
+    await checked;
+    assert.equal(statuses.at(-1).phase, "turn_interrupted");
+    await s.close();
   });
 
   it("boots a headed ChatSession and registers builtin providers exactly once", async () => {

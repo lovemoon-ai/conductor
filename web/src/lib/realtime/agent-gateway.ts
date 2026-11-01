@@ -1714,6 +1714,7 @@ export const setupAgentGateway = (): WebSocketServer => {
             try {
               const result = await commitTaskStatusUpdate({
                 userId: user.id,
+                tokenScope: user.tokenScope,
                 agentHost,
                 taskId,
                 status,
@@ -2012,6 +2013,7 @@ export const setupAgentGateway = (): WebSocketServer => {
               try {
                 await commitTaskStatusUpdate({
                   userId: user.id,
+                  tokenScope: user.tokenScope,
                   agentHost,
                   taskId: task.id,
                   status: "running",

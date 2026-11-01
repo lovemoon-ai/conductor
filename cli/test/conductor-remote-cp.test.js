@@ -117,6 +117,47 @@ test("formatBytes stays readable across units", () => {
   assert.equal(formatBytes(1536), "1.5 KB");
 });
 
+test("runRemoteCp forwards the task id on control, streaming and cleanup requests", async (t) => {
+  const previousTaskId = process.env.CONDUCTOR_TASK_ID;
+  process.env.CONDUCTOR_TASK_ID = "task-cp";
+  const dir = await makeTempDir();
+  t.after(async () => {
+    if (previousTaskId === undefined) delete process.env.CONDUCTOR_TASK_ID;
+    else process.env.CONDUCTOR_TASK_ID = previousTaskId;
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  const payload = Buffer.from("task scoped");
+  const source = path.join(dir, "source.bin");
+  await fsp.writeFile(source, payload);
+  const upload = makeFetch([
+    { body: { transferId: "up-task", status: "staged" } },
+    { body: { transferId: "up-task", status: "uploaded" } },
+    { body: { transferId: "up-task", status: "ready", path: "/srv/source.bin" } },
+  ]);
+  assert.equal(await runRemoteCp([source, "ubuntu:/srv/source.bin"], {
+    config, fetch: upload.fetch, console: makeConsole(),
+  }), 0);
+  assert.deepEqual(upload.calls.map((call) => call.init.method), ["POST", "PUT", "POST"]);
+  assert.ok(upload.calls.every((call) => call.init.headers["X-Conductor-Task-Id"] === "task-cp"));
+
+  const download = makeFetch([
+    {
+      body: {
+        transferId: "down-task", status: "ready", sizeBytes: payload.length,
+        sha256: sha256(payload), name: "download.bin",
+      },
+    },
+    { bytes: payload },
+    { body: { transferId: "down-task", status: "cancelled" } },
+  ]);
+  assert.equal(await runRemoteCp(["ubuntu:/srv/source.bin", path.join(dir, "download.bin")], {
+    config, fetch: download.fetch, console: makeConsole(),
+  }), 0);
+  assert.deepEqual(download.calls.map((call) => call.init.method), ["POST", "GET", "DELETE"]);
+  assert.ok(download.calls.every((call) => call.init.headers["X-Conductor-Task-Id"] === "task-cp"));
+});
+
 test("runRemoteCp uploads a local file and delivers it", async () => {
   const dir = await makeTempDir();
   const source = path.join(dir, "build.tar.gz");

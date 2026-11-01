@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import type { AuthUser } from '@/lib/auth/service';
+import { normalizeTaskStatus } from '@/lib/tasks/task-config';
 import { isHostAllowedForShare } from './service';
 
 /**
@@ -196,7 +197,7 @@ export const isShareHostAllowed = (binding: ShareBinding, host: string): boolean
 
 /**
  * Row-level scoping: a share token may only touch resources that live on its
- * own guest host.
+ * own guest host, plus the narrow task-bound Global Backend remote exception.
  *
  * Path allowlisting alone is NOT sufficient, and reasoning that "these routes
  * already filter by `project: { userId }`, so the token can only reach the
@@ -283,14 +284,109 @@ const isBodyHostRedirectAllowed = (
   return true;
 };
 
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : null;
+};
+
+const hasOwn = (record: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(record, key);
+
+/**
+ * A share token must not mint the server-owned evidence used by the remote
+ * task exception below. Full-token Global Backend creation and server-side
+ * restart may write these fields; direct task create/PATCH by a guest may not.
+ */
+const forgesGlobalBackendBinding = (pathname: string, body: unknown): boolean => {
+  if (!/^\/api\/tasks(?:\/[^/]+)?\/?$/.test(pathname)) return false;
+  const record = asRecord(body);
+  if (!record) return false;
+  if (['global_backend', 'globalBackend', 'remote_workspace', 'remoteWorkspace', 'remote_worktree', 'remoteWorktree']
+    .some((key) => hasOwn(record, key))) return true;
+  const metadata = asRecord(record.metadata);
+  if (metadata && hasOwn(metadata, 'globalBackend')) return true;
+  const launchConfig = asRecord(record.launch_config ?? record.launchConfig);
+  return Boolean(launchConfig &&
+    ['remote_workspace', 'remoteWorkspace', 'remote_worktree', 'remoteWorktree']
+      .some((key) => hasOwn(launchConfig, key)));
+};
+
+const ACTIVE_REMOTE_TASK_STATUSES = ['pending', 'init', 'running', 'unknown', 'killing'];
+const GLOBAL_REMOTE_PATH = /^\/api\/agents\/[^/]+\/(?:exec(?:\/runs\/[^/]+)?|files(?:\/[^/]+(?:\/(?:content|deliver))?)?)$/;
+const sameHost = (left: unknown, right: unknown): boolean =>
+  typeof left === 'string' && typeof right === 'string' && left.toLowerCase() === right.toLowerCase();
+
+/**
+ * RFC 0041: a shared AI may reach only the own code daemon of an active,
+ * full-token-created Global Backend task. The task id is not a secret; the
+ * authorization comes from the server-owned task binding, not the header.
+ */
+const isGlobalBackendRemoteAllowed = async (
+  binding: ShareBinding,
+  requestedHost: string,
+  taskId: string | null | undefined,
+): Promise<boolean> => {
+  if (!taskId?.trim()) return false;
+  const task = await db.task.findFirst({
+    where: {
+      id: taskId.trim(),
+      project: { userId: binding.granteeUserId },
+      agentHost: binding.guestHost,
+      taskType: 'ai_task',
+      status: { in: ACTIVE_REMOTE_TASK_STATUSES },
+      achievedAt: null,
+    },
+    select: { id: true, metadata: true, launchConfig: true },
+  });
+  if (!task) return false;
+
+  const globalBackend = asRecord(asRecord(task.metadata)?.globalBackend);
+  if (!sameHost(globalBackend?.host, binding.guestHost)) return false;
+  const launchConfig = asRecord(task.launchConfig);
+  const remote = asRecord(launchConfig?.remoteWorkspace ?? launchConfig?.remote_workspace)
+    ?? asRecord(launchConfig?.remoteWorktree ?? launchConfig?.remote_worktree);
+  const remoteHost = remote?.host;
+  if (typeof remoteHost !== 'string' || !sameHost(remoteHost, requestedHost) ||
+      typeof remote?.projectId !== 'string') return false;
+
+  const codeProject = await db.project.findFirst({
+    where: { id: remote.projectId, userId: binding.granteeUserId },
+    select: { id: true, daemonHost: true },
+  });
+  // A local source on the user's unbound default project can also become a
+  // remote successor. Its server-owned binding names the code daemon.
+  if (!codeProject || (codeProject.daemonHost && !sameHost(codeProject.daemonHost, requestedHost))) return false;
+  const sharedCode = await db.daemonShare.findFirst({
+    where: {
+      granteeUserId: binding.granteeUserId,
+      status: 'active',
+      guestHost: remoteHost,
+    },
+    select: { id: true },
+  });
+  return !sharedCode;
+};
+
 export async function isResourceInShareScope(
   binding: ShareBinding,
   pathname: string,
   body: unknown,
+  taskId?: string | null,
 ): Promise<boolean> {
   // Applied first and unconditionally: no route may redirect work off this
   // share's own host, whatever else it does.
-  if (!isBodyHostRedirectAllowed(binding, body)) return false;
+  if (!isBodyHostRedirectAllowed(binding, body) || forgesGlobalBackendBinding(pathname, body)) {
+    return false;
+  }
 
   const hostFilter = { OR: [{ agentHost: binding.guestHost }, { executionHost: binding.guestHost }] };
 
@@ -302,9 +398,30 @@ export async function isResourceInShareScope(
         project: { userId: binding.granteeUserId },
         ...hostFilter,
       },
-      select: { id: true },
+      select: { id: true, metadata: true, status: true },
     });
-    return Boolean(task);
+    if (!task) return false;
+    // A guest may report progress, but only a full-token user may extend an
+    // existing remote grant into a restart/successor or reactivate it via PATCH.
+    const metadata = asRecord(task.metadata);
+    if (metadata?.globalBackend) {
+      if (/\/(?:restart|rounds|persistent)\/?$/.test(pathname)) return false;
+      const record = asRecord(body);
+      // A scheduled user message could start another persistent round later.
+      if (record && /\/scheduled-messages(?:\/[^/]+)?\/?$/.test(pathname)) return false;
+      if (record && ['completed', 'killed'].includes(normalizeTaskStatus(task.status))) return false;
+      // User messages can implicitly start another persistent round.
+      if (record && /\/(?:messages|insert)\/?$/.test(pathname) &&
+          asRecord(metadata.persistent)?.roundEndedAt) return false;
+      if (/^\/api\/tasks\/[^/]+\/?$/.test(pathname) && record) {
+        if (hasOwn(record, 'task_type') || hasOwn(record, 'taskType')) return false;
+        const patchedMetadata = asRecord(record.metadata);
+        if (patchedMetadata && hasOwn(patchedMetadata, 'persistent')) return false;
+        if (hasOwn(record, 'status') &&
+            !['killed', 'completed'].includes(normalizeTaskStatus(record.status))) return false;
+      }
+    }
+    return true;
   }
 
   // Collection reads carry no destination to redirect, and collection writes
@@ -385,7 +502,10 @@ export async function isResourceInShareScope(
     // host exactly against the live connection, so a case-tolerant gate here
     // cannot admit a host that does not exist.
     const requested = decodeURIComponent(agentHostMatch[1]);
-    return isHostAllowedForShare(requested, binding.guestHost.toLowerCase());
+    if (isHostAllowedForShare(requested, binding.guestHost.toLowerCase())) return true;
+    return GLOBAL_REMOTE_PATH.test(pathname)
+      ? isGlobalBackendRemoteAllowed(binding, requested, taskId)
+      : false;
   }
 
   const diagMatch = /^\/api\/diagnostics\/tasks\/([^/]+)/.exec(pathname);

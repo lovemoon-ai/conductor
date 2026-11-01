@@ -20,7 +20,11 @@ import {
   buildRemoteWorktreeForTarget,
   resolveRemoteTarget,
 } from "@/lib/tasks/remote-worktree";
-import { readTaskGlobalBackend } from "@/lib/tasks/global-backend";
+import {
+  findSharedGuestHosts,
+  readTaskGlobalBackend,
+  SHARED_AI_GLOBAL_BACKEND_CAPABILITY,
+} from "@/lib/tasks/global-backend";
 import { canMergeProjectsByFields } from "@/lib/projects/grouping";
 import { evaluateRuntimeHealth } from "@/lib/tasks/runtime-preflight";
 import {
@@ -359,6 +363,15 @@ export async function startPersistentRound(input: {
   const globalRemote = readTaskGlobalBackend(task.metadata)
     ? previousRemoteWorktree ?? previousRemoteWorkspace
     : null;
+  if (globalRemote) {
+    const shared = await findSharedGuestHosts(input.userId, [agentHost, globalRemote.host]);
+    if (shared.has(globalRemote.host)) {
+      return fail(403, "global_backend cannot use a shared daemon for code");
+    }
+    if (shared.has(agentHost) && !agent.capabilities.includes(SHARED_AI_GLOBAL_BACKEND_CAPABILITY)) {
+      return fail(409, `Upgrade the conductor CLI on ${agentHost} to use a shared daemon as a global AI backend`);
+    }
+  }
   // The code's project row on the other daemon: needed to tell whether this
   // task's project is a copy of the same repository (RFC 0041).
   const globalRemoteProject = globalRemote
@@ -480,6 +493,9 @@ export async function startPersistentRound(input: {
         roundEndMessageId: null,
         roundStarting: null,
       });
+      // Later rounds may move the AI to another (including shared) daemon.
+      // Keep the server-owned remote grant in sync with the new execution host.
+      if (globalRemote) metadata.globalBackend = { host: agentHost, backend: backendType };
       const { count } = await tx.task.updateMany({
         where: { id: task.id, metadata: current?.metadata ?? null },
         data: {

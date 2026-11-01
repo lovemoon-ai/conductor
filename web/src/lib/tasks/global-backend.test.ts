@@ -18,8 +18,13 @@ vi.mock("@/lib/auth/service", () => ({
 const { db } = await import("@/lib/db");
 const { getGlobalAiBackends } = await import("@/lib/user-preferences");
 const { ensureDefaultProject } = await import("@/lib/auth/service");
-const { isGlobalBackendAgentHost, readGlobalBackendRequest, readTaskGlobalBackend, resolveGlobalBackendMount } =
-  await import("./global-backend");
+const {
+  isGlobalBackendAgentHost,
+  readGlobalBackendRequest,
+  readTaskGlobalBackend,
+  resolveCrossDaemonRemoteBinding,
+  resolveGlobalBackendMount,
+} = await import("./global-backend");
 
 const findSiblings = mockPrismaQuery(db.project.findMany);
 const findShares = mockPrismaQuery(db.daemonShare.findMany);
@@ -199,22 +204,48 @@ describe("resolveGlobalBackendMount", () => {
   it("treats the project's own daemon as a local task", async () => {
     vi.mocked(getGlobalAiBackends).mockResolvedValue([{ host: "macmini", backend: "codex" }]);
     expect(await resolve({ request: { host: "macmini", backend: "codex" } })).toEqual({ local: true });
-    expect(findShares).not.toHaveBeenCalled();
+    expect(findShares).toHaveBeenCalledWith({
+      where: { granteeUserId: "user-1", status: "active", guestHost: { in: ["macmini"] } },
+      select: { guestHost: true },
+    });
     expect(findSiblings).not.toHaveBeenCalled();
     expect(ensureDefaultProject).not.toHaveBeenCalled();
   });
 
-  it("refuses hosts lent through an active DaemonShare with 403", async () => {
-    for (const guestHost of ["ubuntu", "macmini"]) {
-      findShares.mockResolvedValueOnce([{ guestHost } as never]);
-      const result = await resolve();
-      expect(result).toMatchObject({ status: 403 });
-      expect((result as { error: string }).error).toContain(`${guestHost} is shared with you`);
-    }
+  it("allows a shared daemon as the AI side while code stays on an own daemon", async () => {
+    findShares.mockResolvedValueOnce([{ guestHost: "ubuntu" } as never]);
+    const result = await resolve({
+      connectedAgents: [
+        bothOnline[0],
+        { ...bothOnline[1], capabilities: [...bothOnline[1].capabilities, "shared_ai_global_backend_v1"] },
+      ],
+    });
+    expect(result).toMatchObject({ agentHost: "ubuntu", secondProjectId: "proj-a" });
     expect(findShares).toHaveBeenCalledWith({
       where: { granteeUserId: "user-1", status: "active", guestHost: { in: ["ubuntu", "macmini"] } },
       select: { guestHost: true },
     });
+  });
+
+  it("requires a task-authorization-capable CLI for a shared AI daemon", async () => {
+    findShares.mockResolvedValueOnce([{ guestHost: "ubuntu" } as never]);
+    const result = await resolve();
+    expect(result).toEqual({
+      error: "Upgrade the conductor CLI on ubuntu to use a shared daemon as a global AI backend",
+      status: 409,
+    });
+  });
+
+  it("refuses a shared daemon as the code side, including the same-host shortcut", async () => {
+    findShares.mockResolvedValueOnce([{ guestHost: "macmini" } as never]);
+    const remote = await resolve();
+    expect(remote).toMatchObject({ status: 403 });
+    expect((remote as { error: string }).error).toContain("macmini is shared with you");
+
+    vi.mocked(getGlobalAiBackends).mockResolvedValue([{ host: "macmini", backend: "codex" }]);
+    findShares.mockResolvedValueOnce([{ guestHost: "macmini" } as never]);
+    const local = await resolve({ request: { host: "macmini", backend: "codex" } });
+    expect(local).toMatchObject({ status: 403 });
   });
 
   it("requires the project daemon to be online with remote_exec and remote_file", async () => {
@@ -354,5 +385,43 @@ describe("resolveGlobalBackendMount", () => {
     expect(await baseRefOf({})).toBe("main");
     expect(await baseRefOf({ worktreeBranch: null })).toBe("abc1234");
     expect(await baseRefOf({ worktreeBranch: null, lastCommit: null })).toBe("HEAD");
+  });
+});
+
+
+describe("resolveCrossDaemonRemoteBinding", () => {
+  const args = {
+    userId: "user-1",
+    sourceHost: "macmini",
+    targetHost: "shared-ai",
+    targetCapabilities: ["global_backend_v1", "shared_ai_global_backend_v1"],
+    connectedAgents: [{ host: "macmini", capabilities: ["remote_exec", "remote_file"] }],
+    projectId: "proj-a",
+    sourceWorktreeLaunchConfig: null,
+    sourceCwd: "/Users/a/ws/conductor/web",
+    projectRepoRoot: "/Users/a/ws/conductor",
+  };
+
+  beforeEach(() => {
+    findShares.mockReset();
+  });
+
+  it("allows a shared AI target but refuses a shared code source", async () => {
+    findShares.mockResolvedValueOnce([{ guestHost: "shared-ai" } as never]);
+    await expect(resolveCrossDaemonRemoteBinding(args)).resolves.toEqual({
+      remoteWorkspace: {
+        host: "macmini",
+        projectId: "proj-a",
+        repoRoot: "/Users/a/ws/conductor",
+        workspacePath: "/Users/a/ws/conductor/web",
+      },
+    });
+    expect(findShares).toHaveBeenCalledWith({
+      where: { granteeUserId: "user-1", status: "active", guestHost: { in: ["macmini", "shared-ai"] } },
+      select: { guestHost: true },
+    });
+
+    findShares.mockResolvedValueOnce([{ guestHost: "macmini" } as never]);
+    await expect(resolveCrossDaemonRemoteBinding(args)).resolves.toBeNull();
   });
 });

@@ -2,8 +2,9 @@
  * Public entry point for `@love-moon/chat-web`.
  *
  * ChatRuntimeClient and RuntimeChatSession connect to an isolated multi-chat
- * daemon. The CLI exposes serve/chat/turn commands. ChatSession remains
- * available for callers that manage a single browser profile directly.
+ * daemon. The CLI exposes serve/chat/turn commands.
+ * QueuedChatSession shares a browser and turn queue across tasks/processes.
+ * ChatSession offers exclusive ownership and direct Playwright Page access.
  *
  * @example
  *   import { ChatSession, registerBuiltinProviders } from "@love-moon/chat-web";
@@ -27,6 +28,8 @@ export {
   type SendResult,
   type SessionOpenOptions,
 } from "./session.js";
+
+export { QueuedChatSession } from "./queued-session.js";
 
 // Provider plumbing.
 export * from "./core/provider.js";

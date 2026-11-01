@@ -24,6 +24,7 @@ import {
   RECLAIMABLE_KILLED_REASON,
   type KilledReason,
 } from "@/lib/tasks/killed-reason";
+import { parseJsonObject } from "@/lib/tasks/task-config";
 import { capturePersistentRoundSummary } from "@/lib/tasks/persistent-task";
 
 type TaskOwnershipRecord = {
@@ -589,6 +590,7 @@ export async function commitSdkMessage(input: {
 
 export async function commitTaskStatusUpdate(input: {
   userId: string;
+  tokenScope?: string | null;
   agentHost: string;
   taskId: string;
   status: string;
@@ -633,6 +635,20 @@ export async function commitTaskStatusUpdate(input: {
   const summary = normalizeOptionalString(input.summary);
   const statusEventId = normalizeOptionalString(input.statusEventId);
   const currentStatus = normalizeTaskStatus(task.status);
+  const protectsSharedRemoteGrant =
+    input.tokenScope === "daemon_share" && Boolean(parseJsonObject(task.metadata)?.globalBackend);
+  if (
+    protectsSharedRemoteGrant &&
+    TERMINAL_TASK_STATUSES.has(currentStatus) &&
+    !TERMINAL_TASK_STATUSES.has(status)
+  ) {
+    return { taskId: task.id, projectId: task.projectId, status: currentStatus, duplicate: false };
+  }
+  // Keep the check in the UPDATE predicate too, so a concurrent stop/pack
+  // cannot be overwritten by an earlier in-flight "running" report.
+  const statusWriteWhere = protectsSharedRemoteGrant && !TERMINAL_TASK_STATUSES.has(status)
+    ? { id: task.id, achievedAt: null, status: { notIn: ["completed", "killed", "killing"] } }
+    : { id: task.id };
   if (currentStatus === "killing" && status !== "completed" && status !== "killed") {
     return {
       taskId: task.id,
@@ -733,19 +749,19 @@ export async function commitTaskStatusUpdate(input: {
       await withKilledReasonFallback(
         () =>
           db.task.update({
-            where: { id: task.id },
+            where: statusWriteWhere,
             data: buildKilledUpdateData(),
           }),
         () =>
           db.task.update({
-            where: { id: task.id },
+            where: statusWriteWhere,
             data: baseUpdateData,
           }),
       );
       return;
     }
     await db.task.update({
-      where: { id: task.id },
+      where: statusWriteWhere,
       data: baseUpdateData,
     });
   };
@@ -773,7 +789,7 @@ export async function commitTaskStatusUpdate(input: {
             },
           }),
           db.task.update({
-            where: { id: task.id },
+            where: statusWriteWhere,
             data: taskData,
           }),
         ]);

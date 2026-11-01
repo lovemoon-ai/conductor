@@ -55,11 +55,17 @@ const DEFAULT_CLIs = {
   // chat-web is the runtime backend (an in-process Chromium driver, not a CLI
   // binary). It has multiple sub-providers selected via --model. Each user-
   // facing alias below resolves to the chat-web runtime; advertising the bare
-  // `chat-web` backend would be ambiguous, so we emit two explicit aliases.
+  // `chat-web` backend would be ambiguous, so we emit explicit aliases.
   "web-chatgpt": {
     command: "chat-web",
     execArgs: "--model chatgpt",
     description: "Chat web (ChatGPT) via @love-moon/chat-web",
+    runtimeBackend: "chat-web"
+  },
+  "web-kimi": {
+    command: "chat-web",
+    execArgs: "--model kimi",
+    description: "Chat web (Kimi) via @love-moon/chat-web",
     runtimeBackend: "chat-web"
   },
   "web-gemini": {
@@ -137,10 +143,10 @@ function buildConfigEntryLines(cli, info, { commented = false } = {}) {
     lines.push(`${commentPrefix}opencode runs via ai-sdk server mode with permission=allow`);
   }
   if (cli === "web-chatgpt") {
-    // web-chatgpt / web-gemini both resolve to the chat-web runtime backend
+    // web-chatgpt / web-gemini / web-kimi resolve to the chat-web runtime backend
     // (an in-process Chromium driver via @love-moon/chat-web). The command
     // line is not executed; CLI parses --model from it.
-    lines.push(`${commentPrefix}web-chatgpt / web-gemini drive a real Chromium browser via @love-moon/chat-web`);
+    lines.push(`${commentPrefix}web-chatgpt / web-gemini / web-kimi drive a real Chromium browser via @love-moon/chat-web`);
   }
 
   lines.push(`${entryPrefix}${cli}: ${fullCommand}`);

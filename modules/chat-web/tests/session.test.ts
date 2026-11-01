@@ -148,4 +148,29 @@ describe("ChatSession", () => {
     expect(state.contextClosed).toBe(true);
     expect(session.isClosed).toBe(true);
   });
+  it("broker-owned sessions close only their own tab", async () => {
+    let pageCloses = 0;
+    let contextCloses = 0;
+    const session = ChatSession.fromBrowser({
+      provider: { name: "stub" } as ChatProvider,
+      page: { close: async () => { pageCloses++; } } as unknown as import("playwright").Page,
+      context: { close: async () => { contextCloses++; } } as unknown as import("playwright").BrowserContext,
+      userDataDir: "/tmp/stub-profile",
+      closeContext: false,
+    });
+    await session.close();
+    await session.close();
+    expect(pageCloses).toBe(1);
+    expect(contextCloses).toBe(0);
+  });
+
+  it("never submits an already cancelled prompt", async () => {
+    const { session, state } = buildStubSession();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(session.send("cancelled", { signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(state.sent).toEqual([]);
+    await session.close();
+  });
+
 });

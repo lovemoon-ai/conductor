@@ -77,18 +77,19 @@ const getGlobalBackendOptions = (
     .filter((entry) => entry.host !== normalizeHost(codeAgent.host))
     .map((entry) => {
       const agent = agentByHost.get(entry.host);
-      const sharedHost = codeAgent.shared ? codeAgent.host : agent?.shared ? entry.host : null;
-      const disabledReason = sharedHost
-        ? `${sharedHost} is shared with you; global backends only work between your own daemons`
+      const disabledReason = codeAgent.shared
+        ? `${codeAgent.host} is shared with you; choose your own daemon for task code`
         : !agent
           ? `${entry.host} is offline`
           : !(agent.supportedBackends ?? []).includes(entry.backend)
             ? `${entry.backend} is not available on ${entry.host}`
             : !(agent.capabilities ?? []).includes('global_backend_v1')
               ? `upgrade conductor on ${entry.host} to use it as a global backend`
-              : !hasRemoteCapabilities(codeAgent)
-                ? `${codeAgent.host} does not support conductor remote; upgrade its daemon`
-                : null;
+              : agent.shared && !(agent.capabilities ?? []).includes('shared_ai_global_backend_v1')
+                ? `upgrade conductor on ${entry.host} to use a shared daemon as a global backend`
+                : !hasRemoteCapabilities(codeAgent)
+                  ? `${codeAgent.host} does not support conductor remote; upgrade its daemon`
+                  : null;
       return { ...entry, disabledReason };
     });
 

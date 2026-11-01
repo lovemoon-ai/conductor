@@ -39,6 +39,8 @@ type ErrorResult = { error: string; status: number };
  * remoteWorkspace. An older CLI would start the task and then fail every step.
  */
 export const GLOBAL_BACKEND_CAPABILITY = "global_backend_v1";
+/** A shared AI must also send the task id used for per-task remote authorization. */
+export const SHARED_AI_GLOBAL_BACKEND_CAPABILITY = "shared_ai_global_backend_v1";
 
 /** `global_backend` / `globalBackend` from a request body: absent, malformed, or a host + backend. */
 export const readGlobalBackendRequest = (
@@ -55,7 +57,7 @@ export const readGlobalBackendRequest = (
   return { host, backend };
 };
 
-/** Hosts a DaemonShare lends to this user: someone else's machine, never a global backend or target. */
+/** Hosts a DaemonShare lends to this user. They may run the AI, never hold remote code. */
 export const findSharedGuestHosts = async (
   userId: string,
   hosts: string[],
@@ -118,6 +120,15 @@ export const resolveGlobalBackendMount = async (args: {
       status: 409,
     };
   }
+  // A shared daemon may run the AI, but must never hold the remote code. Do
+  // this before the same-host shortcut so a local task cannot bypass the rule.
+  const shared = await findSharedGuestHosts(args.userId, [...new Set([request.host, projectHost])]);
+  if (shared.has(projectHost)) {
+    return {
+      error: `global_backend cannot use a shared daemon for code; ${projectHost} is shared with you`,
+      status: 403,
+    };
+  }
   // Same machine: nothing is remote, it is an ordinary local task.
   if (projectHost === request.host) {
     return { local: true };
@@ -132,11 +143,10 @@ export const resolveGlobalBackendMount = async (args: {
       status: 409,
     };
   }
-  const shared = await findSharedGuestHosts(args.userId, [request.host, projectHost]);
-  if (shared.size > 0) {
+  if (shared.has(request.host) && !aiAgent.capabilities.includes(SHARED_AI_GLOBAL_BACKEND_CAPABILITY)) {
     return {
-      error: `global_backend only works between your own daemons; ${[...shared].join(", ")} is shared with you`,
-      status: 403,
+      error: `Upgrade the conductor CLI on ${request.host} to use a shared daemon as a global AI backend`,
+      status: 409,
     };
   }
   const daemonError = checkRemoteDaemon(projectHost, args.connectedAgents);
@@ -209,7 +219,8 @@ export const isGlobalBackendAgentHost = (
   );
 };
 
-const isWithinDir = (root: string, target: string): boolean => {
+/** Whether `target` is `root` or a path below it (either separator). */
+export const isWithinDir = (root: string, target: string): boolean => {
   const trimmed = root.replace(/[\\/]+$/, "");
   return target === trimmed || target.startsWith(`${trimmed}/`) || target.startsWith(`${trimmed}\\`);
 };
@@ -282,7 +293,15 @@ export const resolveCrossDaemonRemoteBinding = async (args: {
     binding = { remoteWorkspace: { host: sourceHost, projectId: args.projectId, repoRoot, workspacePath } };
   }
   if (!binding) return null;
-  // Only between the user's own daemons, like any global backend.
-  const shared = await findSharedGuestHosts(args.userId, [sourceHost, args.targetHost]);
-  return shared.size > 0 ? null : binding;
+  // A shared daemon may run the successor's AI, but the source holding the
+  // code must be one of the user's own daemons.
+  const shared = await findSharedGuestHosts(args.userId, [...new Set([sourceHost, args.targetHost])]);
+  if (shared.has(sourceHost)) return null;
+  if (
+    shared.has(args.targetHost) &&
+    !args.targetCapabilities.includes(SHARED_AI_GLOBAL_BACKEND_CAPABILITY)
+  ) {
+    return null;
+  }
+  return binding;
 };

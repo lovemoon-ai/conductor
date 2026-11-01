@@ -116,7 +116,8 @@ export async function getAuthUser(request: NextRequest): Promise<AuthUser | null
 
     // Layer 4: the resource itself must live on this share's guest host.
     // Path allowlisting alone would still let the credential -- which sits on
-    // the machine owner's disk -- act on the grantee's *other* daemons.
+    // the machine owner's disk -- act on the grantee's *other* daemons. The
+    // only exception is a verified, task-bound Global Backend remote call.
     const binding = await resolveActiveShareForToken(token, user.id);
     if (!binding) return null;
 
@@ -148,7 +149,8 @@ export async function getAuthUser(request: NextRequest): Promise<AuthUser | null
         .json()
         .catch(() => null);
     }
-    if (!(await isResourceInShareScope(binding, pathname, body))) return null;
+    const taskId = request.headers.get("x-conductor-task-id");
+    if (!(await isResourceInShareScope(binding, pathname, body, taskId))) return null;
   }
 
   return user;
