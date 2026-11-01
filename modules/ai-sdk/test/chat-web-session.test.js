@@ -155,7 +155,7 @@ describe("ChatWebSession", () => {
           return { response: `Kimi: ${message}`, conversationId: "integration-chat" };
         },
       });
-      const s = new ChatWebSession("chat-web", { chatWebModule: mod, [key]: "kimi" });
+      const s = new ChatWebSession("chat-web", { chatWebModule: mod, chatWebRuntime: false, [key]: "kimi" });
       const first = await s.runTurn("remember my number: 42");
       const second = await s.runTurn("what is my number?");
       assert.equal(state.openCalls.length, 1);
@@ -184,7 +184,7 @@ describe("ChatWebSession", () => {
     mod.QueuedChatSession = {
       open: async (...args) => { queuedOpens++; return mod.ChatSession.open(...args); },
     };
-    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "kimi" });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, chatWebRuntime: false, model: "kimi" });
     const statuses = [];
     s.setWorkingStatusHandler((status) => statuses.push(status));
     await s.runTurn("hello");
@@ -206,7 +206,7 @@ describe("ChatWebSession", () => {
         entered();
       }),
     });
-    const s = new ChatWebSession("chat-web", { chatWebModule: mod, model: "kimi" });
+    const s = new ChatWebSession("chat-web", { chatWebModule: mod, chatWebRuntime: false, model: "kimi" });
     const statuses = [];
     s.setWorkingStatusHandler((status) => statuses.push(status));
     const checked = assert.rejects(s.runTurn("do not send after cancellation"), { name: "AbortError" });

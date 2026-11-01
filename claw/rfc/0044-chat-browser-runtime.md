@@ -1,8 +1,8 @@
-# 0042 面向 AI 的多站点并行聊天运行时
+# 0044 面向 AI 的多站点并行聊天运行时
 
 ## Status
 
-第一版已实现 Chromium/Playwright 后台运行时、独立 worker/profile、SDK/CLI、本地事件流与恢复保护。四站点模拟页面已覆盖；真实账号兼容性待验收。Moli 作为后续资源优化项。使用方式见 [chat-web README](../../modules/chat-web/README.md)。
+第一版已实现 Chromium/Playwright 后台运行时、独立 worker/profile、SDK/CLI、本地事件流与恢复保护。四站点模拟页面已覆盖；独立运行时已用真实 Kimi/DeepSeek 验证。2026-11-01 接入 Conductor 的默认 Kimi/DeepSeek 路由、登录和托管进程；本轮 Conductor Kimi 实测通过，DeepSeek 仍需重新登录验收。Moli 作为后续资源优化项。使用方式见 [chat-web README](../../modules/chat-web/README.md)。
 
 ## Owner
 

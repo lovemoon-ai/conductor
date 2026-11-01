@@ -51,6 +51,7 @@ export function runConductorCli(args = argv, deps = {}) {
     "send-file",
     "channel",
     "serve-ai",
+    "chat-web",
     "project",
     "issue",
     "task",
@@ -140,6 +141,7 @@ Subcommands:
   diagnose  Diagnose a task and print likely root cause
   send-file Upload a local file into a task session
   channel   Connect user-owned chat channel providers
+  chat-web  Sign in and manage browser chat accounts and conversations
   serve-ai  Start an OpenAI-compatible local AI server
   project   Manage Conductor projects (list/show/create/update/delete/reorder/
             agents/collab/labels/...)

@@ -66,7 +66,7 @@ describe("AI SDK DeepThink", () => {
       assert.equal(opened.deepThink, false);
       assert.equal(opened.conversationId, "existing");
     } finally { await session.close(); }
-    assert.throws(() => new ChatWebSession("chat-web", { chatWebProvider: "deepseek", chatWebDeepThink: true }), /chatWebRuntimeSocket/);
+    assert.throws(() => new ChatWebSession("chat-web", { chatWebProvider: "deepseek", chatWebRuntime: false, chatWebDeepThink: true }), /DeepSeek chat runtime/);
     assert.throws(() => new ChatWebSession("chat-web", { chatWebProvider: "kimi", chatWebRuntimeSocket: "/unused", chatWebDeepThink: true }), /DeepSeek/);
   });
 });

@@ -20,6 +20,7 @@ export interface TurnEvent {
   at: string;
   text?: string;
   error?: string;
+  errorCode?: string;
   stopConfirmed?: boolean;
   source?: "sse" | "connect" | "dom";
 }
@@ -36,6 +37,7 @@ export interface Turn {
   events: TurnEvent[];
   createdAt: string;
   error?: string;
+  errorCode?: string;
   stopConfirmed?: boolean;
   source?: "sse" | "connect" | "dom";
 }
@@ -54,10 +56,12 @@ export interface SiteDefinition {
   assistant: string;
   stop: string;
   conversationPath: string;
+  conversationUrl?: string;
   streamPath: string;
   format: "chatgpt" | "deepseek" | "kimi" | "claude" | "text";
   experimental?: boolean;
   deepThink?: string;
+  authenticated?: string;
 }
 
 export interface WorkerResult {
@@ -72,6 +76,7 @@ export interface WorkerNotice {
   type: "submitting" | "progress";
   text?: string;
   url?: string;
+  providerConversationId?: string;
 }
 export interface ChatWorker {
   open(): Promise<WorkerResult>;
@@ -82,6 +87,7 @@ export interface ChatWorker {
 export interface WorkerConfig {
   conversation: Conversation;
   profileDir: string;
+  authDirectory?: string;
   site: SiteDefinition;
   executablePath?: string;
   channel?: string;

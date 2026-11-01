@@ -4,6 +4,35 @@ ChatGPT、DeepSeek、Kimi、Claude 网页聊天的本地运行时。第一版使
 
 Kimi、Claude 适配标记为 experimental。2026-10-25 UTC 已在 macmini 使用真实 Kimi、DeepSeek 账号验证多轮、四路并行、独立取消与重启恢复；ChatGPT、Claude 仍仅有模拟站点覆盖。Moli 留作后续资源优化。
 
+## 在 Conductor 中使用 Kimi 和 DeepSeek
+
+使用包含本运行时的 Conductor 版本，在运行 daemon 的主机上登录：
+
+```bash
+conductor chat-web login kimi
+conductor chat-web login deepseek
+```
+
+命令打开 Chromium 登录窗口，检测到登录后保存账号认证并关闭窗口；超时会明确失败。自定义配置使用 --config-file PATH，命令会读取配置 envs 中的 CHAT_WEB_* 与代理设置，终端显式环境变量优先。登录与 daemon 应使用同一操作系统用户和 CHAT_WEB_HOME。登录过期时按提示重新执行登录，再在原任务发送消息；认证失败的浏览器会释放，重试读取新的认证。
+
+daemon 的配置需要包含这些别名。新建配置时会自动提供；已有配置补上缺少的项，重启 daemon 使配置生效：
+
+```yaml
+allow_cli_list:
+  web-kimi: chat-web --model kimi
+  web-deepseek: chat-web --model deepseek
+```
+
+在 Conductor 中选择 web-kimi 或 web-deepseek 创建对话；kimi 仍表示 Kimi CLI。这两个网页别名默认自动连接或启动本地隔离运行时，无需先启动 chat-web serve 或设置 socket。每个新对话从 default 账号读取认证，独立保存网页会话和 profile，草稿、当前会话选择和聊天数据库不会从登录 profile 复制。
+
+Kimi 默认 headed，主机需有可用图形会话；DeepSeek 默认 headless。配置别名可附加 --headed / --headless，DeepSeek 还可附加 --deepthink / --no-deepthink。例如 web-deepseek: chat-web --model deepseek --no-deepthink。修改图形模式不绕过站点自身的登录或验证。
+
+Conductor 使用 chat-web-runtime:CHAT_ID 保存稳定身份，站点会话 id 单独保存。任务关闭会释放该 chat 的浏览器，重启使用同一身份恢复原网页对话。旧版 Kimi/DeepSeek 的站点会话 id 会导入到运行时，同一账号重复导入复用同一个 chat。缺失的运行时 id 会报错，不悄悄创建空白会话。Conductor 的 /clear 通过创建新 chat 开始独立对话。
+
+自动启动的 daemon 在无活动 turn、无固定登录窗口且十分钟没有请求后退出；CHAT_WEB_RUNTIME_IDLE_MS 可调整该空闲时间，最小一秒。已有任务在下一次发送前会自动重新连接或启动 daemon，并恢复原 chat；不会重发已提交的消息。手工运行 serve 的 daemon 不受此自动退出策略影响。旧 daemon 缺少账号引导能力时会提示升级，不会自动中断其聊天；显式执行 conductor chat-web runtime stop 后，下次对话会启动新版本。
+
+2026-11-01 UTC 的开发验证通过实际 AI SDK 子进程和 Conductor BridgeRunner 完成 Kimi 多轮消息、双 chat 隔离、关闭后恢复，以及停止一条生成时另一条继续完成。DeepSeek 的 Conductor 路由、账号引导和协议由自动化测试覆盖；本轮真实账号登录超时，实际收发与 DeepThink 尚待重新登录后验收。此前独立运行时的真实 DeepSeek 验证见文末。
+
 ## 启动与登录
 
 安装包和 Playwright Chromium 后：
@@ -21,7 +50,7 @@ chat-web chat login CHAT_A
 chat-web chat login CHAT_B
 ```
 
-create 输出 JSON，其中 id 是稳定的本地 chat id。把 CHAT_A、CHAT_B 替换为对应 id。login 返回后浏览器仍由 daemon 持有，在窗口中手动登录；凭证和验证步骤由用户处理。每个隔离 profile 首次需要单独授权，旧版 `chat-web login <provider>` 的共享 profile 不会自动复制到新 chat。
+create 输出 JSON，其中 id 是稳定的本地 chat id。把 CHAT_A、CHAT_B 替换为对应 id。login 返回后浏览器仍由 daemon 持有，在窗口中手动登录；凭证和验证步骤由用户处理。每个隔离 profile 首次需要单独授权，`chat-web login kimi|deepseek` 成功后会保存 default 账号认证，新建 default chat 自动导入；其他 accountId 仍需在对应 chat 窗口中登录。不会直接复制运行中的共享 profile。
 
 create 默认 headless。login 将该 chat 切为 headed。当前实测 Kimi 的已有登录态切换到 headless 后，发送返回 HTTP 401，切回 headed 可用；建议 Kimi 保持 headed（创建时可传 --headed），原因尚未确认，不自动重试提交。DeepSeek 已验证 headless 和 headed。确认站点支持后，需要后台模式时运行：
 
@@ -95,7 +124,7 @@ const results = await Promise.all(turns.map((turn) => client.wait(turn.id)));
 
 `client.events(turnId, after, signal)` 是异步迭代器，事件包括 queued、starting、submitting、message_delta、message_snapshot 和终态。message_delta 追加文本，message_snapshot 替换文本；终态事件包含最终或部分文本。事件按 turnId/seq 去重。wait 自动尝试重连，稳定 requestId 可在请求确认丢失时再次查询同一次提交；同 id 不同输入或超时报 REQUEST_CONFLICT。
 
-`RuntimeChatSession.open(provider, { socketPath, conversationId, accountId })` 提供接近旧 ChatSession 的 open/isLoggedIn/send/interruptCurrentTurn/close 接口。close 只断开 SDK 会话；显式释放远程 chat 使用 client.closeConversation。运行时会话没有原地 clear，创建新 chat 即开始独立对话。
+`RuntimeChatSession.open(provider, { socketPath, conversationId, accountId })` 提供接近旧 ChatSession 的 open/isLoggedIn/send/interruptCurrentTurn/close 接口。默认 close 只断开 SDK 会话；releaseOnClose: true 会关闭远程 chat 并释放浏览器，Conductor 的自动运行时使用此选项。显式释放也可使用 client.closeConversation。未传 socketPath 时 open 会自动确保 daemon 可用；传入 socketPath 时连接该已有 daemon。运行时会话没有原地 clear，创建新 chat 即开始独立对话。
 
 ## AI SDK 接入
 
@@ -107,7 +136,7 @@ const session = createAiSession("chat-web", {
 });
 ```
 
-也可通过 CHAT_WEB_RUNTIME_SOCKET 环境变量启用。支持 chatgpt、deepseek、kimi、claude 网页 provider。runtime session id 保持本地 id，站点 id 另存在 providerConversationId；resumeSessionId 可以传入该本地 id。未设置运行时 socket 时，现有 ChatSession 路径保持可用。
+Kimi、DeepSeek 默认自动启用运行时，例如 createAiSession("chat-web", { model: "kimi" })。显式 chatWebRuntimeSocket 或 CHAT_WEB_RUNTIME_SOCKET 可连接已运行的 daemon，并使用 chatgpt、deepseek、kimi、claude。自动模式的 Conductor 身份为 chat-web-runtime:CHAT_ID，显式 socket 模式继续使用本地 chat id；站点 id 存于 providerConversationId。ChatGPT/Gemini 默认使用 QueuedChatSession；chatWebRuntime: false 可显式选择共享 profile 路径。
 
 ## 隔离与恢复
 

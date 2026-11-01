@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
+import { readRuntimeAccount, applyRuntimeAccount } from "./accounts.js";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { launchProviderBrowser } from "../core/browser.js";
 import { clearProfileOwner } from "../core/profile-lock.js";
@@ -146,6 +148,15 @@ class Session {
     this.context = launched.context;
     this.page = launched.page;
     const page = this.page;
+    const auth = await readRuntimeAccount(this.config.site.name, this.config.conversation.accountId, this.config.authDirectory);
+    const marker = path.join(directory, ".account-auth.json");
+    let importedAt = 0;
+    try { importedAt = JSON.parse(await fs.readFile(marker, "utf8")).updatedAt ?? 0; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (auth && auth.updatedAt > importedAt) {
+      await applyRuntimeAccount(this.context, auth.state);
+      await fs.writeFile(marker, JSON.stringify({ updatedAt: auth.updatedAt }), { mode: 0o600 });
+    }
     page.setDefaultTimeout(10_000);
     page.setDefaultNavigationTimeout(30_000);
     await page.exposeBinding(this.binding, ({ page: source, frame }, payload: any) => {
@@ -191,8 +202,8 @@ class Session {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       const input = await this.visible(this.config.site.input);
-      if (input) return input;
-      if (/\/(?:login|auth|signin)(?:\/|$)/i.test(new URL(this.page!.url()).pathname)) return undefined;
+      if (input && (!this.config.site.authenticated || await this.visible(this.config.site.authenticated))) return input;
+      if (/\/(?:login|auth|signin|sign_in|sign-in)(?:\/|$)/i.test(new URL(this.page!.url()).pathname)) return undefined;
       await pause(100);
     }
     return undefined;
@@ -204,7 +215,7 @@ class Session {
     const origin = new URL(this.config.site.homeUrl).origin;
     const match = url.origin === origin ? new RegExp(this.config.site.conversationPath).exec(url.pathname) : null;
     return {
-      ready: !!(await this.visible(this.config.site.input)),
+      ready: !!(await this.visible(this.config.site.input)) && (!this.config.site.authenticated || !!(await this.visible(this.config.site.authenticated))),
       ...(match ? { url: url.href, providerConversationId: match[1] } : {}),
     };
   }
@@ -298,6 +309,9 @@ class Session {
       }
       throw new RuntimeError("UNCERTAIN", "Response deadline exceeded; provider completion was not confirmed");
     } finally {
+      // A stop can precede the first text delta. Retain its provider URL so a
+      // task restart resumes that conversation instead of silently opening home.
+      try { notify({ type: "progress", text: previous, ...(await this.location()) }); } catch {}
       this.token = "";
       this.controller = undefined;
     }

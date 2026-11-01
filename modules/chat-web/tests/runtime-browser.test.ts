@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import { startRuntimeServer } from "../src/runtime/server.js";
 import { ChatRuntimeClient } from "../src/runtime/client.js";
+import { saveRuntimeAccount, applyRuntimeAccount } from "../src/runtime/accounts.js";
 import { runtimeSites } from "../src/runtime/sites.js";
 
 const executable = process.env.CHAT_WEB_TEST_BROWSER ?? chromium.executablePath();
@@ -31,7 +32,7 @@ function fixtureHtml(provider: string): string {
   const thinkingControl = provider === "deepseek" ? '<div id="deepthink" class="ds-toggle-button" aria-pressed="false">DeepThink</div><div class="ds-toggle-button" aria-pressed="true">Search</div>' : "";
   return `<!doctype html><html><body>${input}
     ${controls}${thinkingControl}
-    <main></main><script>
+    <div data-testid="sidebar-user-menu-trigger" class="user-profile-trigger">fixture account</div><main></main><script>
     let controller, xhr;
     const composer = document.querySelector('textarea, [contenteditable]');
     const stop = document.querySelector('#stop-control');
@@ -62,10 +63,10 @@ function fixtureHtml(provider: string): string {
             xhr.open('POST', ${JSON.stringify(endpoint)});
             xhr.onload = resolve; xhr.onerror = reject; xhr.onabort = reject;
             xhr.onprogress = () => { document.querySelector('main .ds-markdown:last-child').textContent = 'private thought'; };
-            xhr.send(JSON.stringify({message, id, turn, thinking_enabled: deepthink.getAttribute('aria-pressed') === 'true', provider: ${JSON.stringify(provider)}}));
+            xhr.send(JSON.stringify({message, id, turn, auth: localStorage.getItem('access_token'), thinking_enabled: deepthink.getAttribute('aria-pressed') === 'true', provider: ${JSON.stringify(provider)}}));
           });
         } else {
-          const response = await fetch(${JSON.stringify(endpoint)}, { method: 'POST', body: JSON.stringify({message, id, turn, provider: ${JSON.stringify(provider)}}), signal: controller.signal });
+          const response = await fetch(${JSON.stringify(endpoint)}, { method: 'POST', body: JSON.stringify({message, id, turn, auth: localStorage.getItem('access_token'), provider: ${JSON.stringify(provider)}}), signal: controller.signal });
           const reader = response.body.getReader();
           for (;;) {
             const {value, done} = await reader.read(); if (done) break;
@@ -94,7 +95,7 @@ function connectFrame(value: unknown, flags = 0): Buffer {
 }
 
 async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {}) {
-  const requests: { provider: string; message: string; id: string; turn: number; thinking_enabled?: boolean }[] = [];
+  const requests: { provider: string; message: string; id: string; turn: number; thinking_enabled?: boolean; auth?: string }[] = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url!, "http://localhost");
     if (request.method !== "POST") {
@@ -135,7 +136,7 @@ async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {})
           data.provider === "deepseek" ? JSON.stringify({ p: "response", o: "BATCH", v: [{ p: "status", o: "SET", v: "FINISHED" }] }) : "[DONE]") + "\n\n");
         clearInterval(timer);
       }
-    }, 250);
+    }, data.message === "early-stop" ? 5000 : 250);
     response.on("close", () => clearInterval(timer));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -150,10 +151,59 @@ async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {})
   let runtime = await startRuntimeServer(options);
   cleanup.push(async () => runtime.close());
   const client = new ChatRuntimeClient(runtime.socketPath);
-  return { client, requests, restart: async () => { await runtime.close(); runtime = await startRuntimeServer(options); } };
+  return { client, requests, directory, origin, restart: async () => { await runtime.close(); runtime = await startRuntimeServer(options); } };
 }
 
 describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium workers", () => {
+  it("restores credentials with older Playwright without resetting refreshed tokens on reload", async () => {
+    const { origin, directory } = await startFixture();
+    const context = await chromium.launchPersistentContext(path.join(directory, "fallback"), { headless: true, executablePath: executable });
+    cleanup.push(() => context.close());
+    (context as any).setStorageState = undefined;
+    await applyRuntimeAccount(context, { cookies: [], origins: [{ origin, localStorage: [{ name: "access_token", value: "original" }] }] });
+    const page = context.pages()[0]!;
+    await page.goto(origin + "/kimi/");
+    expect(await page.evaluate(() => localStorage.getItem("access_token"))).toBe("original");
+    await page.evaluate(() => localStorage.setItem("access_token", "refreshed"));
+    await page.reload();
+    expect(await page.evaluate(() => localStorage.getItem("access_token"))).toBe("refreshed");
+  }, 20_000);
+
+  it("closes a task stopped before its first token and restores that provider conversation", async () => {
+    const { client, requests, restart } = await startFixture();
+    const chat = await client.create({ provider: "kimi" });
+    const turn = await client.submit({ conversationId: chat.id, requestId: "early", input: "early-stop" });
+    for (let n = 0; n < 300 && !requests.length; n++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(requests.length).toBe(1);
+    const closed = await client.closeConversation(chat.id);
+    const stopped = await client.getTurn(turn.id);
+    expect(stopped.status).toBe("cancelled");
+    expect(stopped.stopConfirmed).toBe(true);
+    expect(stopped.text).toBe("");
+    expect(closed.url).toContain(requests[0]!.id);
+    expect(closed.providerConversationId).toBe(requests[0]!.id);
+    await restart();
+    await client.resume(chat.id);
+    const next = await client.submit({ conversationId: chat.id, requestId: "next", input: "continue" });
+    expect((await client.wait(next.id)).status).toBe("completed");
+    expect(requests[1]!.id).toBe(requests[0]!.id);
+    expect(requests[1]!.turn).toBe(2);
+  }, 30_000);
+
+  it("seeds two isolated chats from one account without copying its active conversation", async () => {
+    const { client, requests, directory, origin } = await startFixture();
+    await saveRuntimeAccount("kimi", { cookies: [], origins: [{ origin, localStorage: [
+      { name: "access_token", value: "fixture-account" }, { name: "chatId", value: "must-not-copy" },
+    ] }] }, "default", path.join(directory, "accounts"));
+    const chats = await Promise.all([client.create({ provider: "kimi" }), client.create({ provider: "kimi" })]);
+    const turns = await Promise.all(chats.map((chat, i) => client.submit({ conversationId: chat.id, requestId: "auth-" + i, input: "authenticated" })));
+    const replies = await Promise.all(turns.map(turn => client.wait(turn.id)));
+    expect(replies.every(reply => reply.status === "completed")).toBe(true);
+    expect(requests.map(request => request.auth)).toEqual(["fixture-account", "fixture-account"]);
+    expect(new Set(requests.map(request => request.id)).size).toBe(2);
+    expect(requests.every(request => request.id !== "must-not-copy")).toBe(true);
+  }, 30_000);
+
   it("streams all four adapter formats, isolates same-origin profiles, and restores a chat after restart", async () => {
     const { client, requests, restart } = await startFixture();
     const chats = await Promise.all(["chatgpt", "deepseek", "kimi", "claude"].map((provider) => client.create({ provider })));

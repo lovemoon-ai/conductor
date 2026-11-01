@@ -6,7 +6,7 @@
 
 第一版继续使用 Chromium。2026-10-30 的 [真实 Kimi 并行负载评估](performance.md) 发现，Moli 1.1.20 有内存优势，但真实 Kimi 的增量采集和完成确认尚未通过，空闲 CPU 也更高。下文七项实验验证的是本地 fixture 的基础能力，不能替代真实站点验收。
 
-Moli 的无常驻窗口、按需布局设计与面向 AI 的后台运行时一致，仍可作为 [RFC 0042](../../rfc/0042-chat-browser-runtime.md) 的后续可选执行引擎。真实 DeepSeek、ChatGPT、Claude 的兼容性和混合并发需要分别验证。
+Moli 的无常驻窗口、按需布局设计与面向 AI 的后台运行时一致，仍可作为 [RFC 0044](../../rfc/0044-chat-browser-runtime.md) 的后续可选执行引擎。真实 DeepSeek、ChatGPT、Claude 的兼容性和混合并发需要分别验证。
 
 建议先通过独立进程接入，保留 Chromium 后端。每个 chat 使用一个 `moli serve`、专用 profile 和独立 CDP 连接；外部 AI 继续使用统一聊天协议。通过目标站点验证后，再决定是否把适配能力进一步内嵌到 Rust 宿主。
 

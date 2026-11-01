@@ -72,23 +72,33 @@ export class ChatRuntime {
   get(id: string): Conversation { return this.conversation(this.store.read(), id); }
   getTurn(id: string): Turn { return this.turn(this.store.read(), id); }
   status() {
-    return { version: 1, capabilities: { deepThink: true }, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
+    return { version: 1, capabilities: { deepThink: true, accountBootstrap: true }, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
       workers: this.workers.size, activeTurns: this.active.size, stopping: this.stopping, failure: this.failure,
       pinnedChats: [...this.workers].filter(([, entry]) => entry.pinned).map(([id]) => id),
       providers: this.sites.map(({ name, experimental }) => ({ name, experimental: !!experimental })) };
   }
 
-  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean }): Promise<Conversation> {
+  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean; providerConversationId?: string }): Promise<Conversation> {
     if (this.stopping) throw new RuntimeError("SHUTTING_DOWN", "Runtime is shutting down");
     if (!this.sites.some((site) => site.name === params.provider)) throw new RuntimeError("UNSUPPORTED_PROVIDER", "Unsupported webpage provider");
     this.validateDeepThink(params.provider, params.deepThink);
+    const site = this.sites.find(entry => entry.name === params.provider)!;
+    if (params.providerConversationId !== undefined && (!site.conversationUrl || !/^[a-zA-Z0-9_-]{1,160}$/.test(params.providerConversationId))) {
+      throw new RuntimeError("INVALID_PARAMS", "Invalid provider conversation id");
+    }
     const accountId = params.accountId ?? "default";
     if (typeof accountId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(accountId)) throw new RuntimeError("INVALID_PARAMS", "Invalid accountId");
     if (params.headless !== undefined && typeof params.headless !== "boolean") throw new RuntimeError("INVALID_PARAMS", "headless must be boolean");
     return this.store.update((state) => {
+      if (params.providerConversationId) {
+        const existing = Object.values(state.conversations).find(chat => chat.provider === params.provider &&
+          chat.accountId === accountId && chat.providerConversationId === params.providerConversationId);
+        if (existing) return existing;
+      }
       if (Object.keys(state.conversations).length >= 256) throw new RuntimeError("CAPACITY", "Conversation limit reached");
       const record: Conversation = { id: randomUUID(), provider: params.provider, accountId,
-        headless: params.headless ?? true, ...(params.deepThink === undefined ? {} : { deepThink: params.deepThink }), createdAt: new Date().toISOString(), needsReview: false, closed: false };
+        headless: params.headless ?? true, ...(params.deepThink === undefined ? {} : { deepThink: params.deepThink }), createdAt: new Date().toISOString(), needsReview: false, closed: false,
+        ...(params.providerConversationId ? { providerConversationId: params.providerConversationId, url: site.conversationUrl + encodeURIComponent(params.providerConversationId) } : {}) };
       state.conversations[record.id] = record;
       return record;
     });
@@ -125,9 +135,13 @@ export class ChatRuntime {
       await this.store.update((state) => {
         this.conversation(state, id).closed = true;
       });
-      for (const turn of Object.values(this.store.read().turns)) {
-        if (turn.conversationId === id && !isTerminal(turn.status)) await this.cancel(turn.id);
-      }
+      const turns = Object.values(this.store.read().turns).filter(turn => turn.conversationId === id && !isTerminal(turn.status));
+      for (const turn of turns) await this.cancel(turn.id);
+      const settling = turns.map(turn => this.active.get(turn.id)).filter(Boolean);
+      if (settling.length) await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, 3000);
+        void Promise.allSettled(settling).then(() => { clearTimeout(timer); resolve(); });
+      });
       await this.drop(id);
       return this.get(id);
     } finally { this.closing.delete(id); this.schedule(); }
@@ -266,6 +280,7 @@ export class ChatRuntime {
       if (this.stopping) throw new RuntimeError("SHUTTING_DOWN", "Runtime is shutting down");
       const worker = (this.options.workerFactory ?? ((config) => new BrowserWorker(config)))({
         conversation, profileDir: path.join(this.options.directory, "profiles", conversation.id),
+        authDirectory: path.join(this.options.directory, "accounts"),
         site: this.sites.find((site) => site.name === conversation.provider)!,
         executablePath: this.options.executablePath, channel: this.options.channel,
       });
@@ -287,6 +302,7 @@ export class ChatRuntime {
       if (isTerminal(turn.status)) return undefined;
       const chat = this.conversation(state, turn.conversationId);
       if (notice.url) chat.url = notice.url;
+      if (notice.providerConversationId) chat.providerConversationId = notice.providerConversationId;
       if (notice.type === "submitting") {
         if (turn.status !== "cancelling") turn.status = "submitting";
         return this.append(turn, "submitting");
@@ -303,20 +319,21 @@ export class ChatRuntime {
     if (event) this.publish(event);
   }
 
-  private async finish(id: string, status: TurnStatus, result: WorkerResult = {}, error?: string): Promise<void> {
+  private async finish(id: string, status: TurnStatus, result: WorkerResult = {}, error?: string, errorCode?: string): Promise<void> {
     const event = await this.store.update((state) => {
       const turn = this.turn(state, id);
       if (isTerminal(turn.status)) return undefined;
       turn.status = status;
       if (result.text !== undefined) turn.text = result.text;
       turn.error = error;
+      turn.errorCode = errorCode;
       turn.stopConfirmed = result.stopConfirmed;
       turn.source = result.source;
       const chat = this.conversation(state, turn.conversationId);
       if (result.url) chat.url = result.url;
       if (result.providerConversationId) chat.providerConversationId = result.providerConversationId;
       if (status === "uncertain") chat.needsReview = true;
-      return this.append(turn, status, { text: turn.text, error, stopConfirmed: result.stopConfirmed, source: result.source });
+      return this.append(turn, status, { text: turn.text, error, errorCode, stopConfirmed: result.stopConfirmed, source: result.source });
     });
     if (event) this.publish(event);
   }
@@ -353,7 +370,7 @@ export class ChatRuntime {
       const cancelled = this.getTurn(id).status === "cancelling";
       const status = error.code === "CANCELLED" && error.stopConfirmed ? "cancelled" :
         cancelled && !attempted ? "cancelled" : attempted ? "uncertain" : "failed";
-      await this.finish(id, status, { stopConfirmed: error.stopConfirmed }, String(error.message ?? error).slice(0, 1000));
+      await this.finish(id, status, { stopConfirmed: error.stopConfirmed }, String(error.message ?? error).slice(0, 1000), error.code);
       await this.drop(original.conversationId);
     }
   }

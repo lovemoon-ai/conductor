@@ -6,7 +6,7 @@ import { assertMediaCapabilities, resolveTurnMedia } from "../media-input.js";
 import { normalizeContextFiles } from "../context-files.js";
 import { emitLog, normalizeLogger } from "../shared.js";
 
-const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini", "kimi"]);
+const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini", "kimi", "deepseek"]);
 const DEFAULT_CHAT_WEB_PROVIDER = "chatgpt";
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -99,27 +99,23 @@ function isPlaywrightMissingError(error) {
 /**
  * AI SDK provider that delegates to the chat-web runtime
  * (`@love-moon/chat-web`), which automates a real Chromium browser against
- * ChatGPT / Gemini / Kimi and ferries conversations through their web
- * UIs. Choose the underlying chat-web provider via:
+ * chatbot web UIs. Kimi and DeepSeek use isolated persistent chat workers
+ * with an automatically started local daemon. ChatGPT/Gemini retain the
+ * shared-profile queue unless a runtime socket is explicitly configured.
+ * Choose the underlying chat-web provider via:
  *
- *   - `options.chatWebProvider`: "chatgpt" | "gemini" | "kimi"  (preferred)
+ *   - `options.chatWebProvider`: "chatgpt" | "gemini" | "kimi" | "deepseek"
  *   - `options.provider`:        same surface
  *   - `options.model`:           same surface (fallback for ergonomic
  *                                `createAiSession("chat-web", { model: "gemini" })`)
  *
  * Defaults to "chatgpt". Aliases: "openai"/"gpt" → chatgpt, "google" → gemini.
  *
- * Lifecycle:
- *   - `boot()` lazily imports `@love-moon/chat-web`, registers its built-in
- *     providers, and opens a queued conversation tab (headed by default).
- *   - `runTurn(prompt)` calls `session.send(prompt)` and emits a single
- *     `assistant_message` with the model's reply.
- *   - `close()` releases this task's tab; the broker closes an idle browser.
- *
- * Resume: chat-web's "session" is a Chromium browser context, not a
- * conversation ID — there is no native cross-process resume. We synthesise
- * an id so the rest of ai-sdk has something stable to thread on, but
- * passing `resumeSessionId` does not reattach to a prior conversation.
+ * Login on the daemon host: conductor chat-web login kimi|deepseek.
+ * Managed runtime IDs use chat-web-runtime:<id> so restarts restore the same
+ * isolated profile and provider conversation. Legacy provider IDs are imported.
+ * Set chatWebRuntime: false to explicitly use the shared-profile queue.
+ * Explicit chatWebRuntimeSocket clients keep caller-managed lifecycle.
  */
 export class ChatWebSession extends EventEmitter {
   constructor(backend, options = {}) {
@@ -128,23 +124,22 @@ export class ChatWebSession extends EventEmitter {
     this.options = options;
     this.logger = normalizeLogger(options.logger);
     this.runtimeSocket = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET || "";
-    this.runtimeConversationId = options.chatWebConversationId || (this.runtimeSocket ? options.resumeSessionId : undefined);
     this.chatWebProvider = resolveChatWebProvider(options);
+    this.runtimeMode = Boolean(this.runtimeSocket) ||
+      (["kimi", "deepseek"].includes(this.chatWebProvider) && options.chatWebRuntime !== false);
+    this.managedRuntime = this.runtimeMode && !this.runtimeSocket;
+    const resumed = typeof options.resumeSessionId === "string" ? options.resumeSessionId : "";
+    const prefix = "chat-web-runtime:";
+    this.runtimeConversationId = options.chatWebConversationId ||
+      (this.managedRuntime ? (resumed.startsWith(prefix) ? resumed.slice(prefix.length) : undefined) : this.runtimeMode ? resumed : undefined);
+    this.runtimeProviderConversationId = this.managedRuntime && resumed && !resumed.startsWith(prefix) && !options.chatWebConversationId ? resumed : undefined;
     if (options.chatWebDeepThink !== undefined &&
-        (typeof options.chatWebDeepThink !== "boolean" || this.chatWebProvider !== "deepseek" || !this.runtimeSocket)) {
-      throw new Error("chatWebDeepThink requires a boolean, DeepSeek and chatWebRuntimeSocket");
+        (typeof options.chatWebDeepThink !== "boolean" || this.chatWebProvider !== "deepseek" || !this.runtimeMode)) {
+      throw new Error("chatWebDeepThink requires a boolean and the DeepSeek chat runtime");
     }
-    // Direct mode matches chat-web SDK's own default (headed). Per chat-web/core/browser.ts
-    // resolveHeadless(), headed mode is the documented safe default for
-    // anti-bot heuristics — ChatGPT/AI Studio routinely serve unauthenticated
-    // or challenge pages to chrome-headless-shell even when profile cookies
-    // are valid, which masquerades as "not logged in" downstream. The old
-    // `options.headless !== false` defaulted to true and effectively neutered
-    // chat-web's anti-bot stance whenever the caller (daemon, serve-ai)
-    // didn't explicitly pass a value. Users who actually want headless must
-    // now opt in with an explicit `headless: true`.
-    // The daemon supports headless workers; login opens a headed worker explicitly.
-    this.headless = this.runtimeSocket ? options.headless !== false : options.headless === true;
+    // Kimi requires headed Chromium with the tested login flow. DeepSeek's
+    // managed workers support headless; explicit options override either default.
+    this.headless = this.runtimeMode && this.chatWebProvider === "deepseek" ? options.headless !== false : options.headless === true;
     // Optional: use a specific Chromium-family binary (system Chrome /
     // Edge / explicit path) instead of Playwright's bundled
     // `chrome-headless-shell`. Useful when the user's network treats
@@ -229,12 +224,12 @@ export class ChatWebSession extends EventEmitter {
       sessionId: this.sessionId,
       sessionInfo: this.getSessionInfo(),
       useSessionFileReplyStream: this.usesSessionFileReplyStream(),
-      resumeReady: Boolean(this.runtimeSocket ? this.runtimeConversationId : this.providerConversationId),
+      resumeReady: Boolean(this.runtimeMode ? this.runtimeConversationId : this.providerConversationId),
       manualResume: this.providerConversationUrl()
         ? { ready: true, command: this.providerConversationUrl() }
         : null,
       currentTurnStatus: this.getCurrentTurnStatus(),
-      capabilities: { clear: !this.runtimeSocket, media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
+      capabilities: { clear: !this.runtimeMode, media: PROVIDER_MEDIA_CAPABILITIES[CHAT_WEB_SESSION_VARIANT] },
       chatWebProvider: this.chatWebProvider,
       providerConversationId: this.providerConversationId,
       providerUrl: this.providerConversationUrl(),
@@ -251,7 +246,7 @@ export class ChatWebSession extends EventEmitter {
     //
     // We expose `sessionIdDeferred: true` so the fire-side announce can
     // hold off until the real id arrives, then re-announce.
-    const hasRealId = Boolean(this.runtimeSocket ? this.runtimeConversationId : this.providerConversationId);
+    const hasRealId = Boolean(this.runtimeMode ? this.runtimeConversationId : this.providerConversationId);
     return {
       ...this.sessionInfo,
       sessionIdDeferred: !hasRealId,
@@ -329,6 +324,14 @@ export class ChatWebSession extends EventEmitter {
     }
   }
 
+  loginCommand() {
+    if (!this.runtimeMode) return `chat-web login ${this.chatWebProvider}`;
+    if (this.managedRuntime && (!this.options.chatWebAccountId || this.options.chatWebAccountId === "default")) {
+      return `conductor chat-web login ${this.chatWebProvider}`;
+    }
+    return `conductor chat-web chat login ${this.runtimeConversationId} --socket ${this.runtimeSocket}`;
+  }
+
   async boot() {
     if (this.booted) return;
     if (this.bootPromise) return this.bootPromise;
@@ -336,6 +339,12 @@ export class ChatWebSession extends EventEmitter {
     try {
       await this.bootPromise;
       this.booted = true;
+    } catch (error) {
+      // A failed login must release this task's browser so a fresh account
+      // snapshot can be imported when the user retries the same task.
+      await this.chatSession?.close().catch(() => undefined);
+      this.chatSession = null;
+      throw error;
     } finally {
       this.bootPromise = null;
     }
@@ -349,9 +358,9 @@ export class ChatWebSession extends EventEmitter {
     if (typeof mod.registerBuiltinProviders === "function") {
       mod.registerBuiltinProviders();
     }
-    const Session = this.runtimeSocket ? mod.RuntimeChatSession : (mod.QueuedChatSession ?? mod.ChatSession);
+    const Session = this.runtimeMode ? mod.RuntimeChatSession : (mod.QueuedChatSession ?? mod.ChatSession);
     if (typeof Session?.open !== "function") {
-      throw new Error(`Loaded @love-moon/chat-web is missing ${this.runtimeSocket ? "RuntimeChatSession" : "ChatSession"}.open; upgrade chat-web`);
+      throw new Error(`Loaded @love-moon/chat-web is missing ${this.runtimeMode ? "RuntimeChatSession" : "ChatSession"}.open; upgrade chat-web`);
     }
 
     // Forward optional browser-binary overrides to chat-web. The env vars
@@ -363,7 +372,7 @@ export class ChatWebSession extends EventEmitter {
     if (this.browserExecutablePath) launch.executablePath = this.browserExecutablePath;
 
     this.chatSession = await Session.open(this.chatWebProvider, {
-      ...(this.runtimeSocket ? { socketPath: this.runtimeSocket, conversationId: this.runtimeConversationId, accountId: this.options.chatWebAccountId, deepThink: this.options.chatWebDeepThink } : {}),
+      ...(this.runtimeMode ? { socketPath: this.managedRuntime ? undefined : this.runtimeSocket || undefined, conversationId: this.runtimeConversationId, providerConversationId: this.runtimeProviderConversationId, accountId: this.options.chatWebAccountId, deepThink: this.options.chatWebDeepThink, releaseOnClose: this.managedRuntime } : {}),
       headless: this.headless,
       // IMPORTANT: chat-web's logger contract is `{ error, warn, info, debug }`;
       // ai-sdk's normalised logger is `{ log }`. Passing the ai-sdk logger
@@ -379,20 +388,20 @@ export class ChatWebSession extends EventEmitter {
       throw this.createSessionClosedError();
     }
 
-    if (this.runtimeSocket) {
+    if (this.runtimeMode) {
       this.runtimeConversationId = this.chatSession.id;
-      this.sessionId = this.runtimeConversationId;
+      this.runtimeSocket = this.chatSession.client?.socketPath || this.runtimeSocket;
+      this.sessionId = this.managedRuntime ? "chat-web-runtime:" + this.runtimeConversationId : this.runtimeConversationId;
+      if (this.chatSession.providerConversationId) this.providerConversationId = this.chatSession.providerConversationId;
       this.sessionInfo = { ...this.sessionInfo, sessionId: this.sessionId };
       this.emit("session", this.getSessionInfo());
     }
-    const loggedIn = this.runtimeSocket
+    const loggedIn = this.runtimeMode
       ? await this.chatSession.isLoggedIn()
       : await this.chatSession.isLoggedIn().catch(() => false);
     if (!loggedIn) {
       const error = new Error(
-        this.runtimeSocket
-          ? `Chat requires login. Run: chat-web chat login ${this.runtimeConversationId} --socket ${this.runtimeSocket}`
-          : `chat-web provider "${this.chatWebProvider}" is not logged in. Run: chat-web login ${this.chatWebProvider}`,
+        `Chat requires login. On this daemon host run: ${this.loginCommand()}`,
       );
       error.reason = "not_logged_in";
       this.emit("auth_required", {
@@ -417,7 +426,7 @@ export class ChatWebSession extends EventEmitter {
    * for exactly this window.
    */
   async runClear() {
-    if (this.runtimeSocket) {
+    if (this.runtimeMode) {
       const error = new Error("Create a new runtime conversation to clear an isolated chat");
       error.reason = "unsupported_clear";
       throw error;
@@ -471,7 +480,7 @@ export class ChatWebSession extends EventEmitter {
     if (!normalized) return;
     if (normalized === this.providerConversationId) return;
     this.providerConversationId = normalized;
-    if (!this.runtimeSocket) this.sessionId = normalized;
+    if (!this.runtimeMode) this.sessionId = normalized;
     this.sessionInfo = {
       ...(this.sessionInfo || {}),
       backend: this.backend,
@@ -553,11 +562,19 @@ export class ChatWebSession extends EventEmitter {
     try {
       await this.boot();
       if (this.closeRequested) throw this.createSessionClosedError();
+      if (this.currentTurn.aborted) throw new DOMException("Aborted", "AbortError");
 
       this.turnAttempted = true;
       const result = await this.chatSession.send(prompt, {
         timeoutMs: this.turnTimeoutMs,
         signal: this.currentTurn.controller.signal,
+        onStatus: (phase) => {
+          if (phase === "queued" || phase === "starting") void this.emitWorkingStatus({
+            phase: phase === "queued" ? "queued" : "turn_started",
+            reply_in_progress: true,
+            status_line: phase === "queued" ? `chat-web (${this.chatWebProvider}) waiting for a browser worker` : `chat-web (${this.chatWebProvider}) is working`,
+          }, onProgress);
+        },
         onQueue: (position) => {
           void this.emitWorkingStatus({
             phase: position > 0 ? "queued" : "turn_started",
@@ -633,6 +650,15 @@ export class ChatWebSession extends EventEmitter {
     } catch (error) {
       const message = extractErrorMessage(error);
       const code = typeof error?.code === "string" ? error.code : "";
+      if (this.runtimeMode && (code === "AUTH_REQUIRED" || /Provider HTTP 401/.test(message))) {
+        const login = this.loginCommand();
+        const review = error?.turnStatus === "uncertain"
+          ? ` Inspect the webpage before retrying, then acknowledge with: conductor chat-web chat resume ${this.runtimeConversationId} --acknowledge --socket ${this.runtimeSocket}`
+          : "";
+        error.message = `Browser login needs renewal. On this daemon host run: ${login}.${review}`;
+        error.reason = "not_logged_in";
+        this.emit("auth_required", { reason: "login_required", message: error.message, provider: this.chatWebProvider });
+      }
       // Surface chat-web's typed "needs API key" / "permission denied"
       // errors as auth_required so the UI / daemon can route them
       // through the same flow as ChatGPT's "not logged in" — they're
@@ -648,7 +674,7 @@ export class ChatWebSession extends EventEmitter {
       await this.emitTerminalWorkingStatus(
         {
           phase: this.currentTurn?.aborted ? "turn_interrupted" : "turn_failed",
-          status_done_line: message,
+          status_done_line: error.message || message,
         },
         onProgress,
       );
@@ -660,7 +686,6 @@ export class ChatWebSession extends EventEmitter {
   }
 
   async interruptCurrentTurn() {
-    if (this.runtimeSocket) await this.chatSession?.interruptCurrentTurn?.();
     // Direct chat-web ChatSession doesn't expose a turn abort — the underlying
     // Chromium tab is still busy with the model. We mark the turn as
     // aborted so the next status emission is "interrupted", but the
@@ -671,6 +696,7 @@ export class ChatWebSession extends EventEmitter {
       // task's tab before moving to the next task. No queued prompt is sent.
       this.currentTurn.controller.abort();
     }
+    if (this.runtimeMode) await this.chatSession?.interruptCurrentTurn?.();
   }
 
   async close() {

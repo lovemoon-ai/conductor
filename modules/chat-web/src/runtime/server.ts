@@ -47,6 +47,7 @@ export async function startRuntimeServer(options: RuntimeOptions & { socketPath?
   const unlock = await acquireLock(options.directory);
   let runtime: ChatRuntime | undefined;
   let stop: Promise<void> | undefined;
+  let lastActivity = Date.now();
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const server = http.createServer((request, response) => {
@@ -69,6 +70,7 @@ export async function startRuntimeServer(options: RuntimeOptions & { socketPath?
   })();
 
   async function handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    lastActivity = Date.now();
     const api = runtime!;
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/events") {
@@ -170,7 +172,7 @@ export async function startRuntimeServer(options: RuntimeOptions & { socketPath?
       server.listen(socketPath, () => { server.off("error", reject); resolve(); });
     });
     if (process.platform !== "win32") await fs.chmod(socketPath, 0o600);
-    return { runtime, socketPath, close, closed };
+    return { runtime, socketPath, close, closed, get lastActivity() { return lastActivity; } };
   } catch (error) {
     await runtime?.shutdown();
     await unlock();

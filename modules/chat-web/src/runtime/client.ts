@@ -1,10 +1,11 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { runtimeSocket } from "./server.js";
-import { isTerminal, RuntimeError, type Conversation, type Turn, type TurnEvent, type WorkerResult } from "./types.js";
+import { runtimeDirectory, runtimeSocket } from "./server.js";
+import type { ManagedRuntimeOptions } from "./managed.js";
+import { isTerminal, RuntimeError, type Conversation, type Turn, type TurnEvent, type TurnStatus, type WorkerResult } from "./types.js";
 
 export class ChatRuntimeClient {
-  constructor(readonly socketPath = runtimeSocket()) {}
+  constructor(readonly socketPath = runtimeSocket(), private readonly requestTimeoutMs = 65_000) {}
 
   call<T = unknown>(method: string, params: object = {}): Promise<T> {
     return new Promise((resolve, reject) => {
@@ -25,7 +26,7 @@ export class ChatRuntimeClient {
           } catch (error) { reject(error); }
         });
       });
-      request.setTimeout(65_000, () => request.destroy(new RuntimeError("RUNTIME_TIMEOUT", "Runtime request timed out")));
+      request.setTimeout(this.requestTimeoutMs, () => request.destroy(new RuntimeError("RUNTIME_TIMEOUT", "Runtime request timed out")));
       request.on("error", reject);
       request.end(JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }));
     });
@@ -38,7 +39,7 @@ export class ChatRuntimeClient {
     if (status.capabilities?.deepThink !== true) throw new RuntimeError("UNSUPPORTED_OPTION", "Runtime does not support DeepThink; restart it with the updated chat-web package");
   }
 
-  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean }): Promise<Conversation> {
+  async create(params: { provider: string; accountId?: string; headless?: boolean; deepThink?: boolean; providerConversationId?: string }): Promise<Conversation> {
     await this.checkDeepThink(params.deepThink);
     return this.call("conversations.create", params);
   }
@@ -120,29 +121,41 @@ export class RuntimeChatSession {
   private localWait?: AbortController;
   private turns = 0;
   private closed = false;
-  private constructor(readonly id: string, provider: string, socket: string | undefined, private deepThink?: boolean) {
+  private constructor(readonly id: string, provider: string, socket: string | undefined, private deepThink?: boolean, private releaseOnClose = false, public providerConversationId?: string, private managedOptions?: ManagedRuntimeOptions) {
     this.provider = provider;
     this.client = new ChatRuntimeClient(socket);
   }
-  static async open(provider: string, options: { socketPath?: string; conversationId?: string; accountId?: string; headless?: boolean; deepThink?: boolean } = {}): Promise<RuntimeChatSession> {
+  static async open(provider: string, options: { socketPath?: string; conversationId?: string; providerConversationId?: string; accountId?: string; headless?: boolean; deepThink?: boolean; releaseOnClose?: boolean; launch?: { executablePath?: string; channel?: string } } = {}): Promise<RuntimeChatSession> {
     if (options.deepThink !== undefined && (provider !== "deepseek" || typeof options.deepThink !== "boolean")) {
       throw new RuntimeError("INVALID_PARAMS", "DeepThink requires a boolean and the DeepSeek provider");
     }
-    const client = new ChatRuntimeClient(options.socketPath);
-    const chat = options.conversationId ? await client.get(options.conversationId) : await client.create({ provider, accountId: options.accountId, headless: options.headless, deepThink: options.deepThink });
+    const managedOptions = options.socketPath ? undefined : { ...options.launch, directory: runtimeDirectory() };
+    const socket = options.socketPath ?? await (await import("./managed.js")).ensureChatRuntime(managedOptions);
+    const client = new ChatRuntimeClient(socket);
+    const chat = options.conversationId ? await client.get(options.conversationId) : await client.create({ provider, accountId: options.accountId, headless: options.headless, deepThink: options.deepThink, providerConversationId: options.providerConversationId });
     if (chat.provider !== provider) throw new RuntimeError("PROVIDER_MISMATCH", "Saved conversation uses a different provider");
-    return new RuntimeChatSession(chat.id, provider, options.socketPath, options.deepThink);
+    return new RuntimeChatSession(chat.id, provider, socket, options.deepThink, options.releaseOnClose, chat.providerConversationId, managedOptions);
   }
-  async isLoggedIn(): Promise<boolean> { return !!(await this.client.resume(this.id)).ready; }
-  async send(message: string, options: { requestId?: string; timeoutMs?: number; onProgress?: (text: string) => void; deepThink?: boolean } = {}) {
+  private async ensureAvailable(): Promise<void> {
+    if (this.closed) throw new RuntimeError("CHAT_CLOSED", "SDK session is closed");
+    if (this.managedOptions) await (await import("./managed.js")).ensureChatRuntime(this.managedOptions);
+    if (this.closed) throw new RuntimeError("CHAT_CLOSED", "SDK session is closed");
+  }
+  async isLoggedIn(): Promise<boolean> { await this.ensureAvailable(); return !!(await this.client.resume(this.id)).ready; }
+  async send(message: string, options: { requestId?: string; timeoutMs?: number; onProgress?: (text: string) => void; onStatus?: (status: TurnStatus) => void; signal?: AbortSignal; deepThink?: boolean } = {}) {
     if (options.deepThink !== undefined && typeof options.deepThink !== "boolean") throw new RuntimeError("INVALID_PARAMS", "deepThink must be boolean");
     if (this.closed) throw new RuntimeError("CHAT_CLOSED", "SDK session is closed");
     if (this.sending) throw new RuntimeError("CHAT_BUSY", "This SDK session already has an active send");
+    if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     this.sending = true;
     this.interruptRequested = false;
     this.localWait = new AbortController();
     const start = Date.now();
+    const abort = () => { void this.interruptCurrentTurn().catch(() => undefined); };
+    options.signal?.addEventListener("abort", abort, { once: true });
     try {
+      await this.ensureAvailable();
+      if (options.signal?.aborted || this.interruptRequested) throw new DOMException("Aborted", "AbortError");
       const turn = await this.client.submit({ conversationId: this.id, input: message, requestId: options.requestId ?? randomUUID(), timeoutMs: options.timeoutMs, deepThink: options.deepThink ?? this.deepThink });
       this.activeTurnId = turn.id;
       if (this.interruptRequested) await this.client.cancel(turn.id);
@@ -151,17 +164,32 @@ export class RuntimeChatSession {
         if (this.closed) return;
         if (event.type === "message_delta") text += event.text ?? "";
         else if (event.type === "message_snapshot") text = event.text ?? "";
-        else return;
+        else { options.onStatus?.(event.type as TurnStatus); return; }
         options.onProgress?.(text);
       }, this.localWait.signal);
       if (this.closed) throw new RuntimeError("CLIENT_CLOSED", "Client detached; remote turn continues");
-      if (result.status !== "completed") throw new RuntimeError(result.status.toUpperCase(), result.error ?? result.status);
+      if (result.status !== "completed") throw Object.assign(
+        new RuntimeError(result.errorCode ?? result.status.toUpperCase(), result.error ?? result.status),
+        { turnStatus: result.status, turnId: result.id, ...(result.status === "cancelled" ? { reason: "turn_cancelled" } : {}) },
+      );
       const chat = await this.client.get(this.id);
       return { response: result.text, message, turnIndex: this.turns++, durationMs: Date.now() - start,
         conversationId: chat.providerConversationId, runtimeConversationId: this.id };
-    } finally { this.activeTurnId = undefined; this.localWait = undefined; this.sending = false; }
+    } finally { options.signal?.removeEventListener("abort", abort); this.activeTurnId = undefined; this.localWait = undefined; this.sending = false; }
   }
 
   async interruptCurrentTurn(): Promise<void> { this.interruptRequested = true; if (this.activeTurnId) await this.client.cancel(this.activeTurnId); }
-  async close(): Promise<void> { this.closed = true; this.localWait?.abort(); }
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    this.localWait?.abort();
+    // Conductor owns these conversations; closing a task releases its browser.
+    // Explicit socket clients keep the original detach-only behavior.
+    if (this.releaseOnClose) {
+      try { await this.client.closeConversation(this.id); } catch (error) {
+        // An idle managed daemon already released its browsers. Never restart just to close.
+        if (!this.managedOptions || !["ENOENT", "ECONNREFUSED"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      }
+    }
+  }
 }
