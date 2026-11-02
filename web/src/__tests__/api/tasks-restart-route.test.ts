@@ -1262,7 +1262,7 @@ describe("/api/tasks/[taskId]/restart", () => {
     expect(JSON.parse(payloadJson).payload.target_launch_config).toEqual(worktreeLaunchConfig);
   });
 
-  it("returns 409 when session binding is missing", async () => {
+  it("starts a fresh session in place when the task has no session", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ sessionId: null }) as any);
 
     const response = await POST(
@@ -1274,9 +1274,42 @@ describe("/api/tasks/[taskId]/restart", () => {
       { params: Promise.resolve({ taskId: "task-1" }) },
     );
     const data = await extractJson(response);
+    const outbox = vi.mocked(db.agentOutbox.create).mock.calls.at(-1)?.[0]?.data as any;
+    const envelope = JSON.parse(outbox.payloadJson);
+
+    expect(response.status).toBe(200);
+    expect(data.mode).toBe("inplace_restart");
+    expect(outbox.eventType).toBe("create_task");
+    expect(envelope.type).toBe("create_task");
+    expect(envelope.payload).toMatchObject({
+      task_id: "task-1",
+      backend_type: "codex",
+      replace_existing_fire: true,
+    });
+    expect(envelope.payload.initial_content).toContain("/share/");
+    expect(db.task.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ agentHost: "daemon-1", executionHost: "daemon-1" }),
+      }),
+    );
+  });
+
+  it("returns 409 when forking a task that has no session", async () => {
+    vi.mocked(db.task.findFirst).mockResolvedValue(buildTask({ sessionId: null }) as any);
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        token: createTestToken("user-1"),
+        body: { strategy: "new_task" },
+      }),
+      { params: Promise.resolve({ taskId: "task-1" }) },
+    );
+    const data = await extractJson(response);
 
     expect(response.status).toBe(409);
-    expect(data.error).toContain("session binding");
+    expect(data.error).toContain("no AI session");
+    expect(db.agentOutbox.create).not.toHaveBeenCalled();
   });
 
   it("returns 409 when target backend is not supported by the source daemon", async () => {

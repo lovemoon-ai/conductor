@@ -211,6 +211,41 @@ const createSuccessorTaskWithRestartFallback = async (
   }
 };
 
+// Mints a short-lived share of the task's transcript that a new AI session
+// fetches as its resume context. Returns an error response when it cannot.
+const mintResumeContextUrl = async (
+  request: NextRequest,
+  taskId: string,
+  userId: string,
+): Promise<string | NextResponse> => {
+  // In production, the public backend URL MUST come from an env var — falling
+  // back to `request.nextUrl.origin` can yield an internal host (e.g.
+  // `http://127.0.0.1:3000` behind a reverse proxy) that a daemon on a
+  // different machine cannot reach. Refuse rather than ship a broken URL.
+  if (process.env.NODE_ENV === "production" && !hasConfiguredPublicBackendUrl()) {
+    return NextResponse.json(
+      {
+        error:
+          "Server is missing PUBLIC_BACKEND_URL (or NEXT_PUBLIC_URL / BACKEND_URL). A publicly-reachable base URL is required to mint the resume-handoff share link used by cross-backend restart.",
+      },
+      { status: 500 },
+    );
+  }
+  try {
+    const { token } = await createInternalResumeHandoffShare({ taskId, ownerUserId: userId });
+    return buildResumeHandoffUrl(resolvePublicBackendUrl(request.nextUrl.origin), token);
+  } catch (error) {
+    console.error("[restart] failed to mint resume-handoff share", error);
+    return NextResponse.json(
+      {
+        error:
+          "Failed to prepare resume context for the successor backend. Please retry; if this persists, check server logs for the share-link error.",
+      },
+      { status: 500 },
+    );
+  }
+};
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ taskId: string }> },
@@ -274,10 +309,9 @@ export async function POST(
   const sourceLaunchConfig = parseJsonObject(sourceTask.launchConfig);
   const inheritedWorktreeLaunchConfig = inheritTaskWorktreeLaunchConfig(sourceLaunchConfig);
 
+  // Empty when the AI never reported a session (e.g. its fire died on startup);
+  // an in-place restart then starts a fresh session instead of resuming.
   const sourceSessionId = normalizeOptionalString(sourceTask.sessionId);
-  if (!sourceSessionId) {
-    return NextResponse.json({ error: "Task missing session binding" }, { status: 409 });
-  }
 
   const sourceStatus = normalizeTaskStatus(sourceTask.status);
   if (!RESTARTABLE_SOURCE_STATUSES.has(sourceStatus as any)) {
@@ -566,6 +600,9 @@ export async function POST(
   const now = new Date();
 
   if (requestedRestartMode === "refresh_session") {
+    if (!sourceSessionId) {
+      return NextResponse.json({ error: "Task missing session binding" }, { status: 409 });
+    }
     if (sourceStatus !== "running") {
       return NextResponse.json(
         { error: "Session refresh requires a running ai_task" },
@@ -690,6 +727,13 @@ export async function POST(
     );
   }
 
+  if (!isInplaceRestart && !sourceSessionId) {
+    return NextResponse.json(
+      { error: "Task has no AI session to continue; restart it in place to start a fresh session" },
+      { status: 409 },
+    );
+  }
+
   if (!isInplaceRestart && !canCreateSuccessorTask(sourceBackend, targetBackend)) {
     return NextResponse.json(
       { error: `Backend switch ${sourceBackend} -> ${targetBackend} is not supported` },
@@ -724,6 +768,7 @@ export async function POST(
     isInplaceRestart &&
     !isBackendSwitch &&
     sourceStatus === "killed" &&
+    Boolean(sourceSessionId) &&
     sourceKilledReason === RECLAIMABLE_KILLED_REASON &&
     Boolean(boundReclaimHost) &&
     boundReclaimHost === restartAgentHost;
@@ -844,6 +889,21 @@ export async function POST(
   }
 
   if (isInplaceRestart) {
+    // Nothing to resume: start a fresh session on this task (as a persistent
+    // round does), seeded with the transcript.
+    let freshSessionContent: string | null = null;
+    if (!sourceSessionId) {
+      const resumeContextUrl = await mintResumeContextUrl(request, sourceTask.id, user.id);
+      if (resumeContextUrl instanceof NextResponse) return resumeContextUrl;
+      const taskPrompt = buildResumeHandoffPrompt({ sourceBackend, targetBackend, resumeContextUrl });
+      const remoteWorktree = parseRemoteWorktreeLaunchConfig(sourceLaunchConfig);
+      const remoteWorkspace = remoteWorktree ? null : parseRemoteWorkspaceLaunchConfig(sourceLaunchConfig);
+      freshSessionContent = remoteWorktree
+        ? buildRemoteWorktreeBootstrap({ remoteWorktree, localWorkspacePath: null, taskPrompt })
+        : remoteWorkspace
+          ? buildRemoteWorkspaceBootstrap({ remoteWorkspace, localWorkspacePath: null, taskPrompt })
+          : taskPrompt;
+    }
     const updatedTask = await db.$transaction(async (tx) => {
       if (inheritedWorktreeLaunchConfig) {
         await acquireTaskWorktreeMutationLock(
@@ -857,9 +917,21 @@ export async function POST(
           userId: user.id,
           agentHost: restartAgentHost,
           taskId: sourceTask.id,
-          eventType: "restart_task",
+          eventType: freshSessionContent ? "create_task" : "restart_task",
           requestId,
-          payloadJson: JSON.stringify({
+          payloadJson: JSON.stringify(freshSessionContent ? {
+            type: "create_task",
+            payload: {
+              task_id: sourceTask.id,
+              project_id: sourceTask.projectId,
+              title: sourceTask.title,
+              backend_type: targetBackend,
+              initial_content: freshSessionContent,
+              launch_config: sourceLaunchConfig ?? undefined,
+              request_id: requestId,
+              replace_existing_fire: true,
+            },
+          } : {
             type: "restart_task",
             payload: {
               mode: "resume_inplace",
@@ -1218,39 +1290,8 @@ export async function POST(
   // URL the daemon would only be able to produce a doomed-to-fail successor,
   // so we surface the real cause to the caller instead of writing a half-baked
   // outbox event and a confusing "resume_context_url missing" failure later.
-  //
-  // In production, the public backend URL MUST come from an env var — falling
-  // back to `request.nextUrl.origin` can yield an internal host (e.g.
-  // `http://127.0.0.1:3000` behind a reverse proxy) that a daemon on a
-  // different machine cannot reach. Refuse rather than ship a broken URL.
-  if (process.env.NODE_ENV === "production" && !hasConfiguredPublicBackendUrl()) {
-    return NextResponse.json(
-      {
-        error:
-          "Server is missing PUBLIC_BACKEND_URL (or NEXT_PUBLIC_URL / BACKEND_URL). A publicly-reachable base URL is required to mint the resume-handoff share link used by cross-backend restart.",
-      },
-      { status: 500 },
-    );
-  }
-
-  let resumeContextUrl: string;
-  try {
-    const { token } = await createInternalResumeHandoffShare({
-      taskId: sourceTask.id,
-      ownerUserId: user.id,
-    });
-    const baseUrl = resolvePublicBackendUrl(request.nextUrl.origin);
-    resumeContextUrl = buildResumeHandoffUrl(baseUrl, token);
-  } catch (error) {
-    console.error("[restart] failed to mint resume-handoff share", error);
-    return NextResponse.json(
-      {
-        error:
-          "Failed to prepare resume context for the successor backend. Please retry; if this persists, check server logs for the share-link error.",
-      },
-      { status: 500 },
-    );
-  }
+  const resumeContextUrl = await mintResumeContextUrl(request, sourceTask.id, user.id);
+  if (resumeContextUrl instanceof NextResponse) return resumeContextUrl;
 
   const agentInitialContent = freshRemoteWorktree
     ? buildRemoteWorktreeBootstrap({
