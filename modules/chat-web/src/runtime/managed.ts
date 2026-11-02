@@ -20,8 +20,8 @@ export async function ensureChatRuntime(options: ManagedRuntimeOptions = {}): Pr
   const socketPath = runtimeSocket(directory);
   const client = new ChatRuntimeClient(socketPath, 1000);
   const check = async () => {
-    const status = await client.call<{ capabilities?: { accountBootstrap?: boolean } }>("runtime.status");
-    if (status.capabilities?.accountBootstrap !== true) throw new RuntimeError("RUNTIME_UPGRADE_REQUIRED",
+    const status = await client.call<{ capabilities?: { accountBootstrap?: boolean; queuedStartup?: boolean } }>("runtime.status");
+    if (status.capabilities?.accountBootstrap !== true || status.capabilities?.queuedStartup !== true) throw new RuntimeError("RUNTIME_UPGRADE_REQUIRED",
       "Chat runtime needs an upgrade. Stop it with conductor chat-web runtime stop, then retry; running chats are not stopped automatically");
     return socketPath;
   };

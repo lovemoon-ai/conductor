@@ -11,6 +11,7 @@ export interface Conversation {
   providerConversationId?: string;
   needsReview: boolean;
   closed: boolean;
+  closedAt?: string;
 }
 
 export interface TurnEvent {
@@ -65,6 +66,7 @@ export interface SiteDefinition {
 }
 
 export interface WorkerResult {
+  queued?: boolean;
   text?: string;
   url?: string;
   providerConversationId?: string;

@@ -16,7 +16,7 @@ export async function runChatWebCommand(args = process.argv.slice(2), deps = {})
   const forwarded = [];
   let configFile;
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--") { forwarded.push(...args.slice(i)); break; }
+    if (args[i] === "--") { forwarded.push(...args.slice(i + (forwarded.length === 0 ? 1 : 0))); break; }
     if (args[i] === "--config-file") {
       if (!args[i + 1]) throw new Error("--config-file requires a path");
       configFile = args[++i];

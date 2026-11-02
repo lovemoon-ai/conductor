@@ -129,3 +129,107 @@ describe("Conductor default Kimi and DeepSeek runtime", () => {
   });
 
 });
+
+describe("runtime startup under load", () => {
+  it("queues more SDK sessions than maxWorkers and checks authentication when their worker is allocated", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-start-"));
+    let active = 0, peak = 0, sent = 0;
+    const server = await startRuntimeServer({ directory, maxWorkers: 2, perAccountConcurrency: 2, workerFactory: config => ({
+      async open() { await new Promise(resolve => setTimeout(resolve, 10)); return { ready: true, url: "https://example.test/chat/" + config.conversation.id }; },
+      async send(input, _timeout, notify) {
+        active++; peak = Math.max(peak, active); sent++; notify({ type: "submitting" });
+        await new Promise(resolve => setTimeout(resolve, 50)); active--;
+        return { text: input, url: "https://example.test/chat/" + config.conversation.id };
+      }, cancel() {}, async close() {},
+    }) });
+    const statuses = [];
+    const mod = { RuntimeChatSession: { open: (provider, options) => RuntimeChatSession.open(provider, { ...options, socketPath: server.socketPath }) } };
+    const sessions = Array.from({ length: 6 }, (_, i) => new ChatWebSession("chat-web", { model: i % 2 ? "kimi" : "deepseek", chatWebModule: mod }));
+    for (const s of sessions) s.setWorkingStatusHandler(status => statuses.push(status));
+    try {
+      const infos = await Promise.all(sessions.map(s => s.ensureSessionInfo()));
+      assert.equal(new Set(infos.map(i => i.sessionId)).size, 6);
+      assert.ok(server.runtime.status().workers <= 2);
+      const results = await Promise.all(sessions.map((s, i) => s.runTurn("job-" + i)));
+      assert.deepEqual(results.map(r => r.text), Array.from({ length: 6 }, (_, i) => "job-" + i));
+      assert.equal(sent, 6); assert.equal(peak, 2);
+      assert.ok(statuses.some(s => s.phase === "queued" && s.status_line.includes("waiting")));
+    } finally { await Promise.allSettled(sessions.map(s => s.close())); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("reconnects an active chat without failing boot or resending its in-flight prompt", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-reconnect-"));
+    let entered, release;
+    const running = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const calls = [];
+    const server = await startRuntimeServer({ directory, maxWorkers: 1, workerFactory: () => ({
+      async open() { return { ready: true }; },
+      async send(input, _timeout, notify) {
+        calls.push(input); notify({ type: "submitting" });
+        if (input === "first") { entered(); await gate; }
+        return { text: input };
+      }, cancel() {}, async close() { release(); },
+    }) });
+    const mod = { RuntimeChatSession: { open: (provider, options) => RuntimeChatSession.open(provider, { ...options, socketPath: server.socketPath }) } };
+    const original = new ChatWebSession("chat-web", { model: "deepseek", chatWebModule: mod });
+    let restored;
+    try {
+      const id = (await original.ensureSessionInfo()).sessionId;
+      const first = original.runTurn("first"); await running;
+      restored = new ChatWebSession("chat-web", { model: "deepseek", resumeSessionId: id, chatWebModule: mod });
+      assert.equal((await restored.ensureSessionInfo()).sessionId, id);
+      const later = restored.runTurn("later");
+      release();
+      assert.equal((await first).text, "first");
+      assert.equal((await later).text, "later");
+      assert.deepEqual(calls, ["first", "later"]);
+    } finally { release(); await original.close(); await restored?.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
+  it("reports login required without submitting when authentication was deferred behind a busy worker", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-deferred-auth-"));
+    let entered, release;
+    const running = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const sent = [];
+    const server = await startRuntimeServer({ directory, maxWorkers: 1, workerFactory: config => ({
+      async open() { return { ready: config.conversation.provider !== "kimi", url: "https://example.test/chat/" + config.conversation.id }; },
+      async send(input, _timeout, notify) { sent.push(input); notify({ type: "submitting" }); entered(); await gate; return { text: input }; },
+      cancel() {}, async close() { release(); },
+    }) });
+    const mod = { RuntimeChatSession: { open: (provider, options) => RuntimeChatSession.open(provider, { ...options, socketPath: server.socketPath }) } };
+    const first = new ChatWebSession("chat-web", { model: "deepseek", chatWebModule: mod });
+    const deferred = new ChatWebSession("chat-web", { model: "kimi", chatWebModule: mod });
+    try {
+      const held = first.runTurn("held"); await running;
+      await deferred.ensureSessionInfo();
+      const rejected = assert.rejects(deferred.runTurn("must not submit"), error => error.reason === "not_logged_in" && error.message.includes("conductor chat-web login kimi"));
+      release(); await held; await rejected;
+      assert.deepEqual(sent, ["held"]);
+    } finally { release(); await first.close(); await deferred.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("queues boot while all worker slots belong to pinned login windows", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-pinned-boot-"));
+    const server = await startRuntimeServer({ directory, maxWorkers: 1, workerFactory: () => ({
+      async open() { return { ready: true }; }, async send(input) { return { text: input }; }, cancel() {}, async close() {},
+    }) });
+    const client = new ChatRuntimeClient(server.socketPath);
+    const pinned = await client.create({ provider: "kimi" });
+    await client.resume(pinned.id, { headed: true });
+    const session = new ChatWebSession("chat-web", { model: "deepseek", chatWebModule: { RuntimeChatSession: { open: (provider, options) => RuntimeChatSession.open(provider, { ...options, socketPath: server.socketPath }) } } });
+    try {
+      const info = await session.ensureSessionInfo();
+      assert.ok(info.sessionId.startsWith("chat-web-runtime:"));
+      const result = session.runTurn("after login");
+      for (let i = 0; i < 100; i++) {
+        const state = JSON.parse(await fs.readFile(path.join(directory, "state.json"), "utf8"));
+        if (Object.values(state.turns).some(t => t.status === "queued")) break;
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      await client.closeConversation(pinned.id);
+      assert.equal((await result).text, "after login");
+    } finally { await session.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+});

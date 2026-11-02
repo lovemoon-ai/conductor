@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import fs from "node:fs/promises";
+import { pruneRuntimeState, retentionPolicy } from "./retention.js";
 import { BrowserWorker } from "./browser-worker.js";
 import { RuntimeStore } from "./store.js";
 import { runtimeSites } from "./sites.js";
@@ -44,7 +46,14 @@ export class ChatRuntime {
   static async open(options: RuntimeOptions): Promise<ChatRuntime> {
     const runtime = new ChatRuntime(await RuntimeStore.open(options.directory), options);
     await runtime.store.update((state) => {
+      for (const chat of Object.values(state.conversations)) if (chat.closed && !chat.closedAt) chat.closedAt = new Date().toISOString();
       for (const turn of Object.values(state.turns)) {
+        if (turn.status === "queued" && runtime.queueExpired(turn)) {
+          turn.status = "cancelled";
+          turn.error = "Queued turn expired before submission";
+          turn.errorCode = "QUEUE_EXPIRED";
+          runtime.append(turn, "cancelled", { error: turn.error, errorCode: turn.errorCode });
+        }
         if (!isTerminal(turn.status) && turn.status !== "queued") {
           turn.status = "uncertain";
           turn.error = "Runtime restarted while the turn was active; inspect before sending again";
@@ -53,6 +62,8 @@ export class ChatRuntime {
         }
       }
     });
+    await runtime.collect();
+    await runtime.sweepProfiles();
     runtime.schedule();
     return runtime;
   }
@@ -68,13 +79,22 @@ export class ChatRuntime {
     return turn;
   }
 
-  list(): Conversation[] { return Object.values(this.store.read().conversations); }
-  get(id: string): Conversation { return this.conversation(this.store.read(), id); }
-  getTurn(id: string): Turn { return this.turn(this.store.read(), id); }
+  list(): Conversation[] { return this.store.conversations(); }
+  get(id: string): Conversation {
+    const chat = this.store.conversation(id);
+    if (!chat || !Object.hasOwn(chat, "id")) throw new RuntimeError("NOT_FOUND", "Conversation not found");
+    return chat;
+  }
+  getTurn(id: string): Turn {
+    const turn = this.store.turn(id);
+    if (!turn || !Object.hasOwn(turn, "id")) throw new RuntimeError("NOT_FOUND", "Turn not found");
+    return turn;
+  }
   status() {
-    return { version: 1, capabilities: { deepThink: true, accountBootstrap: true }, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
+    return { version: 1, capabilities: { deepThink: true, accountBootstrap: true, queuedStartup: true }, maxWorkers: this.maxWorkers, perAccountConcurrency: this.perAccountConcurrency,
       workers: this.workers.size, activeTurns: this.active.size, stopping: this.stopping, failure: this.failure,
       pinnedChats: [...this.workers].filter(([, entry]) => entry.pinned).map(([id]) => id),
+      retention: retentionPolicy,
       providers: this.sites.map(({ name, experimental }) => ({ name, experimental: !!experimental })) };
   }
 
@@ -89,26 +109,41 @@ export class ChatRuntime {
     const accountId = params.accountId ?? "default";
     if (typeof accountId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(accountId)) throw new RuntimeError("INVALID_PARAMS", "Invalid accountId");
     if (params.headless !== undefined && typeof params.headless !== "boolean") throw new RuntimeError("INVALID_PARAMS", "headless must be boolean");
-    return this.store.update((state) => {
+    const removed: string[] = [];
+    const chat = await this.store.update((state) => {
       if (params.providerConversationId) {
         const existing = Object.values(state.conversations).find(chat => chat.provider === params.provider &&
           chat.accountId === accountId && chat.providerConversationId === params.providerConversationId);
         if (existing) return existing;
       }
-      if (Object.keys(state.conversations).length >= 256) throw new RuntimeError("CAPACITY", "Conversation limit reached");
+      removed.push(...this.prune(state, { conversations: 1 }));
+      if (Object.keys(state.conversations).length >= retentionPolicy.maxConversations) throw new RuntimeError("CAPACITY", "Conversation limit reached");
       const record: Conversation = { id: randomUUID(), provider: params.provider, accountId,
         headless: params.headless ?? true, ...(params.deepThink === undefined ? {} : { deepThink: params.deepThink }), createdAt: new Date().toISOString(), needsReview: false, closed: false,
         ...(params.providerConversationId ? { providerConversationId: params.providerConversationId, url: site.conversationUrl + encodeURIComponent(params.providerConversationId) } : {}) };
       state.conversations[record.id] = record;
       return record;
     });
+    await this.removeProfiles(removed);
+    return chat;
   }
 
-  async resume(id: string, params: { headed?: boolean; acknowledgeUncertain?: boolean } = {}): Promise<Conversation & WorkerResult> {
+  async resume(id: string, params: { headed?: boolean; acknowledgeUncertain?: boolean; allowQueued?: boolean } = {}): Promise<Conversation & WorkerResult> {
     if (this.stopping) throw new RuntimeError("SHUTTING_DOWN", "Runtime is shutting down");
-    if ([params.headed, params.acknowledgeUncertain].some((value) => value !== undefined && typeof value !== "boolean")) throw new RuntimeError("INVALID_PARAMS", "Resume options must be boolean");
-    if (this.busy.has(id) || this.closing.has(id)) throw new RuntimeError("CHAT_BUSY", "Conversation has an active operation");
+    if ([params.headed, params.acknowledgeUncertain, params.allowQueued].some((value) => value !== undefined && typeof value !== "boolean")) throw new RuntimeError("INVALID_PARAMS", "Resume options must be boolean");
     this.get(id);
+    const unavailable = !this.workers.has(id) && this.workers.size >= this.maxWorkers &&
+      ![...this.workers.keys()].some(other => this.canEvict(other));
+    if (params.allowQueued && params.headed === undefined && !params.acknowledgeUncertain && !this.closing.has(id) &&
+      (this.busy.has(id) || this.busy.size >= this.maxWorkers || unavailable)) {
+      const chat = await this.store.update(state => {
+        const record = this.conversation(state, id);
+        record.closed = false; delete record.closedAt;
+        return record;
+      });
+      return { ...chat, queued: true };
+    }
+    if (this.busy.has(id) || this.closing.has(id)) throw new RuntimeError("CHAT_BUSY", "Conversation has an active operation");
     if (this.busy.size >= this.maxWorkers) throw new RuntimeError("CAPACITY", "All browser workers are busy");
     this.busy.add(id);
     try {
@@ -116,7 +151,7 @@ export class ChatRuntime {
         const chat = this.conversation(state, id);
         if (params.headed !== undefined) chat.headless = !params.headed;
         if (params.acknowledgeUncertain) chat.needsReview = false;
-        chat.closed = false;
+        chat.closed = false; delete chat.closedAt;
         return chat;
       });
       const worker = await this.acquire(conversation);
@@ -133,7 +168,8 @@ export class ChatRuntime {
     this.closing.add(id);
     try {
       await this.store.update((state) => {
-        this.conversation(state, id).closed = true;
+        const chat = this.conversation(state, id);
+        chat.closed = true; chat.closedAt = new Date().toISOString();
       });
       const turns = Object.values(this.store.read().turns).filter(turn => turn.conversationId === id && !isTerminal(turn.status));
       for (const turn of turns) await this.cancel(turn.id);
@@ -144,7 +180,11 @@ export class ChatRuntime {
       });
       await this.drop(id);
       return this.get(id);
-    } finally { this.closing.delete(id); this.schedule(); }
+    } finally {
+      this.closing.delete(id);
+      await this.collect();
+      this.schedule();
+    }
   }
 
   async submit(params: { conversationId: string; requestId: string; input: string; timeoutMs?: number; deepThink?: boolean }): Promise<Turn> {
@@ -155,6 +195,7 @@ export class ChatRuntime {
     }
     const timeoutMs = params.timeoutMs ?? 180_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 1_800_000) throw new RuntimeError("INVALID_PARAMS", "Invalid timeoutMs");
+    const removed: string[] = [];
     const turn = await this.store.update((state) => {
       const chat = this.conversation(state, params.conversationId);
       this.validateDeepThink(chat.provider, params.deepThink);
@@ -167,15 +208,51 @@ export class ChatRuntime {
       }
       if (chat.closed) throw new RuntimeError("CHAT_CLOSED", "Resume the chat before sending");
       if (chat.needsReview) throw new RuntimeError("REVIEW_REQUIRED", "Inspect the uncertain turn and explicitly acknowledge it before sending again");
-      if (Object.keys(state.turns).length >= 4096) throw new RuntimeError("CAPACITY", "Turn retention limit reached");
+      removed.push(...this.prune(state, { turns: 1 }));
+      if (Object.keys(state.turns).length >= retentionPolicy.maxTurns) throw new RuntimeError("CAPACITY", "Turn retention limit reached");
       const turn: Turn = { id: randomUUID(), conversationId: chat.id, requestId: params.requestId,
         input: params.input, timeoutMs, ...(deepThink === undefined ? {} : { deepThink }), status: "queued", text: "", events: [], createdAt: new Date().toISOString() };
       this.append(turn, "queued");
       state.turns[turn.id] = turn;
       return turn;
     });
+    await this.removeProfiles(removed);
     this.schedule();
     return turn;
+  }
+
+  private queueExpired(turn: Turn): boolean {
+    const created = Date.parse(turn.createdAt);
+    return !Number.isFinite(created) || Date.now() - created >= turn.timeoutMs;
+  }
+
+  private prune(state: RuntimeState, reserve: { conversations?: number; turns?: number } = {}): string[] {
+    const chats = new Set([...this.busy, ...this.closing]);
+    const turns = new Set([...this.active.keys(), ...Object.keys(state.turns).filter(id => this.events.listenerCount(id) > 0)]);
+    for (const id of turns) if (state.turns[id]) chats.add(state.turns[id]!.conversationId);
+    return pruneRuntimeState(state, chats, turns, reserve);
+  }
+
+  private async removeProfiles(ids: string[]): Promise<void> {
+    for (const id of ids) if (/^[a-zA-Z0-9_-]{1,160}$/.test(id)) {
+      await fs.rm(path.join(this.options.directory, "profiles", id), { recursive: true, force: true })
+        .catch(error => console.warn("Chat profile cleanup will retry after restart:", id, error.code));
+    }
+  }
+
+  private async collect(): Promise<void> {
+    const ids = await this.store.update(state => this.prune(state));
+    await this.removeProfiles(ids);
+  }
+
+  private async sweepProfiles(): Promise<void> {
+    const profiles = path.join(this.options.directory, "profiles");
+    const entries = await fs.readdir(profiles).catch(error => {
+      if (error.code !== "ENOENT") throw error;
+      return [] as string[];
+    });
+    const live = new Set(this.list().map(chat => chat.id));
+    await this.removeProfiles(entries.filter(id => !live.has(id)));
   }
 
   private validateDeepThink(provider: string, value: unknown): void {
@@ -297,9 +374,12 @@ export class ChatRuntime {
   }
 
   private async notice(id: string, notice: WorkerNotice): Promise<void> {
+    const durable = notice.type === "submitting" || !["streaming", "cancelling"].includes(this.store.turnStatus(id) ?? "");
     const event = await this.store.update((state) => {
       const turn = this.turn(state, id);
       if (isTerminal(turn.status)) return undefined;
+      const text = notice.text ?? "";
+      if (text.length > 1_000_000 || turn.events.length > 2000) throw new RuntimeError("RESPONSE_LIMIT", "Reply or event limit exceeded");
       const chat = this.conversation(state, turn.conversationId);
       if (notice.url) chat.url = notice.url;
       if (notice.providerConversationId) chat.providerConversationId = notice.providerConversationId;
@@ -307,15 +387,13 @@ export class ChatRuntime {
         if (turn.status !== "cancelling") turn.status = "submitting";
         return this.append(turn, "submitting");
       }
-      const text = notice.text ?? "";
       if (text === turn.text) return undefined;
-      if (text.length > 1_000_000 || turn.events.length > 2000) throw new RuntimeError("RESPONSE_LIMIT", "Reply or event limit exceeded");
       const append = text.startsWith(turn.text);
       const delta = append ? text.slice(turn.text.length) : text;
       turn.text = text;
       if (turn.status !== "cancelling") turn.status = "streaming";
       return this.append(turn, append ? "message_delta" : "message_snapshot", { text: delta });
-    });
+    }, durable);
     if (event) this.publish(event);
   }
 
@@ -346,15 +424,21 @@ export class ChatRuntime {
       const event = await this.store.update((state) => {
         const turn = this.turn(state, id);
         if (turn.status !== "queued") return undefined;
+        if (this.queueExpired(turn)) {
+          turn.status = "cancelled"; turn.error = "Queued turn expired before submission"; turn.errorCode = "QUEUE_EXPIRED";
+          return this.append(turn, "cancelled", { error: turn.error, errorCode: turn.errorCode });
+        }
         turn.status = "starting";
         return this.append(turn, "starting");
       });
       if (!event) return;
       this.publish(event);
+      if (event.type !== "starting") return;
       const chat = this.get(original.conversationId);
       const worker = await this.acquire(chat);
       if (this.getTurn(id).status === "cancelling") { await this.finish(id, "cancelled"); return; }
       const opened = await worker.open();
+      if (opened.ready === false) throw new RuntimeError("AUTH_REQUIRED", "Chat requires login before sending");
       await this.remember(chat.id, opened);
       if (this.getTurn(id).status === "cancelling") { await this.finish(id, "cancelled"); return; }
       this.workers.get(chat.id)!.pinned = false;

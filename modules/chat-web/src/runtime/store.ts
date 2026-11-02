@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { RuntimeState } from "./types.js";
+import type { Conversation, RuntimeState, Turn } from "./types.js";
 
 export class RuntimeStore {
   private queue: Promise<unknown> = Promise.resolve();
@@ -23,20 +23,29 @@ export class RuntimeStore {
     return structuredClone(this.state);
   }
 
-  update<T>(change: (state: RuntimeState) => T): Promise<T> {
+  conversation(id: string): Conversation | undefined { return Object.hasOwn(this.state.conversations, id) ? structuredClone(this.state.conversations[id]) : undefined; }
+  turn(id: string): Turn | undefined { return Object.hasOwn(this.state.turns, id) ? structuredClone(this.state.turns[id]) : undefined; }
+  conversations(): Conversation[] { return structuredClone(Object.values(this.state.conversations)); }
+  turnStatus(id: string) { return this.state.turns[id]?.status; }
+
+  // Volatile callbacks validate before mutating; they only update live stream
+  // text/events. The next durable transition includes all preceding deltas.
+  update<T>(change: (state: RuntimeState) => T, durable = true): Promise<T> {
     const run = this.queue.then(async () => {
-      const next = structuredClone(this.state);
+      const next = durable ? structuredClone(this.state) : this.state;
       const result = change(next);
-      const file = path.join(this.directory, "state.json");
-      const temporary = file + ".tmp";
-      const handle = await fs.open(temporary, "w", 0o600);
-      try {
-        await handle.writeFile(JSON.stringify(next));
-        await handle.sync();
-      } finally {
-        await handle.close();
+      if (durable) {
+        const file = path.join(this.directory, "state.json");
+        const temporary = file + ".tmp";
+        const handle = await fs.open(temporary, "w", 0o600);
+        try {
+          await handle.writeFile(JSON.stringify(next));
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await fs.rename(temporary, file);
       }
-      await fs.rename(temporary, file);
       this.state = next;
       return structuredClone(result);
     });

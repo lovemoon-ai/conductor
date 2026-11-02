@@ -7,6 +7,16 @@ import { runChatWebCommand } from "../bin/conductor-chat-web.js";
 import { runConductorCli } from "../bin/conductor.js";
 
 describe("conductor browser chat entry", () => {
+  it("consumes the wrapper separator before the packaged CLI command", async () => {
+    const original = process.argv;
+    try {
+      await runChatWebCommand(["--", "runtime", "status"], {
+        env: { HOME: "/nonexistent-chat-web-test" }, chatWebModule: {}, cliEntry: "/fixture/cli.js",
+        importCli: async () => { assert.deepEqual(process.argv.slice(2), ["runtime", "status"]); },
+      });
+    } finally { process.argv = original; }
+  });
+
   it("preserves chat text following the option separator", async () => {
     const original = process.argv;
     try {

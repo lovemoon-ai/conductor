@@ -27,10 +27,10 @@ describe("managed runtime process", () => {
       expect(await client.call("runtime.status")).toMatchObject({ workers: 0, activeTurns: 0, maxWorkers: 4 });
     } finally { await client.call("runtime.stop").catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); }
   }, 30_000);
-  it("rejects an older daemon without spawning or stopping it", async () => {
+  it.each([{ deepThink: true }, { deepThink: true, accountBootstrap: true }])("rejects an older daemon without spawning or stopping it (%j)", async capabilities => {
     const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-old-"));
     const socket = runtimeSocket(directory);
-    const server = http.createServer((_request, response) => { response.end(JSON.stringify({ jsonrpc: "2.0", result: { capabilities: { deepThink: true } } })); });
+    const server = http.createServer((_request, response) => { response.end(JSON.stringify({ jsonrpc: "2.0", result: { capabilities } })); });
     await new Promise<void>(resolve => server.listen(socket, resolve));
     try {
       await expect(ensureChatRuntime({ directory })).rejects.toMatchObject({ code: "RUNTIME_UPGRADE_REQUIRED" });

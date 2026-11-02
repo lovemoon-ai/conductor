@@ -7,6 +7,7 @@ import { normalizeContextFiles } from "../context-files.js";
 import { emitLog, normalizeLogger } from "../shared.js";
 
 const SUPPORTED_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "gemini", "kimi", "deepseek"]);
+const RUNTIME_CHAT_WEB_PROVIDERS = new Set(["chatgpt", "deepseek", "kimi", "claude"]);
 const DEFAULT_CHAT_WEB_PROVIDER = "chatgpt";
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -21,7 +22,7 @@ function normalizeChatWebProvider(value) {
 
 function resolveChatWebProvider(options = {}) {
   const supported = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET
-    ? new Set(["chatgpt", "deepseek", "kimi", "claude"]) : SUPPORTED_CHAT_WEB_PROVIDERS;
+    ? new Set([...SUPPORTED_CHAT_WEB_PROVIDERS, ...RUNTIME_CHAT_WEB_PROVIDERS]) : SUPPORTED_CHAT_WEB_PROVIDERS;
   for (const candidate of [options.chatWebProvider, options.provider, options.model]) {
     const normalized = normalizeChatWebProvider(candidate);
     if (!normalized) continue;
@@ -125,6 +126,7 @@ export class ChatWebSession extends EventEmitter {
     this.logger = normalizeLogger(options.logger);
     this.runtimeSocket = options.chatWebRuntimeSocket || process.env.CHAT_WEB_RUNTIME_SOCKET || "";
     this.chatWebProvider = resolveChatWebProvider(options);
+    if (!RUNTIME_CHAT_WEB_PROVIDERS.has(this.chatWebProvider)) this.runtimeSocket = "";
     this.runtimeMode = Boolean(this.runtimeSocket) ||
       (["kimi", "deepseek"].includes(this.chatWebProvider) && options.chatWebRuntime !== false);
     this.managedRuntime = this.runtimeMode && !this.runtimeSocket;
@@ -396,10 +398,10 @@ export class ChatWebSession extends EventEmitter {
       this.sessionInfo = { ...this.sessionInfo, sessionId: this.sessionId };
       this.emit("session", this.getSessionInfo());
     }
-    const loggedIn = this.runtimeMode
-      ? await this.chatSession.isLoggedIn()
-      : await this.chatSession.isLoggedIn().catch(() => false);
-    if (!loggedIn) {
+    const readiness = this.runtimeMode && typeof this.chatSession.prepare === "function"
+      ? await this.chatSession.prepare()
+      : { ready: this.runtimeMode ? await this.chatSession.isLoggedIn() : await this.chatSession.isLoggedIn().catch(() => false) };
+    if (!readiness.ready && !readiness.queued) {
       const error = new Error(
         `Chat requires login. On this daemon host run: ${this.loginCommand()}`,
       );

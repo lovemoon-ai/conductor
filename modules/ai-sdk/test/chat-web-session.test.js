@@ -91,6 +91,22 @@ function createStubChatWebModule({
 }
 
 describe("ChatWebSession", () => {
+  for (const explicit of [false, true]) it("keeps Gemini on its legacy transport with " + (explicit ? "an explicit" : "a global") + " runtime socket", async () => {
+    const previous = process.env.CHAT_WEB_RUNTIME_SOCKET;
+    process.env.CHAT_WEB_RUNTIME_SOCKET = "/must-not-connect/runtime.sock";
+    const { mod, state } = createStubChatWebModule();
+    const session = new ChatWebSession("chat-web", { model: "gemini", chatWebModule: mod, ...(explicit ? { chatWebRuntimeSocket: "/explicit/runtime.sock" } : {}) });
+    try {
+      assert.equal(session.runtimeMode, false);
+      assert.equal((await session.runTurn("Gemini still works")).text, "stub reply to: Gemini still works");
+      assert.equal(state.openCalls[0].provider, "gemini");
+      assert.equal(state.openCalls[0].options.socketPath, undefined);
+    } finally {
+      await session.close();
+      if (previous === undefined) delete process.env.CHAT_WEB_RUNTIME_SOCKET; else process.env.CHAT_WEB_RUNTIME_SOCKET = previous;
+    }
+  });
+
   it("defaults to the chatgpt sub-provider", () => {
     const { mod } = createStubChatWebModule();
     const s = new ChatWebSession("chat-web", { chatWebModule: mod });

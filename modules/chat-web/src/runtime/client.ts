@@ -45,7 +45,7 @@ export class ChatRuntimeClient {
   }
   list(): Promise<Conversation[]> { return this.call("conversations.list"); }
   get(id: string): Promise<Conversation> { return this.call("conversations.get", { id }); }
-  resume(id: string, options: { headed?: boolean; acknowledgeUncertain?: boolean } = {}): Promise<Conversation & WorkerResult> { return this.call("conversations.resume", { id, ...options }); }
+  resume(id: string, options: { headed?: boolean; acknowledgeUncertain?: boolean; allowQueued?: boolean } = {}): Promise<Conversation & WorkerResult> { return this.call("conversations.resume", { id, ...options }); }
   closeConversation(id: string): Promise<Conversation> { return this.call("conversations.close", { id }); }
   async submit(params: { conversationId: string; input: string; requestId: string; timeoutMs?: number; deepThink?: boolean }): Promise<Turn> {
     await this.checkDeepThink(params.deepThink);
@@ -141,6 +141,8 @@ export class RuntimeChatSession {
     if (this.managedOptions) await (await import("./managed.js")).ensureChatRuntime(this.managedOptions);
     if (this.closed) throw new RuntimeError("CHAT_CLOSED", "SDK session is closed");
   }
+  /** Defer browser/auth verification until the queued send owns a worker slot. */
+  async prepare(): Promise<WorkerResult> { await this.ensureAvailable(); return this.client.resume(this.id, { allowQueued: true }); }
   async isLoggedIn(): Promise<boolean> { await this.ensureAvailable(); return !!(await this.client.resume(this.id)).ready; }
   async send(message: string, options: { requestId?: string; timeoutMs?: number; onProgress?: (text: string) => void; onStatus?: (status: TurnStatus) => void; signal?: AbortSignal; deepThink?: boolean } = {}) {
     if (options.deepThink !== undefined && typeof options.deepThink !== "boolean") throw new RuntimeError("INVALID_PARAMS", "deepThink must be boolean");

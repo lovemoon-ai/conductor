@@ -142,11 +142,11 @@ Kimi、DeepSeek 默认自动启用运行时，例如 createAiSession("chat-web",
 
 - 全局默认四个 worker，同站点同 accountId 默认同时生成两路，可在 serve 时配置。accountId 是用户给登录身份的标签，运行时不验证多个标签是否实际对应同一个账号；站点限流与配额不会因 profile 隔离而增加。
 - 空闲 worker 可回收，恢复依赖已保存的站点会话 URL。已发送但没有可靠 URL 的 chat 不会在资源回收或重启后悄悄打开新会话。
-- 已开始的 turn 在异常或重启后进入 uncertain；重启只重新调度从未开始的 queued turn，不重放已提交消息。
+- 已开始的 turn 在异常或重启后进入 uncertain；重启只重新调度仍在 timeoutMs 等待期限内、从未开始的 queued turn；过期队列记录 cancelled / QUEUE_EXPIRED，分配 worker 前也会再次检查，不重放已提交消息。
 - uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。
 - 回复优先从 fetch/XHR 的 SSE 或 Kimi Connect JSON 流增量解析。终态 source 字段区分 sse、connect 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、Connect 压缩帧或变化后的站点协议可能需要更新适配器。
 - 本地状态目录默认 `CHAT_WEB_HOME/runtime`，CHAT_WEB_HOME 默认 ~/.chat-web。Unix 目录权限 0700，socket 与状态文件 0600，凭证保存在各 chat 的 profile。没有开放 TCP 监听端口。
-- 第一版使用原子 JSON 状态快照，最多保留 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。达到限制会明确拒绝操作；长期归档与清理接口留待后续实现。状态含输入与回复，应按本地聊天记录管理。
+- 第一版使用原子 JSON 状态快照，最多保留 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。关闭的 chat 最多保留最近 32 个、最长七天；在创建、发送、关闭和运行时启动时清理，容量不足时优先回收最早关闭的 chat，同时删除其 turn 和 profile。终态 turn 保留最长七天；达到 4096 上限前批量淘汰旧记录，最近一分钟的结果、活跃订阅和仍需核对的 uncertain turn 保留用于取回与核对。正在使用的 chat 不会被回收；若容量全被活跃或受保护的记录占用，仍会明确拒绝操作。被回收的 chat/turn id 返回 NOT_FOUND，去重仅对尚未回收的 turn 生效。状态含输入与回复，应按本地聊天记录管理。
 
 所有客户端命令接受 --socket PATH。daemon 接受 --runtime-dir PATH、--browser-executable PATH、--browser-channel NAME；原有 CHAT_WEB_BROWSER_EXECUTABLE、CHAT_WEB_BROWSER_CHANNEL 环境变量也有效。
 
@@ -162,3 +162,7 @@ node dist/cli.js serve
 测试包括本地 RPC/SDK/CLI、并发与顺序、幂等、取消、断线重放、异常检查点恢复，以及独立 Chromium 进程中的四种站点模拟页面。Kimi 模拟 Connect 二进制分帧、done 后网页主动 abort、UI 延迟解除生成状态与截断流；DeepSeek 模拟 XHR SSE、负数分片下标及 BATCH 终态。真实浏览器测试在 Chromium 不可用时跳过；可设置 CHAT_WEB_TEST_BROWSER 指定测试二进制，不会自动安装或使用真实账号。
 
 真实账号验证覆盖同一 daemon 内 Kimi 两路（headed）和 DeepSeek 两路（headless），四条生成区间共同重叠 1024 ms，四个站点会话 id 不同。各 chat 只回忆自己的标记；取消每站点的一条生成均得到 stopConfirmed=true，另一条继续完成；重启后两站点均可继续原对话。此轮联合验证 14 个 turn，其中 12 个 completed、2 个按要求 cancelled。它验证当前网页版本的基础文本路径，不代表账号配额、附件、工具调用或长时间负载已验收。凭证、原始网络数据和执行日志不进入仓库。
+
+流式正文与事件在内存中逐条更新并供订阅重放，不再每个增量重写状态文件。首次进入 streaming 和生命周期变化（包括终态）仍持久化完整检查点；异常退出可能丢失检查点之后的正文尾部，已开始的请求仍进入 uncertain，不自动重发。
+
+Conductor 的启动检查在 worker 池忙或恢复活跃 chat 时可返回排队状态，实际分配 worker 后再核实登录；无需预先占用浏览器才能进入发送队列。Gemini 不属于隔离运行时站点，设置全局 runtime socket 后仍使用原共享 profile 队列。
