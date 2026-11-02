@@ -20,7 +20,7 @@ export function pruneRuntimeState(state: RuntimeState, protectedChats: Set<strin
     const turns = byChat.get(turn.conversationId) ?? [];
     turns.push(turn); byChat.set(turn.conversationId, turns);
   }
-  const closed = Object.values(state.conversations).filter(chat => chat.closed && !protectedChats.has(chat.id) &&
+  const closed = Object.values(state.conversations).filter(chat => chat.closed && !chat.needsReview && !protectedChats.has(chat.id) &&
     !(byChat.get(chat.id) ?? []).some(turn => !isTerminal(turn.status) || protectedTurns.has(turn.id)))
     .sort((a, b) => time(a.closedAt, now) - time(b.closedAt, now));
   let conversationCount = Object.keys(state.conversations).length;

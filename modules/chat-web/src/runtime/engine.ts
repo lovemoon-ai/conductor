@@ -31,7 +31,6 @@ export class ChatRuntime {
   private failure?: string;
   private scheduled = false;
   private archive: ConversationArchive;
-  private profileCleanups = new Map<string, Promise<void>>();
   readonly maxWorkers: number;
   readonly perAccountConcurrency: number;
   readonly sites: SiteDefinition[];
@@ -120,14 +119,13 @@ export class ChatRuntime {
     const accountId = params.accountId ?? "default";
     if (typeof accountId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(accountId)) throw new RuntimeError("INVALID_PARAMS", "Invalid accountId");
     if (params.headless !== undefined && typeof params.headless !== "boolean") throw new RuntimeError("INVALID_PARAMS", "headless must be boolean");
-    const removed: string[] = [];
-    const chat = await this.store.update(async (state) => {
+    const chat = await this.updateRetained((state, removed) => {
       if (params.providerConversationId) {
         const existing = Object.values(state.conversations).find(chat => chat.provider === params.provider &&
           chat.accountId === accountId && chat.providerConversationId === params.providerConversationId);
         if (existing) return existing;
       }
-      removed.push(...await this.prune(state, { conversations: 1 }));
+      this.prune(state, removed, { conversations: 1 });
       if (Object.keys(state.conversations).length >= retentionPolicy.maxConversations) throw new RuntimeError("CAPACITY", "Conversation limit reached");
       const record: Conversation = { id: randomUUID(), provider: params.provider, accountId,
         headless: params.headless ?? true, ...(params.deepThink === undefined ? {} : { deepThink: params.deepThink }), createdAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(), needsReview: false, closed: false,
@@ -135,7 +133,6 @@ export class ChatRuntime {
       state.conversations[record.id] = record;
       return record;
     });
-    await this.waitForProfileCleanup(removed);
     return chat;
   }
 
@@ -147,8 +144,8 @@ export class ChatRuntime {
       ![...this.workers.keys()].some(other => this.canEvict(other));
     if (params.allowQueued && params.headed === undefined && !params.acknowledgeUncertain && !this.closing.has(id) &&
       (this.busy.has(id) || this.busy.size >= this.maxWorkers || unavailable)) {
-      const chat = await this.store.update(async state => {
-        const record = await this.restore(state, id);
+      const chat = await this.updateRetained((state, removed) => {
+        const record = this.restore(state, id, removed);
         record.closed = false; delete record.closedAt;
         record.lastActivityAt = new Date().toISOString();
         return record;
@@ -159,8 +156,8 @@ export class ChatRuntime {
     if (this.busy.size >= this.maxWorkers) throw new RuntimeError("CAPACITY", "All browser workers are busy");
     this.busy.add(id);
     try {
-      const conversation = await this.store.update(async (state) => {
-        const chat = await this.restore(state, id);
+      const conversation = await this.updateRetained((state, removed) => {
+        const chat = this.restore(state, id, removed);
         if (params.headed !== undefined) chat.headless = !params.headed;
         if (params.acknowledgeUncertain) chat.needsReview = false;
         chat.closed = false; delete chat.closedAt;
@@ -213,9 +210,8 @@ export class ChatRuntime {
     }
     const timeoutMs = params.timeoutMs ?? 180_000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 1_800_000) throw new RuntimeError("INVALID_PARAMS", "Invalid timeoutMs");
-    const removed: string[] = [];
-    const turn = await this.store.update(async (state) => {
-      const chat = await this.restore(state, params.conversationId);
+    const turn = await this.updateRetained((state, removed) => {
+      const chat = this.restore(state, params.conversationId, removed);
       this.validateDeepThink(chat.provider, params.deepThink);
       const deepThink = params.deepThink ?? chat.deepThink;
       this.validateDeepThink(chat.provider, deepThink);
@@ -226,16 +222,15 @@ export class ChatRuntime {
       }
       if (chat.closed) throw new RuntimeError("CHAT_CLOSED", "Resume the chat before sending");
       if (chat.needsReview) throw new RuntimeError("REVIEW_REQUIRED", "Inspect the uncertain turn and explicitly acknowledge it before sending again");
-      removed.push(...await this.prune(state, { turns: 1 }));
-      if (Object.keys(state.turns).length >= retentionPolicy.maxTurns) throw new RuntimeError("CAPACITY", "Turn retention limit reached");
       chat.lastActivityAt = new Date().toISOString();
+      this.prune(state, removed, { turns: 1 });
+      if (Object.keys(state.turns).length >= retentionPolicy.maxTurns) throw new RuntimeError("CAPACITY", "Turn retention limit reached");
       const turn: Turn = { id: randomUUID(), conversationId: chat.id, requestId: params.requestId,
         input: params.input, timeoutMs, ...(deepThink === undefined ? {} : { deepThink }), status: "queued", text: "", events: [], createdAt: new Date().toISOString() };
       this.append(turn, "queued");
       state.turns[turn.id] = turn;
       return turn;
     });
-    await this.waitForProfileCleanup(removed);
     this.schedule();
     return turn;
   }
@@ -245,39 +240,43 @@ export class ChatRuntime {
     return !Number.isFinite(created) || Date.now() - created >= turn.timeoutMs;
   }
 
-  private async prune(state: RuntimeState, reserve: { conversations?: number; turns?: number } = {}): Promise<string[]> {
+  private async updateRetained<T>(change: (state: RuntimeState, removed: Conversation[]) => T): Promise<T> {
+    const removed: Conversation[] = [];
+    let cleanup: Promise<void> | undefined;
+    const result = await this.store.update(state => change(state, removed), true, {
+      // Validate the entire mutation before writing identities. Saving these
+      // non-destructive records before the checkpoint makes GC crash-safe.
+      beforeCommit: async () => { for (const chat of removed) await this.archive.save(chat); },
+      afterCommit: () => {
+        if (!removed.length) return;
+        // Reserve cleanup before the store queue releases the next mutation.
+        // Restoring an ID must wait before opening its replacement profile.
+        cleanup = this.allocation.then(() => this.removeProfiles(removed.map(chat => chat.id)));
+        this.allocation = cleanup.catch(() => undefined);
+      },
+    });
+    await cleanup;
+    return result;
+  }
+
+  private prune(state: RuntimeState, removed: Conversation[], reserve: { conversations?: number; turns?: number } = {}): void {
     const chats = new Set([...this.busy, ...this.closing, ...this.workers.keys()]);
     const turns = new Set([...this.active.keys(), ...Object.keys(state.turns).filter(id => this.events.listenerCount(id) > 0)]);
     for (const id of turns) if (state.turns[id]) chats.add(state.turns[id]!.conversationId);
-    const victims = pruneRuntimeState(state, chats, turns, reserve);
-    for (const chat of victims) await this.archive.save(chat);
-    const ids = victims.map(chat => chat.id);
-    // Reserve cleanup in the same allocation queue used by worker creation.
-    // A restored ID cannot open its replacement profile until deletion finishes.
-    const cleanup = this.allocation.then(() => this.removeProfiles(ids));
-    this.allocation = cleanup.catch(() => undefined);
-    for (const id of ids) this.profileCleanups.set(id, cleanup);
-    void cleanup.finally(() => {
-      for (const id of ids) if (this.profileCleanups.get(id) === cleanup) this.profileCleanups.delete(id);
-    });
-    return ids;
+    removed.push(...pruneRuntimeState(state, chats, turns, reserve));
   }
 
-  private async restore(state: RuntimeState, id: string): Promise<Conversation> {
+  private restore(state: RuntimeState, id: string, removed: Conversation[]): Conversation {
     if (Object.hasOwn(state.conversations, id)) return state.conversations[id]!;
     const archived = this.archive.read(id);
     if (!archived) throw new RuntimeError("NOT_FOUND", "Conversation not found");
     if (!this.sites.some(site => site.name === archived.provider)) throw new RuntimeError("UNSUPPORTED_PROVIDER", "Saved provider is unavailable");
-    await this.prune(state, { conversations: 1 });
+    this.prune(state, removed, { conversations: 1 });
     if (Object.keys(state.conversations).length >= retentionPolicy.maxConversations) throw new RuntimeError("CAPACITY", "Conversation limit reached");
     const { archived: _archived, ...chat } = archived;
     chat.lastActivityAt = new Date().toISOString();
     state.conversations[id] = chat;
     return chat;
-  }
-
-  private async waitForProfileCleanup(ids: string[]): Promise<void> {
-    await Promise.all(ids.map(id => this.profileCleanups.get(id)));
   }
 
   private async removeProfiles(ids: string[]): Promise<void> {
@@ -288,8 +287,7 @@ export class ChatRuntime {
   }
 
   private async collect(): Promise<void> {
-    const ids = await this.store.update(state => this.prune(state));
-    await this.waitForProfileCleanup(ids);
+    await this.updateRetained((state, removed) => this.prune(state, removed));
   }
 
   private async sweepProfiles(): Promise<void> {

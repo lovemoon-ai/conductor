@@ -146,7 +146,7 @@ Kimi、DeepSeek 默认自动启用运行时，例如 createAiSession("chat-web",
 - uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。
 - 回复优先从 fetch/XHR 的 SSE 或 Kimi Connect JSON 流增量解析。终态 source 字段区分 sse、connect 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、Connect 压缩帧或变化后的站点协议可能需要更新适配器。
 - 本地状态目录默认 `CHAT_WEB_HOME/runtime`，CHAT_WEB_HOME 默认 ~/.chat-web。Unix 目录权限 0700，socket 与状态文件 0600，凭证保存在各 chat 的 profile。没有开放 TCP 监听端口。
-- 第一版使用原子 JSON 状态快照，快照中最多常驻 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。关闭 chat 的完整本地资源最多保留最近 32 个、最长七天；在创建、发送、关闭和运行时启动时清理，容量不足时优先回收最早关闭的 chat，同时删除其 turn 和 profile。终态 turn 保留最长七天；达到 4096 上限前批量淘汰旧记录，最近一分钟的结果、活跃订阅和仍需核对的 uncertain turn 保留用于取回与核对。正在使用的 chat 不会被回收；若容量全被活跃或受保护的记录占用，仍会明确拒绝操作。回收 profile 和历史前，会在 archive/<id>.json 持久化小型身份记录（原 id、provider、account、站点会话 id/URL 和恢复保护标记），不包含正文或浏览器凭证。chat get 可按原 id 返回 archived: true；resume 从身份记录恢复原 id 和站点会话，并按需创建 profile。身份记录持续保留，不计入 256 个常驻 chat 的上限。chat list 仅列出常驻记录。已回收的 turn id 返回 NOT_FOUND，去重仅对尚未回收的 turn 生效。状态含输入与回复，应按本地聊天记录管理。
+- 第一版使用原子 JSON 状态快照，快照中最多常驻 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。关闭且无需核对的 chat 的完整本地资源最多保留最近 32 个、最长七天；在创建、发送、关闭和运行时启动时清理，容量不足时优先回收最早关闭的 chat，同时删除其 turn 和 profile。终态 turn 保留最长七天；达到 4096 上限前批量淘汰旧记录，最近一分钟的结果、活跃订阅和仍需核对的 uncertain turn 保留用于取回与核对。正在使用的 chat 不会被回收；若容量全被活跃或受保护的记录占用，仍会明确拒绝操作。回收 profile 和历史前，会在 archive/<id>.json 持久化小型身份记录（原 id、provider、account、站点会话 id/URL 和恢复保护标记），不包含正文或浏览器凭证。chat get 可按原 id 返回 archived: true；resume 从身份记录恢复原 id 和站点会话，并按需创建 profile。身份记录持续保留，不计入 256 个常驻 chat 的上限。chat list 仅列出常驻记录。已回收的 turn id 返回 NOT_FOUND，去重仅对尚未回收的 turn 生效。状态含输入与回复，应按本地聊天记录管理。
 
 所有客户端命令接受 --socket PATH。daemon 接受 --runtime-dir PATH、--browser-executable PATH、--browser-channel NAME；原有 CHAT_WEB_BROWSER_EXECUTABLE、CHAT_WEB_BROWSER_CHANNEL 环境变量也有效。
 
@@ -170,3 +170,5 @@ Conductor 的启动检查在 worker 池忙或恢复活跃 chat 时可返回排�
 无 worker、无非终态 turn、无待核对错误且超过七天未活动的 open chat 也会归档；最近活动和仍在使用的 chat 不会清理。关闭或归档只释放本地资源，不表示 Conductor 任务不可继续。hasCompletedTurn 标记独立于 turn 历史保留；完成过回复但缺少可靠 URL 时仍报 RESUME_UNSUPPORTED，避免静默创建新会话。新的 profile 如需续期认证，会给出登录提示。
 
 页面十秒内未准备好但没有明确登录证据时返回 PAGE_NOT_READY，不提示续期登录；只有登录路径，或输入框可见但缺少站点认证标记时，才报告 AUTH_REQUIRED。
+
+2026-11-02 UTC 已使用真实 Kimi 账号验证 profile 回收后的恢复：通过 Conductor 使用的 managed AI SDK 发送标记，关闭原 chat 并关闭另外 33 个空 chat，确认原 profile 已删除；停止并重新启动 runtime 后，沿用原本地 id、站点会话 id 和 URL，以新 profile 成功回忆原标记，回复来源为 Connect。此轮 DeepSeek 的新 profile 在发送后回到登录页，尚未完成真实 GC 恢复验证，需续期登录后补测。

@@ -180,6 +180,100 @@ describe("runtime retention and durable checkpoints", () => {
     expect(await fs.readFile(path.join(profile, "restored"), "utf8")).toBe("fresh");
   });
 
+
+  it("leaves TTL victims untouched when restoring an archived closed chat is rejected", async () => {
+    const dir = await directory();
+    const now = Date.now();
+    const archived = { ...chat("archived-closed", true), closedAt: new Date(now - 8 * 86_400_000).toISOString() };
+    const victim = { ...chat("ttl-victim", true), closedAt: new Date(now - 6 * 86_400_000).toISOString() };
+    await seed(dir, [archived, victim]);
+    const profile = path.join(dir, "profiles", victim.id);
+    await fs.mkdir(profile, { recursive: true });
+    await fs.writeFile(path.join(profile, "data"), "keep");
+    const runtime = await open(dir);
+    expect(runtime.get(archived.id).archived).toBe(true);
+    const checkpoint = await fs.readFile(path.join(dir, "state.json"), "utf8");
+    vi.spyOn(Date, "now").mockReturnValue(now + 2 * 86_400_000);
+    await expect(runtime.submit({ conversationId: archived.id, requestId: "rejected", input: "no" })).rejects.toMatchObject({ code: "CHAT_CLOSED" });
+    expect(runtime.get(victim.id).archived).toBeUndefined();
+    expect(await fs.readFile(path.join(profile, "data"), "utf8")).toBe("keep");
+    expect(await fs.readFile(path.join(dir, "state.json"), "utf8")).toBe(checkpoint);
+    expect(await fs.stat(path.join(dir, "archive", victim.id + ".json")).catch(() => undefined)).toBeUndefined();
+    await runtime.create({ provider: "deepseek" });
+    expect(runtime.get(victim.id).archived).toBe(true);
+    expect(await fs.stat(profile).catch(() => undefined)).toBeUndefined();
+  });
+
+  it("does not delete live profiles when the retention checkpoint fails", async () => {
+    const dir = await directory();
+    const now = Date.now();
+    const victim = { ...chat("checkpoint-victim", true), closedAt: new Date(now - 6 * 86_400_000).toISOString() };
+    await seed(dir, [victim]);
+    const profile = path.join(dir, "profiles", victim.id);
+    await fs.mkdir(profile, { recursive: true });
+    await fs.writeFile(path.join(profile, "data"), "keep");
+    const runtime = await open(dir);
+    const checkpoint = await fs.readFile(path.join(dir, "state.json"), "utf8");
+    const rename = fs.rename.bind(fs);
+    let failed = false;
+    vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (target === path.join(dir, "state.json") && !failed) {
+        failed = true; throw Object.assign(new Error("checkpoint failed"), { code: "EIO" });
+      }
+      await rename(source, target);
+    });
+    vi.spyOn(Date, "now").mockReturnValue(now + 2 * 86_400_000);
+    await expect(runtime.create({ provider: "deepseek" })).rejects.toMatchObject({ code: "EIO" });
+    expect(runtime.get(victim.id).archived).toBeUndefined();
+    expect(await fs.readFile(path.join(profile, "data"), "utf8")).toBe("keep");
+    expect(await fs.readFile(path.join(dir, "state.json"), "utf8")).toBe(checkpoint);
+    await runtime.create({ provider: "deepseek" });
+    expect(runtime.get(victim.id).archived).toBe(true);
+    expect(await fs.stat(profile).catch(() => undefined)).toBeUndefined();
+  });
+
+  it("protects closed chats and uncertain history until review is acknowledged", async () => {
+    const dir = await directory();
+    const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    const review = { ...chat("closed-review", true), closedAt: old, needsReview: true };
+    await seed(dir, [review, ...Array.from({ length: 40 }, (_, i) => chat("ordinary-" + i, true))],
+      [turn("uncertain-review", review.id, "uncertain", 8 * 86_400_000)]);
+    const profile = path.join(dir, "profiles", review.id);
+    await fs.mkdir(profile, { recursive: true });
+    let runtime = await open(dir);
+    expect(runtime.list()).toHaveLength(33);
+    expect(runtime.get(review.id).archived).toBeUndefined();
+    expect(runtime.getTurn("uncertain-review").status).toBe("uncertain");
+    expect(await fs.stat(profile)).toBeDefined();
+    await runtime.shutdown();
+    runtime = await open(dir);
+    await runtime.closeConversation(review.id);
+    expect(runtime.getTurn("uncertain-review").status).toBe("uncertain");
+    await runtime.resume(review.id, { acknowledgeUncertain: true });
+    await runtime.closeConversation(review.id);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 8 * 86_400_000);
+    await runtime.create({ provider: "deepseek" });
+    expect(runtime.get(review.id).archived).toBe(true);
+    expect(() => runtime.getTurn("uncertain-review")).toThrow(/not found/);
+    expect(await fs.stat(profile).catch(() => undefined)).toBeUndefined();
+  });
+
+  it("counts an accepted prompt as activity before collecting workerless idle chats", async () => {
+    const dir = await directory();
+    const c = chat("idle-submit");
+    await seed(dir, [c]);
+    const runtime = await open(dir);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 8 * 86_400_000);
+    try {
+      const fresh = await runtime.submit({ conversationId: c.id, requestId: "after-idle", input: "continue" });
+      await until(() => runtime.getTurn(fresh.id).status === "completed");
+      expect(runtime.get(c.id).archived).toBeUndefined();
+      expect(runtime.getTurn(fresh.id).text).toBe("continue");
+      expect(runtime.get(c.id).lastActivityAt).toBe(new Date().toISOString());
+    } finally { vi.useRealTimers(); }
+  });
+
   it("streams hundreds of deltas without rewriting the checkpoint, then durably commits the complete event history", async () => {
     const dir = await directory();
     let notify!: (notice: WorkerNotice) => void;
