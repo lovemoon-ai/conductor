@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ChatStreamDecoder } from "../src/runtime/stream-decoder.js";
 
@@ -106,5 +107,53 @@ describe("DeepSeek response patches", () => {
     expect(decoder.complete).toBe(false);
     decoder.push(frame({ p: "response", o: "BATCH", v: [{ p: "status", o: "SET", v: "FINISHED" }] }));
     expect(decoder.complete).toBe(true);
+  });
+});
+
+const providerErrors = JSON.parse(readFileSync(new URL("./fixtures/provider-errors.json", import.meta.url), "utf8"));
+
+describe("provider error messages", () => {
+  it.each(["kimi", "deepseek"] as const)("recognizes the real %s concurrency rejection and never completes it", provider => {
+    const decoder = new ChatStreamDecoder(provider);
+    if (provider === "kimi") {
+      decoder.pushConnect(connectFrame(providerErrors.kimi, 2));
+      decoder.finishConnect();
+    } else {
+      decoder.push(frame(providerErrors.deepseek));
+      decoder.push("data: [DONE]\n\n");
+    }
+    expect(decoder.errorCode).toBe("PROVIDER_CONCURRENCY_LIMIT");
+    expect(decoder.error).toBe((provider === "kimi" ? "Kimi" : "DeepSeek") + " 账号同时生成的对话过多，请等待其他对话结束后重试。");
+    expect(decoder.complete).toBe(false);
+    expect(decoder.text).toBe("");
+  });
+
+  it("does not classify a generic resource exhaustion as a concurrency error", () => {
+    const decoder = new ChatStreamDecoder("kimi");
+    decoder.pushConnect(connectFrame({ error: { code: "resource_exhausted", message: "Daily usage exhausted" } }, 2));
+    expect(decoder.errorCode).toBe("PROVIDER_ERROR");
+    expect(decoder.error).toContain("[resource_exhausted]: Daily usage exhausted");
+  });
+
+  it("forwards bounded provider messages without dumping account metadata or encoded details", () => {
+    const decoder = new ChatStreamDecoder("deepseek");
+    decoder.push(frame({ type: "error", content: "Server\nfailed " + "x".repeat(600), metadata: { token: "must-not-leak" }, details: "must-not-leak" }));
+    expect(decoder.error).toMatch(/^Provider returned an error: Server failed /);
+    expect(decoder.error!.length).toBeLessThan(550);
+    expect(decoder.error).not.toContain("must-not-leak");
+    const unknown = new ChatStreamDecoder("kimi");
+    unknown.pushConnect(connectFrame({ error: { details: [{ value: "must-not-leak" }] } }, 2));
+    expect(unknown.error).toBe("Provider returned a Connect error");
+  });
+
+  it("preserves partial text while keeping a later provider error terminal", () => {
+    const decoder = new ChatStreamDecoder("kimi");
+    decoder.pushConnect(connectFrame({ mask: "block.text", block: { id: "a", text: { content: "partial" } } }));
+    decoder.pushConnect(connectFrame({ error: { code: "unavailable", message: "Try again later" } }));
+    decoder.pushConnect(connectFrame({ done: {} }));
+    decoder.pushConnect(connectFrame({}, 2));
+    expect(decoder.text).toBe("partial");
+    expect(decoder.error).toContain("Try again later");
+    expect(decoder.complete).toBe(false);
   });
 });

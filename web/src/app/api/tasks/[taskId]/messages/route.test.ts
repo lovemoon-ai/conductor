@@ -105,6 +105,17 @@ describe("/api/tasks/[taskId]/messages", () => {
     } as any);
   });
 
+
+  it.each(["Kimi", "DeepSeek"])("returns the %s concurrency error and its metadata in chat history", async provider => {
+    const content = "web-" + provider.toLowerCase() + " 处理失败: " + provider + " 账号同时生成的对话过多，请等待其他对话结束后重试。";
+    const metadata = { severity: "error", backend: "web-" + provider.toLowerCase(), reply_to: "user-one" };
+    vi.mocked(db.task.findFirst).mockResolvedValue({ id: "task-1", projectId: "proj-1", taskType: "ai_task" } as any);
+    vi.mocked(db.message.findMany).mockResolvedValue([{ id: "error-one", taskId: "task-1", role: "assistant", content, metadata: JSON.stringify(metadata), createdAt: new Date() }] as any);
+    const response = await GET(createMockRequest({ method: "GET", url: "http://localhost:6152/api/tasks/task-1/messages" }), { params: Promise.resolve({ taskId: "task-1" }) });
+    expect(response.status).toBe(200);
+    expect(await extractJson(response)).toEqual([expect.objectContaining({ content, metadata })]);
+  });
+
   it("starts a new round when a user message reaches an ended persistent round", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(endedPersistentTask as any);
     vi.mocked(startPersistentRound).mockResolvedValue({ ok: true, task: {} as any, messageId: "msg-r3" });

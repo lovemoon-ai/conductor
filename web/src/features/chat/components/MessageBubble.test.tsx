@@ -19,6 +19,15 @@ const makeMessage = (overrides: Partial<Parameters<typeof MessageBubble>[0]['mes
 });
 
 describe('MessageBubble', () => {
+  it.each(['Kimi', 'DeepSeek'])('shows a %s concurrency rejection as a visible chat message', provider => {
+    const content = 'web-' + provider.toLowerCase() + ' 处理失败: ' + provider + ' 账号同时生成的对话过多，请等待其他对话结束后重试。';
+    render(<MessageBubble message={makeMessage({ role: 'assistant', content, metadata: { severity: 'error', backend: 'web-' + provider.toLowerCase(), reply_to: 'user-one' } })} />);
+    const message = screen.getByText(content);
+    expect(message).toBeVisible();
+    expect(message.closest('details')).toBeNull();
+    expect(screen.queryByText('Session activity')).not.toBeInTheDocument();
+  });
+
   it('opens message actions from the visible button', () => {
     render(<MessageBubble message={makeMessage()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Message actions' }));

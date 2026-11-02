@@ -7,6 +7,7 @@ export class ChatStreamDecoder {
   text = "";
   complete = false;
   error?: string;
+  errorCode?: string;
   source: "sse" | "connect" = "sse";
   captured = false;
   private connectPending = Buffer.alloc(0);
@@ -53,8 +54,8 @@ export class ChatStreamDecoder {
       offset += size + 5;
       if (flags === 2) {
         this.connectEnded = true;
-        if (value.error) { this.error = "Provider returned a Connect error"; this.complete = false; }
-        else this.complete = this.kimiDone && !!this.text;
+        if (value.error) this.providerError(value, "Provider returned a Connect error");
+        else this.complete = !this.error && this.kimiDone && !!this.text;
         if (offset !== this.connectPending.length) throw new Error("Data after Connect end stream");
       } else {
         if (this.format !== "kimi") throw new Error("Connect is unsupported for this provider");
@@ -69,7 +70,8 @@ export class ChatStreamDecoder {
   }
 
   private kimiConnect(value: Record<string, any>): void {
-    if (value.error) { this.error = "Provider returned an error"; return; }
+    if (this.error) return;
+    if (value.error) { this.providerError(value, "Provider returned an error"); return; }
     if (value.message?.role === "assistant") this.kimiMessageId = value.message.id;
     const block = value.block;
     if (block && typeof block.text?.content === "string" &&
@@ -120,13 +122,40 @@ export class ChatStreamDecoder {
       .sort(([a], [b]) => a - b).map(([, text]) => text).join("");
   }
 
+  private providerError(value: Record<string, any>, fallback: string): void {
+    if (this.error) return;
+    const error = value.error;
+    const details: Record<string, any>[] = Array.isArray(error?.details) ? error.details : [];
+    const concurrency = (this.format === "deepseek" && value.finish_reason === "parallel_chat_limit") ||
+      (this.format === "kimi" && details.some(detail => detail?.debug?.reason === "REASON_CHAT_CONCURRENCY_EXCEEDED"));
+    this.errorCode = concurrency ? "PROVIDER_CONCURRENCY_LIMIT" : "PROVIDER_ERROR";
+    this.complete = false;
+    if (concurrency) {
+      const provider = this.format === "kimi" ? "Kimi" : "DeepSeek";
+      this.error = provider + " 账号同时生成的对话过多，请等待其他对话结束后重试。";
+      return;
+    }
+    // Forward only the provider's error message, never its full response,
+    // encoded details, metadata or account data.
+    const message = [
+      typeof error === "string" ? error : error?.message,
+      ...details.map(detail => detail?.debug?.localizedMessage?.message),
+      value.message,
+      this.format === "deepseek" ? value.content : undefined,
+    ].find(item => typeof item === "string" && item.trim());
+    const code = typeof error?.code === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(error.code) ? error.code : "";
+    const text = typeof message === "string" ? message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 500) : "";
+    this.error = fallback + (code ? " [" + code + "]" : "") + (text ? ": " + text : "");
+  }
+
   private event(data: string): void {
+    if (this.error) return;
     if (data.trim() === "[DONE]") { this.complete = true; return; }
     let value: Record<string, any>;
     try { value = JSON.parse(data); } catch { return; }
     if (!value || typeof value !== "object") return;
     if (value.error || value.type === "error" || value.event === "error") {
-      this.error = "Provider returned an error";
+      this.providerError(value, "Provider returned an error");
       return;
     }
     if (this.format === "chatgpt") {

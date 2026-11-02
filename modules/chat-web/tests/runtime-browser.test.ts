@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import os from "node:os";
@@ -9,6 +9,8 @@ import { startRuntimeServer } from "../src/runtime/server.js";
 import { ChatRuntimeClient } from "../src/runtime/client.js";
 import { saveRuntimeAccount, applyRuntimeAccount } from "../src/runtime/accounts.js";
 import { runtimeSites } from "../src/runtime/sites.js";
+
+const providerErrors = JSON.parse(readFileSync(new URL("./fixtures/provider-errors.json", import.meta.url), "utf8"));
 
 const executable = process.env.CHAT_WEB_TEST_BROWSER ?? chromium.executablePath();
 const cleanup: (() => Promise<void>)[] = [];
@@ -110,6 +112,10 @@ async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {})
     requests.push(data);
     response.writeHead(200, { "content-type": data.provider === "kimi" ? "application/connect+json" : "text/event-stream; charset=utf-8" });
     response.flushHeaders();
+    if (data.message === "provider-limit") {
+      response.end(data.provider === "kimi" ? connectFrame(providerErrors.kimi, 2) : "data: " + JSON.stringify(providerErrors.deepseek) + "\n\n");
+      return;
+    }
     const answer = "你好:" + data.message + ":" + data.id + ":" + data.turn;
     if (data.provider === "deepseek") response.write("data: " + JSON.stringify({
       v: { response: { fragments: [{ id: 41, type: "THINK", content: "private thought" }] } },
@@ -155,6 +161,23 @@ async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {})
 }
 
 describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium workers", () => {
+  it.each(["kimi", "deepseek"])("persists the %s provider concurrency message through the real worker and RPC", async provider => {
+    const { client, requests } = await startFixture();
+    const chat = await client.create({ provider });
+    const turn = await client.submit({ conversationId: chat.id, requestId: "limited", input: "provider-limit", timeoutMs: 15_000 });
+    const events: { errorCode?: string; error?: string }[] = [];
+    const result = await client.wait(turn.id, event => events.push(event));
+    expect(result.status).toBe("uncertain");
+    expect(result.errorCode).toBe("PROVIDER_CONCURRENCY_LIMIT");
+    expect(result.error).toContain("账号同时生成的对话过多");
+    const terminal = events.at(-1)!;
+    expect(terminal.errorCode).toBe(result.errorCode);
+    expect(terminal.error).toBe(result.error);
+    expect(requests).toHaveLength(1);
+    // Keep the existing review gate: displaying a known error never replays a submitted turn.
+    await expect(client.submit({ conversationId: chat.id, requestId: "next", input: "retry" })).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
+  }, 20_000);
+
   it("restores credentials with older Playwright without resetting refreshed tokens on reload", async () => {
     const { origin, directory } = await startFixture();
     const context = await chromium.launchPersistentContext(path.join(directory, "fallback"), { headless: true, executablePath: executable });

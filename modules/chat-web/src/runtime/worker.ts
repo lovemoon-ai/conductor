@@ -285,7 +285,8 @@ class Session {
           }
           throw new RuntimeError("UNCERTAIN", "Client cancelled; provider stop was not confirmed");
         }
-        if (this.captureError || this.decoder.error) throw new RuntimeError("UNCERTAIN", this.captureError ?? this.decoder.error!);
+        if (this.decoder.error) throw new RuntimeError(this.decoder.errorCode ?? "PROVIDER_ERROR", this.decoder.error);
+        if (this.captureError) throw new RuntimeError("UNCERTAIN", this.captureError);
         const texts = await page.locator(this.config.site.assistant).allTextContents();
         const newMessage = texts.length > baseline.length;
         const domText = newMessage ? texts.at(-1)?.trim() ?? "" : "";
