@@ -30,10 +30,10 @@ export class RuntimeStore {
 
   // Volatile callbacks validate before mutating; they only update live stream
   // text/events. The next durable transition includes all preceding deltas.
-  update<T>(change: (state: RuntimeState) => T, durable = true): Promise<T> {
+  update<T>(change: (state: RuntimeState) => T | Promise<T>, durable = true): Promise<T> {
     const run = this.queue.then(async () => {
       const next = durable ? structuredClone(this.state) : this.state;
-      const result = change(next);
+      const result = await change(next);
       if (durable) {
         const file = path.join(this.directory, "state.json");
         const temporary = file + ".tmp";

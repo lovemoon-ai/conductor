@@ -28,8 +28,8 @@ async function seed(dir: string, conversations: Conversation[], turns: Turn[] = 
   await fs.writeFile(path.join(dir, "state.json"), JSON.stringify(state), { mode: 0o600 });
 }
 async function open(dir: string, options: Partial<Parameters<typeof ChatRuntime.open>[0]> = {}) {
-  const runtime = await ChatRuntime.open({ directory: dir, workerFactory: () => ({
-    async open() { return { ready: true, url: "https://example.test/chat/restored" }; }, async send(input) { return { text: input }; }, cancel() {}, async close() {},
+  const runtime = await ChatRuntime.open({ directory: dir, workerFactory: config => ({
+    async open() { return { ready: true, url: config.conversation.url ?? "https://example.test/chat/restored" }; }, async send(input) { return { text: input }; }, cancel() {}, async close() {},
   }), ...options });
   runtimes.push(runtime); return runtime;
 }
@@ -52,7 +52,7 @@ describe("runtime retention and durable checkpoints", () => {
     const fresh = await runtime.create({ provider: "deepseek" });
     expect(runtime.list()).toHaveLength(256);
     expect(runtime.get(fresh.id).closed).toBe(false);
-    expect(() => runtime.get(chats[0]!.id)).toThrow(/not found/);
+    expect(runtime.get(chats[0]!.id).archived).toBe(true);
     expect(() => runtime.getTurn("old-result")).toThrow(/not found/);
     expect(await fs.stat(path.join(dir, "profiles", chats[0]!.id)).catch(() => undefined)).toBeUndefined();
     expect(runtime.get(chats[1]!.id).closed).toBe(false);
@@ -66,6 +66,7 @@ describe("runtime retention and durable checkpoints", () => {
     for (const id of ["closed-0", "closed-39", "expired", "orphan"]) await fs.mkdir(path.join(dir, "profiles", id), { recursive: true });
     const runtime = await open(dir);
     expect(runtime.list()).toHaveLength(32);
+    expect(runtime.get("closed-0").archived).toBe(true);
     expect(runtime.get("closed-39").closed).toBe(true);
     for (const id of ["closed-0", "expired", "orphan"]) expect(await fs.stat(path.join(dir, "profiles", id)).catch(() => undefined)).toBeUndefined();
     expect(await fs.stat(path.join(dir, "profiles", "closed-39"))).toBeDefined();
@@ -104,6 +105,79 @@ describe("runtime retention and durable checkpoints", () => {
     const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
     expect(Object.keys(state.turns).length).toBeLessThan(4096);
     expect(runtime.get(c.id).needsReview).toBe(false);
+  });
+
+  it("archives abandoned open chats without losing their stable identity or collecting recent and review-required chats", async () => {
+    const dir = await directory();
+    const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    const abandoned = Array.from({ length: 256 }, (_, i) => ({ ...chat("abandoned-" + i), createdAt: old, lastActivityAt: old }));
+    const recent = { ...chat("recent-open"), createdAt: old, lastActivityAt: new Date().toISOString() };
+    const review = { ...chat("review-open"), createdAt: old, lastActivityAt: old, needsReview: true };
+    await seed(dir, [...abandoned, recent, review]);
+    await fs.mkdir(path.join(dir, "profiles", abandoned[0]!.id), { recursive: true });
+    const runtime = await open(dir);
+    expect(runtime.list().map(c => c.id).sort()).toEqual(["recent-open", "review-open"]);
+    const saved = runtime.get(abandoned[0]!.id);
+    expect(saved.archived).toBe(true);
+    expect(saved.url).toBe(abandoned[0]!.url);
+    expect(await fs.stat(path.join(dir, "profiles", abandoned[0]!.id)).catch(() => undefined)).toBeUndefined();
+    await runtime.create({ provider: "deepseek" });
+    await runtime.resume(saved.id);
+    expect(runtime.get(saved.id).archived).toBeUndefined();
+    expect(runtime.get(saved.id).url).toBe(saved.url);
+  });
+
+  it.each([false, true])("retains the completed-conversation guard after history and profile GC (closed=%s)", async closed => {
+    const dir = await directory();
+    const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+    const c = { ...chat("no-url", closed), createdAt: old, lastActivityAt: old, closedAt: closed ? old : undefined };
+    delete c.url;
+    await seed(dir, [c], [turn("completed", c.id, "completed", 8 * 86_400_000)]);
+    let opened = 0;
+    const runtime = await open(dir, { workerFactory: () => ({
+      async open() { opened++; return { ready: true }; }, async send() { return { text: "unexpected" }; }, cancel() {}, async close() {},
+    }) });
+    expect(runtime.get(c.id).archived).toBe(true);
+    expect(runtime.get(c.id).hasCompletedTurn).toBe(true);
+    expect(() => runtime.getTurn("completed")).toThrow(/not found/);
+    await expect(runtime.resume(c.id)).rejects.toMatchObject({ code: "RESUME_UNSUPPORTED" });
+    expect(opened).toBe(0);
+  });
+
+  it("orders restoration after an in-flight profile cleanup so the replacement profile survives", async () => {
+    const dir = await directory();
+    const chats = Array.from({ length: 32 }, (_, i) => ({ ...chat("closed-" + i, true), closedAt: new Date(Date.now() - (32 - i) * 1000).toISOString() }));
+    await seed(dir, chats);
+    const profile = path.join(dir, "profiles", chats[0]!.id);
+    await fs.mkdir(profile, { recursive: true });
+    let opened = 0;
+    const runtime = await open(dir, { workerFactory: config => ({
+      async open() {
+        opened++; await fs.mkdir(config.profileDir, { recursive: true });
+        await fs.writeFile(path.join(config.profileDir, "restored"), "fresh");
+        return { ready: true, url: config.conversation.url };
+      }, async send() { return { text: "unused" }; }, cancel() {}, async close() {},
+    }) });
+    const fresh = await runtime.create({ provider: "deepseek" });
+    const originalRm = fs.rm.bind(fs);
+    let entered!: () => void, release!: () => void, intercepted = false;
+    const deleting = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (target === profile && !intercepted) { intercepted = true; entered(); await gate; }
+      return originalRm(target, options);
+    });
+    const closing = runtime.closeConversation(fresh.id);
+    await deleting;
+    const restoring = runtime.resume(chats[0]!.id);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(opened).toBe(0);
+    } finally { release(); }
+    await closing; await restoring;
+    expect(opened).toBe(1);
+    expect(runtime.get(chats[0]!.id).archived).toBeUndefined();
+    expect(await fs.readFile(path.join(profile, "restored"), "utf8")).toBe("fresh");
   });
 
   it("streams hundreds of deltas without rewriting the checkpoint, then durably commits the complete event history", async () => {

@@ -400,8 +400,11 @@ export class ChatWebSession extends EventEmitter {
     }
     const readiness = this.runtimeMode && typeof this.chatSession.prepare === "function"
       ? await this.chatSession.prepare()
-      : { ready: this.runtimeMode ? await this.chatSession.isLoggedIn() : await this.chatSession.isLoggedIn().catch(() => false) };
+      : { ready: this.runtimeMode ? await this.chatSession.isLoggedIn() : await this.chatSession.isLoggedIn().catch(() => false), authRequired: true };
     if (!readiness.ready && !readiness.queued) {
+      if (readiness.authRequired !== true) {
+        throw Object.assign(new Error("Chat page did not become ready; wait for it to finish loading and retry"), { code: "PAGE_NOT_READY" });
+      }
       const error = new Error(
         `Chat requires login. On this daemon host run: ${this.loginCommand()}`,
       );

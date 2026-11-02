@@ -12,6 +12,9 @@ export interface Conversation {
   needsReview: boolean;
   closed: boolean;
   closedAt?: string;
+  lastActivityAt?: string;
+  hasCompletedTurn?: boolean;
+  archived?: boolean;
 }
 
 export interface TurnEvent {
@@ -67,6 +70,7 @@ export interface SiteDefinition {
 
 export interface WorkerResult {
   queued?: boolean;
+  authRequired?: boolean;
   text?: string;
   url?: string;
   providerConversationId?: string;

@@ -201,9 +201,9 @@ class Session {
   private async waitForInput(): Promise<Locator | undefined> {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
+      if (/\/(?:login|auth|signin|sign_in|sign-in)(?:\/|$)/i.test(new URL(this.page!.url()).pathname)) return undefined;
       const input = await this.visible(this.config.site.input);
       if (input && (!this.config.site.authenticated || await this.visible(this.config.site.authenticated))) return input;
-      if (/\/(?:login|auth|signin|sign_in|sign-in)(?:\/|$)/i.test(new URL(this.page!.url()).pathname)) return undefined;
       await pause(100);
     }
     return undefined;
@@ -214,8 +214,11 @@ class Session {
     const url = new URL(page.url());
     const origin = new URL(this.config.site.homeUrl).origin;
     const match = url.origin === origin ? new RegExp(this.config.site.conversationPath).exec(url.pathname) : null;
+    const input = !!(await this.visible(this.config.site.input));
+    const authenticated = !this.config.site.authenticated || !!(await this.visible(this.config.site.authenticated));
+    const authRequired = /\/(?:login|auth|signin|sign_in|sign-in)(?:\/|$)/i.test(url.pathname) || (input && !authenticated);
     return {
-      ready: !!(await this.visible(this.config.site.input)) && (!this.config.site.authenticated || !!(await this.visible(this.config.site.authenticated))),
+      ready: input && authenticated && !authRequired, authRequired,
       ...(match ? { url: url.href, providerConversationId: match[1] } : {}),
     };
   }
@@ -248,7 +251,11 @@ class Session {
     await this.open();
     const page = this.page!;
     const composer = await this.waitForInput();
-    if (!composer) throw new RuntimeError("AUTH_REQUIRED", "Chat input is unavailable; open this chat's login window");
+    if (!composer) {
+      const { authRequired } = await this.location();
+      throw new RuntimeError(authRequired ? "AUTH_REQUIRED" : "PAGE_NOT_READY",
+        authRequired ? "Chat requires login before sending" : "Chat page did not become ready; wait for it to finish loading and retry");
+    }
     if (await this.visible(this.config.site.stop)) throw new RuntimeError("PROVIDER_BUSY", "Provider is still generating; wait or stop it before sending again");
     const baseline = await page.locator(this.config.site.assistant).allTextContents();
     this.controller = new AbortController();

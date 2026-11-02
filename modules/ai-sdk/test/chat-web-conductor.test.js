@@ -67,7 +67,7 @@ describe("Conductor default Kimi and DeepSeek runtime", () => {
     const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-auth-ui-"));
     let sent = 0;
     let authenticated = false;
-    const server = await startRuntimeServer({ directory, workerFactory: () => ({ async open() { return { ready: authenticated }; }, async send(input) { sent++; return { text: input }; }, cancel() {}, async close() {} }) });
+    const server = await startRuntimeServer({ directory, workerFactory: () => ({ async open() { return { ready: authenticated, authRequired: !authenticated }; }, async send(input) { sent++; return { text: input }; }, cancel() {}, async close() {} }) });
     const session = new ChatWebSession("chat-web", { model: "deepseek", chatWebModule: { RuntimeChatSession: { open: (provider, options) => { assert.equal(options.socketPath, undefined); return RuntimeChatSession.open(provider, { ...options, socketPath: server.socketPath }); } } } });
     try {
       await assert.rejects(session.runTurn("must not send"), error => error.reason === "not_logged_in" && error.message.includes("conductor chat-web login deepseek"));
@@ -193,7 +193,7 @@ describe("runtime startup under load", () => {
     const gate = new Promise(resolve => { release = resolve; });
     const sent = [];
     const server = await startRuntimeServer({ directory, maxWorkers: 1, workerFactory: config => ({
-      async open() { return { ready: config.conversation.provider !== "kimi", url: "https://example.test/chat/" + config.conversation.id }; },
+      async open() { return { ready: config.conversation.provider !== "kimi", authRequired: config.conversation.provider === "kimi", url: "https://example.test/chat/" + config.conversation.id }; },
       async send(input, _timeout, notify) { sent.push(input); notify({ type: "submitting" }); entered(); await gate; return { text: input }; },
       cancel() {}, async close() { release(); },
     }) });
@@ -232,4 +232,76 @@ describe("runtime startup under load", () => {
     } finally { await session.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
   });
 
+});
+
+describe("Conductor resume after runtime profile retention", () => {
+  for (const provider of ["kimi", "deepseek"]) it("restores the first " + provider + " conversation after closing 34 managed sessions and restarting", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-archive-"));
+    const memory = new Map(), configurations = [];
+    const options = { directory, workerFactory: config => {
+      configurations.push(config);
+      const providerId = config.conversation.providerConversationId ?? "provider-" + config.conversation.id;
+      const url = config.site.conversationUrl + providerId;
+      return {
+        async open() {
+          await fs.mkdir(config.profileDir, { recursive: true });
+          return { ready: true };
+        },
+        async send(input) {
+          if (input !== "recall") memory.set(providerId, input);
+          return { text: input === "recall" ? memory.get(providerId) : input, providerConversationId: providerId, url };
+        }, cancel() {}, async close() {},
+      };
+    } };
+    let server = await startRuntimeServer(options);
+    let session;
+    const create = id => new ChatWebSession("chat-web", { model: provider, resumeSessionId: id, chatWebModule: {
+      RuntimeChatSession: { open: (p, opts) => RuntimeChatSession.open(p, { ...opts, socketPath: server.socketPath }) },
+    } });
+    let firstId, firstProviderId, firstUrl;
+    try {
+      for (let i = 0; i < 34; i++) {
+        session = create();
+        await session.runTurn("marker-" + i);
+        const id = (await session.ensureSessionInfo()).sessionId;
+        if (i === 0) {
+          firstId = id;
+          const original = server.runtime.get(id.replace("chat-web-runtime:", ""));
+          firstProviderId = original.providerConversationId; firstUrl = original.url;
+        }
+        await session.close();
+      }
+      const localId = firstId.replace("chat-web-runtime:", "");
+      assert.equal(server.runtime.list().length, 32);
+      assert.equal(server.runtime.get(localId).archived, true);
+      assert.equal(await fs.stat(path.join(directory, "profiles", localId)).then(() => true, () => false), false);
+      await server.close();
+      server = await startRuntimeServer(options);
+      session = create(firstId);
+      assert.equal((await session.ensureSessionInfo()).sessionId, firstId);
+      assert.equal((await session.runTurn("recall")).text, "marker-0");
+      const restored = server.runtime.get(localId);
+      assert.equal(restored.providerConversationId, firstProviderId);
+      assert.equal(restored.url, firstUrl);
+      assert.equal(restored.archived, undefined);
+      assert.equal(configurations.at(-1).conversation.url, firstUrl);
+      assert.equal(configurations.at(-1).conversation.providerConversationId, firstProviderId);
+      assert.equal(await fs.stat(path.join(directory, "profiles", localId)).then(() => true, () => false), true);
+    } finally { await session?.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("reports page readiness failures without asking the user to renew login", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-load-"));
+    const server = await startRuntimeServer({ directory, workerFactory: () => ({
+      async open() { return { ready: false, authRequired: false }; },
+      async send() { throw new Error("must not send"); }, cancel() {}, async close() {},
+    }) });
+    const session = new ChatWebSession("chat-web", { model: "kimi", chatWebModule: { RuntimeChatSession: { open: (p, opts) => RuntimeChatSession.open(p, { ...opts, socketPath: server.socketPath }) } } });
+    const authEvents = [];
+    session.on("auth_required", event => authEvents.push(event));
+    try {
+      await assert.rejects(session.runTurn("hello"), error => error.code === "PAGE_NOT_READY" && !/login|renewal/i.test(error.message));
+      assert.deepEqual(authEvents, []);
+    } finally { await session.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+  });
 });

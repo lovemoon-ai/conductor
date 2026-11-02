@@ -36,6 +36,8 @@ function fixtureHtml(provider: string): string {
     ${controls}${thinkingControl}
     <div data-testid="sidebar-user-menu-trigger" class="user-profile-trigger">fixture account</div><main></main><script>
     let controller, xhr;
+    const restoredPath = location.pathname.match(/\\/(?:c|chat|a\\/chat\\/s)\\/([^/?]+)/);
+    if (restoredPath) localStorage.setItem('chatId', restoredPath[1]);
     const composer = document.querySelector('textarea, [contenteditable]');
     const stop = document.querySelector('#stop-control');
     const deepthink = document.querySelector('#deepthink');
@@ -96,13 +98,14 @@ function connectFrame(value: unknown, flags = 0): Buffer {
   return Buffer.concat([header, body]);
 }
 
-async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {}) {
+async function startFixture(fixtureOptions: { deepThinkSelector?: string; readiness?: "loading" | "login" } = {}) {
   const requests: { provider: string; message: string; id: string; turn: number; thinking_enabled?: boolean; auth?: string }[] = [];
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url!, "http://localhost");
     if (request.method !== "POST") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(fixtureHtml(url.searchParams.get("provider") ?? url.pathname.split("/")[1] ?? "chatgpt"));
+      const html = fixtureHtml(url.searchParams.get("provider") ?? url.pathname.split("/")[1] ?? "chatgpt");
+      response.end(fixtureOptions.readiness === "loading" ? '<style>textarea,[contenteditable]{display:none!important}</style>' + html : html);
       return;
     }
     request.setEncoding("utf8");
@@ -151,7 +154,7 @@ async function startFixture(fixtureOptions: { deepThinkSelector?: string } = {})
   const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-browser-"));
   cleanup.push(() => fs.rm(directory, { recursive: true, force: true }));
   const options = { directory, maxWorkers: 2, perAccountConcurrency: 2, executablePath: executable,
-    sites: runtimeSites.map((site) => ({ ...site, homeUrl: origin + "/" + site.name + "/",
+    sites: runtimeSites.map((site) => ({ ...site, homeUrl: fixtureOptions.readiness === "login" ? origin + "/sign_in?provider=" + site.name : origin + "/" + site.name + "/",
       ...(site.name === "deepseek" && fixtureOptions.deepThinkSelector !== undefined ? { deepThink: fixtureOptions.deepThinkSelector } : {}),
     })) };
   let runtime = await startRuntimeServer(options);
@@ -177,6 +180,44 @@ describe.skipIf(!existsSync(executable))("runtime with real isolated Chromium wo
     // Keep the existing review gate: displaying a known error never replays a submitted turn.
     await expect(client.submit({ conversationId: chat.id, requestId: "next", input: "retry" })).rejects.toMatchObject({ code: "REVIEW_REQUIRED" });
   }, 20_000);
+
+  it.each(["kimi", "deepseek"])("reopens the original %s provider URL with a fresh profile after retention", async provider => {
+    const { client, requests, directory, restart } = await startFixture();
+    const chat = await client.create({ provider });
+    const first = await client.submit({ conversationId: chat.id, requestId: "original", input: "remember" });
+    expect((await client.wait(first.id)).status).toBe("completed");
+    const original = await client.get(chat.id);
+    await client.closeConversation(chat.id);
+    for (let i = 0; i < 33; i++) {
+      const empty = await client.create({ provider });
+      await client.closeConversation(empty.id);
+    }
+    expect((await client.get(chat.id)).archived).toBe(true);
+    expect(await fs.stat(path.join(directory, "profiles", chat.id)).catch(() => undefined)).toBeUndefined();
+    await restart();
+    await client.resume(chat.id);
+    const second = await client.submit({ conversationId: chat.id, requestId: "continued", input: "continue" });
+    expect((await client.wait(second.id)).status).toBe("completed");
+    expect(requests[1]!.id).toBe(requests[0]!.id);
+    expect((await client.get(chat.id)).providerConversationId).toBe(original.providerConversationId);
+  }, 30_000);
+
+  it("distinguishes a slow composer from an explicit login page", async () => {
+    const slow = await startFixture({ readiness: "loading" });
+    const chat = await slow.client.create({ provider: "kimi" });
+    expect(await slow.client.resume(chat.id)).toMatchObject({ ready: false, authRequired: false });
+    const turn = await slow.client.submit({ conversationId: chat.id, requestId: "slow", input: "must not submit" });
+    const result = await slow.client.wait(turn.id);
+    expect(result).toMatchObject({ status: "failed", errorCode: "PAGE_NOT_READY" });
+    expect(result.error).not.toMatch(/login|renewal/i);
+    expect(slow.requests).toHaveLength(0);
+    const login = await startFixture({ readiness: "login" });
+    const signedOut = await login.client.create({ provider: "deepseek" });
+    expect(await login.client.resume(signedOut.id)).toMatchObject({ ready: false, authRequired: true });
+    const rejected = await login.client.submit({ conversationId: signedOut.id, requestId: "auth", input: "must not submit" });
+    expect(await login.client.wait(rejected.id)).toMatchObject({ status: "failed", errorCode: "AUTH_REQUIRED" });
+    expect(login.requests).toHaveLength(0);
+  }, 30_000);
 
   it("restores credentials with older Playwright without resetting refreshed tokens on reload", async () => {
     const { origin, directory } = await startFixture();

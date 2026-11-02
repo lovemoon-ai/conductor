@@ -27,7 +27,7 @@ describe("managed runtime process", () => {
       expect(await client.call("runtime.status")).toMatchObject({ workers: 0, activeTurns: 0, maxWorkers: 4 });
     } finally { await client.call("runtime.stop").catch(() => {}); await fs.rm(directory, { recursive: true, force: true }); }
   }, 30_000);
-  it.each([{ deepThink: true }, { deepThink: true, accountBootstrap: true }])("rejects an older daemon without spawning or stopping it (%j)", async capabilities => {
+  it.each([{ deepThink: true }, { deepThink: true, accountBootstrap: true }, { deepThink: true, accountBootstrap: true, queuedStartup: true }])("rejects an older daemon without spawning or stopping it (%j)", async capabilities => {
     const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-old-"));
     const socket = runtimeSocket(directory);
     const server = http.createServer((_request, response) => { response.end(JSON.stringify({ jsonrpc: "2.0", result: { capabilities } })); });
