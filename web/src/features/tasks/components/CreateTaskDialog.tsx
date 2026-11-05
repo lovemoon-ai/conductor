@@ -402,9 +402,6 @@ export function CreateTaskDialog({
         };
       });
   }, [codeHost, daemons, globalBackends, isDefaultProject]);
-  const selectedGlobalBackend = codeHost ? globalBackendOptions.find(
-    (option) => option.key === requestedGlobalBackendKey && !option.disabledReason,
-  ) ?? null : null;
   const hasReadyProjectBinding = isDefaultProject || Boolean(boundDaemonHost);
   const boundDaemonAgent = isBoundProject
     ? daemons.find((agent) => agent.host === boundDaemonHost) ?? null
@@ -434,6 +431,10 @@ export function CreateTaskDialog({
   const backendType = requestedBackendType && availableBackends.includes(requestedBackendType)
     ? requestedBackendType
     : (availableBackends[0] ?? '');
+  // A code daemon with no AI backends of its own defaults to the first usable global AI.
+  const selectedGlobalBackend = codeHost ? globalBackendOptions.find(
+    (option) => option.key === requestedGlobalBackendKey && !option.disabledReason,
+  ) ?? (availableBackends.length === 0 ? globalBackendOptions.find((option) => !option.disabledReason) : null) ?? null : null;
   const hasEligibleDaemon = eligibleDaemons.length > 0;
   const resolvedTitle = title.trim() || deriveDefaultTaskTitle(initialContent);
   const canSubmit = Boolean(resolvedTitle)
@@ -441,7 +442,8 @@ export function CreateTaskDialog({
     && !isSubmitting
     && hasReadyProjectBinding
     && (isMergedGroup ? hasEligibleDaemon : (!isBoundProject || boundDaemonOnline))
-    && hasEligibleDaemon;
+    && hasEligibleDaemon
+    && Boolean(selectedGlobalBackend || backendType);
   // Daemon select options. Merged groups list each member's daemon and use
   // the member's projectId as the option value so onChange can re-point the
   // submission target. Other modes keep the previous (host-keyed) behavior.

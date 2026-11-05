@@ -268,7 +268,8 @@ export function RestartTaskControls({ task, open, onClose, onCreatedTask }: Rest
     if (backendOptions.length > 0) {
       return backendOptions[0] || '';
     }
-    return currentBackend;
+    // The code daemon has no compatible backend of its own: use a global AI.
+    return enabledGlobalOptions[0]?.value ?? currentBackend;
   }, [
     backendOptions,
     currentBackend,
