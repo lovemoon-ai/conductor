@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import type { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { getActiveSubscriptionUser } from "@/lib/auth/middleware";
 import { db } from "@/lib/db";
@@ -49,7 +50,6 @@ import {
 } from "@/lib/tasks/pty-runtime";
 import { recoverStaleDisconnectedAgentTasks } from "@/lib/tasks/stale-recovery";
 import {
-  acquireTaskWorktreeMutationLock,
   buildTaskWorktreeCleanupOutboxData,
   hasSameTaskWorktreeRoot,
   deliverRemoteWorktreeCleanupNow,
@@ -81,6 +81,31 @@ const isMissingTaskDiagnosticsSnapshotSchemaError = (error: unknown): boolean =>
     (message.includes("task_diagnostics_snapshots") ||
       message.includes("taskdiagnosticssnapshot"))
   );
+};
+
+// Deletes a task's rows (after `leadingOps`) in ONE batch transaction. Never
+// use an interactive `$transaction(async tx => …)` here: it holds SQLite's
+// write lock across JS round-trips, and on a 2-core host concurrent writers
+// busy-waiting for that lock starve Prisma's engine threads, so the
+// transaction cannot finish and times out (P2028) — see
+// claw/lessons/stable_task-delete-sqlite-interactive-tx-deadlock-20261106.md.
+const deleteTaskRowsInBatch = async (
+  taskId: string,
+  leadingOps: () => Prisma.PrismaPromise<unknown>[],
+): Promise<unknown[]> => {
+  const run = (includePtySessions: boolean) =>
+    db.$transaction([
+      ...leadingOps(),
+      db.message.deleteMany({ where: { taskId } }),
+      ...(includePtySessions ? [db.ptySession.deleteMany({ where: { taskId } })] : []),
+      db.task.delete({ where: { id: taskId } }),
+    ]);
+  try {
+    return await run(true);
+  } catch (error) {
+    if (!isMissingPtySchemaError(error)) throw error;
+    return run(false);
+  }
 };
 
 const normalizeHost = (value: unknown): string => {
@@ -1263,26 +1288,11 @@ export async function DELETE(
   // task cannot be reconstructed from Conductor's task database.
   if (permanentArchivedDelete) {
     const deleteArchivedTaskData = async (includeDiagnosticsSnapshots: boolean) =>
-      db.$transaction(async (tx) => {
-        if (includeDiagnosticsSnapshots) {
-          await tx.taskDiagnosticsSnapshot.deleteMany({
-            where: { userId: user.id, taskId },
-          });
-        }
-        await tx.message.deleteMany({
-          where: { taskId },
-        });
-        try {
-          await tx.ptySession.deleteMany({
-            where: { taskId },
-          });
-        } catch (error) {
-          if (!isMissingPtySchemaError(error)) {
-            throw error;
-          }
-        }
-        await tx.task.delete({ where: { id: taskId } });
-      });
+      deleteTaskRowsInBatch(taskId, () =>
+        includeDiagnosticsSnapshots
+          ? [db.taskDiagnosticsSnapshot.deleteMany({ where: { userId: user.id, taskId } })]
+          : [],
+      );
 
     try {
       await deleteArchivedTaskData(true);
@@ -1424,60 +1434,40 @@ export async function DELETE(
       ? resolveTaskWorktreeCleanupPlan(existing.launchConfig, stopTargetHost)
       : null;
   if (cleanupPlan) {
-    const cleanupOutboxRow = await db.$transaction(async (tx) => {
-      await acquireTaskWorktreeMutationLock(
-        tx as any,
-        taskId,
-      );
-      const sharedWorktreeTask =
-        (
-          await tx.task.findMany({
-            where: {
-              projectId: existing.projectId,
-              id: { not: taskId },
-            },
-            select: {
-              id: true,
-              launchConfig: true,
-              agentHost: true,
-            },
-          })
-        ).find((candidate) =>
-          hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig, {
-            reference: stopTargetHost,
-            candidate: candidate.agentHost,
-          }),
-        ) ?? null;
-      let outboxRow: unknown = null;
-      if (!sharedWorktreeTask?.id || sharedWorktreeTask.id === taskId) {
-        outboxRow = await tx.agentOutbox.create({
-          data: buildTaskWorktreeCleanupOutboxData({
-            userId: user.id,
-            agentHost: cleanupPlan.agentHost,
-            taskId,
+    const sharedWorktreeTask =
+      (
+        await db.task.findMany({
+          where: {
             projectId: existing.projectId,
-            launchConfig: cleanupPlan.launchConfig,
-            requestId: randomUUID(),
-            force: true,
-          }),
+            id: { not: taskId },
+          },
+          select: {
+            id: true,
+            launchConfig: true,
+            agentHost: true,
+          },
+        })
+      ).find((candidate) =>
+        hasSameTaskWorktreeRoot(existing.launchConfig, candidate.launchConfig, {
+          reference: stopTargetHost,
+          candidate: candidate.agentHost,
+        }),
+      ) ?? null;
+    const cleanupOutboxData = sharedWorktreeTask
+      ? null
+      : buildTaskWorktreeCleanupOutboxData({
+          userId: user.id,
+          agentHost: cleanupPlan.agentHost,
+          taskId,
+          projectId: existing.projectId,
+          launchConfig: cleanupPlan.launchConfig,
+          requestId: randomUUID(),
+          force: true,
         });
-      }
-
-      await tx.message.deleteMany({
-        where: { taskId },
-      });
-      try {
-        await tx.ptySession.deleteMany({
-          where: { taskId },
-        });
-      } catch (error) {
-        if (!isMissingPtySchemaError(error)) {
-          throw error;
-        }
-      }
-      await tx.task.delete({ where: { id: taskId } });
-      return outboxRow;
-    });
+    const deletedRows = await deleteTaskRowsInBatch(taskId, () =>
+      cleanupOutboxData ? [db.agentOutbox.create({ data: cleanupOutboxData })] : [],
+    );
+    const cleanupOutboxRow = cleanupOutboxData ? deletedRows[0] : null;
     await deliverRemoteWorktreeCleanupNow({
       userId: user.id,
       row: cleanupOutboxRow,
