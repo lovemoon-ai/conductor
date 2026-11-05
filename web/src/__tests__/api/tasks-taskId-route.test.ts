@@ -216,7 +216,7 @@ describe("/api/tasks/[taskId]", () => {
             agentOutbox: db.agentOutbox,
             taskDiagnosticsSnapshot: db.taskDiagnosticsSnapshot,
           })
-        : callback,
+        : Promise.all(callback),
     );
   });
 
@@ -576,7 +576,7 @@ describe("/api/tasks/[taskId]", () => {
     expect(realtimeHub.unbindTask).toHaveBeenCalledWith("task-archived-1");
   });
 
-  it("deletes archived diagnostics and core task rows in one transaction", async () => {
+  it("deletes archived diagnostics and core task rows in one batch transaction", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue({
       id: "task-archived-atomic",
       projectId: "proj-1",
@@ -589,18 +589,9 @@ describe("/api/tasks/[taskId]", () => {
       achievedAt: new Date("2026-07-27T00:00:00.000Z"),
       project: { daemonHost: "daemon-a" },
     } as any);
-    const snapshotDelete = vi.fn().mockResolvedValue({ count: 1 });
-    const messageDelete = vi.fn().mockResolvedValue({ count: 4 });
-    const ptyDelete = vi.fn().mockResolvedValue({ count: 0 });
-    const taskDelete = vi.fn().mockRejectedValue(new Error("task-delete-failed"));
-    vi.mocked(db.$transaction).mockImplementationOnce(async (callback: any) =>
-      callback({
-        taskDiagnosticsSnapshot: { deleteMany: snapshotDelete },
-        message: { deleteMany: messageDelete },
-        ptySession: { deleteMany: ptyDelete },
-        task: { delete: taskDelete },
-      }),
-    );
+    vi.mocked(db.taskDiagnosticsSnapshot.deleteMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(db.message.deleteMany).mockResolvedValue({ count: 4 } as any);
+    vi.mocked(db.task.delete).mockRejectedValue(new Error("task-delete-failed"));
 
     await expect(
       DELETE(
@@ -613,9 +604,16 @@ describe("/api/tasks/[taskId]", () => {
       ),
     ).rejects.toThrow("task-delete-failed");
 
+    // A batch (array) transaction, never an interactive one: see
+    // stable_task-delete-sqlite-interactive-tx-deadlock-20261106.md.
     expect(db.$transaction).toHaveBeenCalledTimes(1);
-    expect(snapshotDelete).toHaveBeenCalledBefore(messageDelete);
-    expect(messageDelete).toHaveBeenCalledBefore(taskDelete);
+    const batch = vi.mocked(db.$transaction).mock.calls[0][0];
+    expect(Array.isArray(batch)).toBe(true);
+    expect(batch).toHaveLength(4);
+    expect(db.taskDiagnosticsSnapshot.deleteMany).toHaveBeenCalledBefore(
+      vi.mocked(db.message.deleteMany),
+    );
+    expect(db.message.deleteMany).toHaveBeenCalledBefore(vi.mocked(db.task.delete));
     expect(deleteTaskAttachmentDirectory).not.toHaveBeenCalled();
     expect(realtimeHub.broadcast).not.toHaveBeenCalled();
   });
@@ -836,6 +834,10 @@ describe("/api/tasks/[taskId]", () => {
     const response = await DELETE(request, { params: Promise.resolve({ taskId: "task-worktree-delete" }) });
 
     expect(response.status).toBe(204);
+    // Outbox insert + row deletes go in one batch, not an interactive
+    // transaction that can deadlock on SQLite under concurrent writes.
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(Array.isArray(vi.mocked(db.$transaction).mock.calls[0][0])).toBe(true);
     expect(enqueueAndAttemptAgentCommand).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
