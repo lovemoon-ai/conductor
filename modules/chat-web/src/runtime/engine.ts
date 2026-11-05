@@ -166,7 +166,11 @@ export class ChatRuntime {
       });
       const worker = await this.acquire(conversation);
       const result = await worker.open();
-      if (params.headed === true) this.workers.get(id)!.pinned = true;
+      const entry = this.workers.get(id);
+      if (this.closing.has(id) || this.get(id).closed || entry?.worker !== worker) {
+        throw new RuntimeError("CHAT_CLOSED", "Conversation was closed while its browser was opening; resume it again");
+      }
+      if (params.headed === true) entry.pinned = true;
       await this.remember(id, result);
       return { ...this.get(id), ...result };
     } finally { this.busy.delete(id); this.schedule(); }
@@ -335,7 +339,15 @@ export class ChatRuntime {
   }
   private publish(event: TurnEvent): void { this.events.emit(event.turnId, event); }
   private append(turn: Turn, type: TurnEvent["type"], extra: Partial<TurnEvent> = {}): TurnEvent {
-    const event: TurnEvent = { seq: turn.events.length + 1, turnId: turn.id, type, at: new Date().toISOString(), ...extra };
+    const event: TurnEvent = { seq: (turn.events.at(-1)?.seq ?? 0) + 1, turnId: turn.id, type, at: new Date().toISOString(), ...extra };
+    // Replacements supersede earlier text; long delta streams periodically
+    // collapse to a full snapshot. Published sequence numbers never change,
+    // so disconnected clients can resume from any earlier cursor.
+    if (type === "message_snapshot" || (type === "message_delta" && turn.events.length >= 1024)) {
+      turn.events = turn.events.filter(item => item.type !== "message_delta" && item.type !== "message_snapshot");
+      event.type = "message_snapshot";
+      event.text = turn.text;
+    }
     turn.events.push(event);
     return event;
   }
@@ -424,7 +436,7 @@ export class ChatRuntime {
       const turn = this.turn(state, id);
       if (isTerminal(turn.status)) return undefined;
       const text = notice.text ?? "";
-      if (text.length > 1_000_000 || turn.events.length > 2000) throw new RuntimeError("RESPONSE_LIMIT", "Reply or event limit exceeded");
+      if (text.length > 1_000_000) throw new RuntimeError("RESPONSE_LIMIT", "Reply exceeds limit");
       const chat = this.conversation(state, turn.conversationId);
       if (notice.url) chat.url = notice.url;
       if (notice.providerConversationId) chat.providerConversationId = notice.providerConversationId;

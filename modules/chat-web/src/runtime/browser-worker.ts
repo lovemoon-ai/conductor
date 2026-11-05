@@ -1,3 +1,4 @@
+import { runtimeProcessEnv } from "./process-env.js";
 import { fork, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
@@ -21,7 +22,7 @@ export class BrowserWorker implements ChatWorker {
     this.child = fork(fileURLToPath(target), [], {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       execArgv: target.pathname.endsWith(".ts") ? ["--import", createRequire(import.meta.url).resolve("tsx")] : [],
-      env: { ...process.env, CHAT_WEB_LOG: "silent" },
+      env: { ...runtimeProcessEnv(), CHAT_WEB_LOG: "silent" },
     });
     this.child.on("message", (message: any) => {
       const pending = this.pending.get(message?.id);

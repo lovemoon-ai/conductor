@@ -89,4 +89,48 @@ describe("managed runtime process", () => {
     }
   }, 20_000);
 
+  it("does not leak fire identity into the detached daemon or browser worker, while preserving browser/proxy configuration", async () => {
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-env-"));
+    const keys = ["CONDUCTOR_AGENT_TOKEN", "CONDUCTOR_TASK_ID", "conductor_test_scope", "CHAT_WEB_HOME", "CHAT_WEB_BROWSER_CHANNEL", "HTTP_PROXY", "NODE_OPTIONS"];
+    const previous = new Map(keys.map(key => [key, process.env[key]]));
+    const probe = path.join(directory, "probe.mjs");
+    const daemonEvidence = path.join(directory, "daemon-env.json"), workerEvidence = path.join(directory, "worker-env.json");
+    await fs.writeFile(probe, [
+      "import fs from 'node:fs';",
+      "const entry = process.argv[1] ?? '';",
+      "const file = /[\\\\/]runtime[\\\\/]daemon\\.(ts|js)$/.test(entry) ? " + JSON.stringify(daemonEvidence) + " : /[\\\\/]runtime[\\\\/]worker\\.(ts|js)$/.test(entry) ? " + JSON.stringify(workerEvidence) + " : null;",
+      "if (file) fs.writeFileSync(file, JSON.stringify({ identityKeys: Object.keys(process.env).filter(k => /^CONDUCTOR_/i.test(k)), home: process.env.CHAT_WEB_HOME, channel: process.env.CHAT_WEB_BROWSER_CHANNEL, proxy: process.env.HTTP_PROXY }), {mode:0o600});",
+    ].join("\n"));
+    const client = new ChatRuntimeClient(runtimeSocket(directory));
+    let worker: import("../src/runtime/browser-worker.js").BrowserWorker | undefined;
+    try {
+      process.env.CONDUCTOR_AGENT_TOKEN = "fake-test-token";
+      process.env.CONDUCTOR_TASK_ID = "fake-test-task";
+      process.env.conductor_test_scope = "fake-test-scope";
+      process.env.CHAT_WEB_HOME = path.join(directory, "home");
+      process.env.CHAT_WEB_BROWSER_CHANNEL = "test-browser-config";
+      process.env.HTTP_PROXY = "http://127.0.0.1:1";
+      process.env.NODE_OPTIONS = [previous.get("NODE_OPTIONS"), "--import=" + probe].filter(Boolean).join(" ");
+      await ensureChatRuntime({ directory });
+      const { BrowserWorker } = await import("../src/runtime/browser-worker.js");
+      // Construct and close an IPC worker without opening a browser or site.
+      worker = new BrowserWorker({
+        conversation: { id: "env-probe", provider: "kimi", accountId: "default", headless: true, createdAt: new Date().toISOString(), closed: false, needsReview: false },
+        profileDir: path.join(directory, "profiles", "env-probe"),
+        site: { name: "kimi", homeUrl: "http://127.0.0.1:1/", input: "textarea", send: "button", assistant: "article", stop: ".stop", conversationPath: "/chat/(.+)", streamPath: "/stream", format: "kimi" },
+      });
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !await fs.stat(workerEvidence).then(() => true, () => false)) await new Promise(resolve => setTimeout(resolve, 20));
+      for (const file of [daemonEvidence, workerEvidence]) {
+        const env = JSON.parse(await fs.readFile(file, "utf8"));
+        expect(env).toEqual({ identityKeys: [], home: path.join(directory, "home"), channel: "test-browser-config", proxy: "http://127.0.0.1:1" });
+      }
+    } finally {
+      for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await worker?.close();
+      await client.call("runtime.stop").catch(() => {});
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
 });

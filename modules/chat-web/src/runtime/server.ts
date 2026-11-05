@@ -78,7 +78,7 @@ export async function startRuntimeServer(options: RuntimeOptions & { socketPath?
       const after = Number(url.searchParams.get("after") ?? 0);
       const history = api.history(id, after);
       const turn = api.getTurn(id);
-      if (after > turn.events.length) throw new RuntimeError("INVALID_PARAMS", "Sequence is ahead of this turn");
+      if (after > (turn.events.at(-1)?.seq ?? 0)) throw new RuntimeError("INVALID_PARAMS", "Sequence is ahead of this turn");
       response.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
       let last = after;
       let queuedBytes = 0;

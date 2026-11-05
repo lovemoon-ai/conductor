@@ -51,7 +51,16 @@ describe("browser chat provider errors reach Conductor", () => {
       assert.equal(errors[0].metadata.severity, "error");
       assert.equal(errors[0].metadata.reply_to, "user-one");
       assert.ok(statuses.some(s => s.status_done_line?.includes("账号同时生成的对话过多")));
+      assert.match(errors[0].content, /conductor chat-web chat login /);
+      assert.match(errors[0].content, /conductor chat-web chat resume .* --acknowledge --socket /);
       assert.equal(runner.quotaWait, null);
+      assert.equal(sent, 1);
+      await runner.respondToMessage({ message_id: "user-two", role: "user", content: "try again before review" });
+      const followup = messages.filter(message => message.metadata?.severity === "error");
+      assert.equal(followup.length, 2);
+      assert.match(followup[1].content, /Inspect the uncertain turn/);
+      assert.match(followup[1].content, /conductor chat-web chat resume .* --acknowledge --socket /);
+      assert.ok(statuses.some(s => s.status_done_line?.includes("--acknowledge")));
       assert.equal(sent, 1);
       const state = JSON.parse(await fs.readFile(path.join(directory, "state.json"), "utf8"));
       assert.equal(Object.values(state.turns)[0].errorCode, "PROVIDER_CONCURRENCY_LIMIT");

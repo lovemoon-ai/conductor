@@ -305,3 +305,72 @@ describe("Conductor resume after runtime profile retention", () => {
     } finally { await session.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
   });
 });
+
+describe("uncertain runtime recovery instructions", () => {
+  for (const provider of ["kimi", "deepseek"]) {
+    for (const trigger of ["interrupt", "timeout", "auth"]) {
+      it(provider + " explains inspection and acknowledgement after " + trigger + " and on the next send", async () => {
+        const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-review-"));
+        let entered, rejectTurn;
+        const started = new Promise(resolve => { entered = resolve; });
+        const calls = [], statuses = [], authEvents = [];
+        const server = await startRuntimeServer({
+          directory,
+          ...(process.platform === "win32" ? {} : { socketPath: path.join(directory, "review's socket.sock") }),
+          workerFactory: config => ({
+            async open() { return { ready: true, url: config.site.conversationUrl + "original" }; },
+            async send(input, _timeout, notify) {
+              calls.push(input); notify({ type: "submitting" });
+              if (input !== "hold") return { text: input };
+              entered();
+              if (trigger === "timeout") throw Object.assign(new Error("Response deadline exceeded"), { code: "UNCERTAIN" });
+              if (trigger === "auth") throw Object.assign(new Error("Provider HTTP 401"), { code: "AUTH_REQUIRED" });
+              return new Promise((_resolve, reject) => { rejectTurn = reject; });
+            },
+            cancel() { rejectTurn?.(Object.assign(new Error("Provider stop was not confirmed"), { code: "UNCERTAIN" })); },
+            async close() {},
+          }),
+        });
+        const client = new ChatRuntimeClient(server.socketPath);
+        const session = new ChatWebSession("chat-web", { model: provider, chatWebModule: {
+          RuntimeChatSession: { open: (name, options) => RuntimeChatSession.open(name, { ...options, socketPath: server.socketPath }) },
+        } });
+        session.setWorkingStatusHandler(s => statuses.push(s));
+        session.on("auth_required", e => authEvents.push(e));
+        try {
+          let initialError;
+          const failed = assert.rejects(session.runTurn("hold"), e => { initialError = e; return e.turnStatus === "uncertain"; });
+          await started;
+          if (trigger === "interrupt") await session.interruptCurrentTurn();
+          await failed;
+          const id = session.sessionId.replace("chat-web-runtime:", "");
+          const checkHint = error => {
+            assert.ok(error.message.includes("conductor chat-web chat login " + id));
+            assert.ok(error.message.includes("conductor chat-web chat resume " + id + " --acknowledge --socket "));
+            assert.ok(error.message.includes("acknowledgement does not replay"));
+            assert.ok(statuses.at(-1).status_done_line.includes("--acknowledge"));
+          };
+          checkHint(initialError);
+          assert.equal((await client.get(id)).needsReview, true);
+          assert.equal(authEvents.length, trigger === "auth" ? 1 : 0);
+          if (trigger === "auth") assert.ok(authEvents[0].message.includes("--acknowledge"));
+          await assert.rejects(session.runTurn("must not send"), error => {
+            assert.equal(error.code, "REVIEW_REQUIRED"); checkHint(error); return true;
+          });
+          assert.deepEqual(calls, ["hold"]);
+          // Check that copied commands preserve a socket containing spaces and
+          // an apostrophe; this shell only parses arguments, never runs a CLI.
+          if (process.platform !== "win32") {
+            const command = initialError.message.match(/acknowledge with: (.*?)\. Then resend/)[1];
+            const { execFileSync } = await import("node:child_process");
+            const args = execFileSync("/bin/sh", ["-c", 'set -- ' + command + '; printf "%s\\n" "$@"'], { encoding: "utf8" }).trim().split("\n");
+            assert.deepEqual(args, ["conductor", "chat-web", "chat", "resume", id, "--acknowledge", "--socket", server.socketPath]);
+          }
+          await client.resume(id, { acknowledgeUncertain: true });
+          assert.equal((await session.runTurn("after review")).text, "after review");
+          assert.deepEqual(calls, ["hold", "after review"]);
+        } finally { await session.close(); await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
+      });
+    }
+  }
+});

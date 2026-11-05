@@ -274,6 +274,29 @@ describe("runtime retention and durable checkpoints", () => {
     } finally { vi.useRealTimers(); }
   });
 
+
+  it("returns CHAT_CLOSED instead of pinning a removed worker when close races a headed resume", async () => {
+    const dir = await directory();
+    let entered!: () => void, release!: () => void;
+    const opening = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runtime = await open(dir, { workerFactory: () => ({
+      async open() { entered(); await gate; return { ready: true, url: "https://example.test/chat/original" }; },
+      async send(input) { return { text: input }; }, cancel() {}, async close() {},
+    }) });
+    const c = await runtime.create({ provider: "deepseek" });
+    const resuming = expect(runtime.resume(c.id, { headed: true })).rejects.toMatchObject({ code: "CHAT_CLOSED" });
+    try {
+      await opening;
+      await runtime.closeConversation(c.id);
+    } finally { release(); }
+    await resuming;
+    expect(runtime.get(c.id).closed).toBe(true);
+    expect(runtime.status()).toMatchObject({ workers: 0, pinnedChats: [] });
+    await expect(runtime.resume(c.id, { headed: true })).resolves.toMatchObject({ ready: true, closed: false });
+    expect(runtime.status().pinnedChats).toEqual([c.id]);
+  });
+
   it("streams hundreds of deltas without rewriting the checkpoint, then durably commits the complete event history", async () => {
     const dir = await directory();
     let notify!: (notice: WorkerNotice) => void;

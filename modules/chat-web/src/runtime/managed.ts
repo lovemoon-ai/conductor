@@ -1,3 +1,4 @@
+import { runtimeProcessEnv } from "./process-env.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -42,7 +43,7 @@ export async function ensureChatRuntime(options: ManagedRuntimeOptions = {}): Pr
     let launchError: Error | undefined;
     try {
       const child = spawn(process.execPath, [...args, worker, JSON.stringify({ directory, socketPath, executablePath: options.executablePath, channel: options.channel })], {
-        detached: true, stdio: ["ignore", fd, fd], env: process.env,
+        detached: true, stdio: ["ignore", fd, fd], env: runtimeProcessEnv(),
       });
       child.on("error", error => { launchError = error; });
       child.unref();

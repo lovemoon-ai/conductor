@@ -157,6 +157,82 @@ describe("isolated runtime RPC and SDK", () => {
     expect((await Promise.all(turns.map((turn) => client.wait(turn.id)))).every((turn) => turn.status === "completed")).toBe(true);
   });
 
+
+  it("compacts long streams without losing live text, monotonic cursors, replay or restart recovery", async () => {
+    const { client, server, m, directory } = await start();
+    const chat = await client.create({ provider: "deepseek" });
+    const turn = await client.submit({ conversationId: chat.id, requestId: "long", input: "long" });
+    await until(() => m.pending.has("long"));
+    let live = "";
+    const sequences: number[] = [];
+    const waiting = client.wait(turn.id, event => {
+      sequences.push(event.seq);
+      if (event.type === "message_delta") live += event.text;
+      if (event.type === "message_snapshot") live = event.text!;
+    });
+    const text = "x".repeat(2600);
+    for (let i = 1; i <= text.length; i++) m.pending.get("long")!.notify({ type: "progress", text: text.slice(0, i) });
+    await until(() => server.runtime.getTurn(turn.id).text === text);
+    const streaming = server.runtime.getTurn(turn.id);
+    expect(streaming.status).toBe("streaming");
+    expect(streaming.events.length).toBeLessThan(1030);
+    expect(streaming.events.some(e => e.type === "message_snapshot")).toBe(true);
+    expect(streaming.events.at(-1)!.seq).toBeGreaterThan(2600);
+    m.release("long", text);
+    expect((await waiting).status).toBe("completed");
+    expect(live).toBe(text);
+    expect(sequences.every((seq, i) => i === 0 || seq > sequences[i - 1]!)).toBe(true);
+    async function replay(c: ChatRuntimeClient, after: number) {
+      const events = [];
+      for await (const event of c.events(turn.id, after)) events.push(event);
+      expect(events.every(e => e.seq > after)).toBe(true);
+      expect(events.at(-1)!.type).toBe("completed");
+      return events;
+    }
+    const events = await replay(client, 10);
+    let restored = "";
+    for (const event of events) {
+      if (event.type === "message_snapshot") restored = event.text!;
+      if (event.type === "message_delta") restored += event.text;
+    }
+    expect(restored).toBe(text);
+    // This cursor is greater than the compacted array length, but valid.
+    await replay(client, 2500);
+    const last = events.at(-1)!.seq;
+    await expect((async () => { for await (const _event of client.events(turn.id, last + 1)) { /* drain */ } })()).rejects.toMatchObject({ code: "INVALID_PARAMS" });
+    await server.close();
+    const restarted = await start(monitor(), directory);
+    expect((await restarted.client.getTurn(turn.id)).text).toBe(text);
+    expect((await replay(restarted.client, 2500)).at(-1)!.seq).toBe(last);
+  });
+
+  it("bounds replacement snapshots while still enforcing the one-million-character reply limit", async () => {
+    const { client, server, m } = await start();
+    const chat = await client.create({ provider: "kimi" });
+    const turn = await client.submit({ conversationId: chat.id, input: "replacements", requestId: "replacements" });
+    await until(() => m.pending.has("replacements"));
+    for (let i = 0; i < 100; i++) m.pending.get("replacements")!.notify({ type: "progress", text: (i % 2 ? "a" : "b").repeat(10_000) });
+    await until(() => (server.runtime.getTurn(turn.id).events.at(-1)?.seq ?? 0) >= 104);
+    const history = server.runtime.getTurn(turn.id).events;
+    expect(history.filter(e => ["message_delta", "message_snapshot"].includes(e.type))).toHaveLength(1);
+    expect(history.at(-1)!.text).toHaveLength(10_000);
+    m.release("replacements", "a".repeat(10_000));
+    expect((await client.wait(turn.id)).status).toBe("completed");
+    const directory = await fs.mkdtemp(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "cw-limit-"));
+    directories.push(directory);
+    const limited = await startRuntimeServer({ directory, workerFactory: () => ({
+      async open() { return { ready: true }; },
+      async send(_input, _timeout, notify) {
+        notify({ type: "submitting" }); notify({ type: "progress", text: "x".repeat(1_000_001) });
+        return { text: "unused" };
+      }, cancel() {}, async close() {},
+    }) });
+    servers.push(limited);
+    const c = new ChatRuntimeClient(limited.socketPath);
+    const tooLarge = await c.create({ provider: "kimi" });
+    const submitted = await c.submit({ conversationId: tooLarge.id, input: "limit", requestId: "limit" });
+    expect(await c.wait(submitted.id)).toMatchObject({ status: "uncertain", errorCode: "RESPONSE_LIMIT" });
+  });
   it("exposes lifecycle and JSONL commands through the CLI client", async () => {
     const { server, client, m } = await start();
     const output: string[] = [];

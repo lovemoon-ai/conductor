@@ -36,6 +36,11 @@ function resolveChatWebProvider(options = {}) {
   return DEFAULT_CHAT_WEB_PROVIDER;
 }
 
+function quoteRuntimeArgument(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9_./:@%+=,-]+$/.test(text) ? text : "'" + text.replaceAll("'", "'\\''") + "'";
+}
+
 function extractErrorMessage(error) {
   if (typeof error?.message === "string" && error.message.trim()) {
     return error.message.trim();
@@ -332,6 +337,13 @@ export class ChatWebSession extends EventEmitter {
       return `conductor chat-web login ${this.chatWebProvider}`;
     }
     return `conductor chat-web chat login ${this.runtimeConversationId} --socket ${this.runtimeSocket}`;
+  }
+
+  reviewInstructions() {
+    if (!this.runtimeConversationId || !this.runtimeSocket) return "";
+    const id = quoteRuntimeArgument(this.runtimeConversationId);
+    const socket = quoteRuntimeArgument(this.runtimeSocket);
+    return ` The previous webpage request has an uncertain outcome. On the daemon host, inspect the same conversation with: conductor chat-web chat login ${id} --socket ${socket}. After checking its result, acknowledge with: conductor chat-web chat resume ${id} --acknowledge --socket ${socket}. Then resend only the message you still want to send; acknowledgement does not replay the previous request.`;
   }
 
   async boot() {
@@ -657,11 +669,13 @@ export class ChatWebSession extends EventEmitter {
       const code = typeof error?.code === "string" ? error.code : "";
       if (this.runtimeMode && (code === "AUTH_REQUIRED" || /Provider HTTP 401/.test(message))) {
         const login = this.loginCommand();
-        const review = error?.turnStatus === "uncertain"
-          ? ` Inspect the webpage before retrying, then acknowledge with: conductor chat-web chat resume ${this.runtimeConversationId} --acknowledge --socket ${this.runtimeSocket}`
-          : "";
-        error.message = `Browser login needs renewal. On this daemon host run: ${login}.${review}`;
+        error.message = `Browser login needs renewal. On this daemon host run: ${login}.`;
         error.reason = "not_logged_in";
+      }
+      if (this.runtimeMode && (code === "REVIEW_REQUIRED" || error?.turnStatus === "uncertain")) {
+        error.message = (error.message || message) + this.reviewInstructions();
+      }
+      if (this.runtimeMode && (code === "AUTH_REQUIRED" || /Provider HTTP 401/.test(message))) {
         this.emit("auth_required", { reason: "login_required", message: error.message, provider: this.chatWebProvider });
       }
       // Surface chat-web's typed "needs API key" / "permission denied"

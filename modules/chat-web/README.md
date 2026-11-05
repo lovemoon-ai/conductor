@@ -122,7 +122,7 @@ const turns = await Promise.all([first, second].map((chat, index) =>
 const results = await Promise.all(turns.map((turn) => client.wait(turn.id)));
 ```
 
-`client.events(turnId, after, signal)` 是异步迭代器，事件包括 queued、starting、submitting、message_delta、message_snapshot 和终态。message_delta 追加文本，message_snapshot 替换文本；终态事件包含最终或部分文本。事件按 turnId/seq 去重。wait 自动尝试重连，稳定 requestId 可在请求确认丢失时再次查询同一次提交；同 id 不同输入或超时报 REQUEST_CONFLICT。
+`client.events(turnId, after, signal)` 是异步迭代器，事件包括 queued、starting、submitting、message_delta、message_snapshot 和终态。message_delta 追加文本，message_snapshot 替换文本；终态事件包含最终或部分文本。事件按 turnId/seq 去重。长流会定期把文本增量历史压缩为完整 message_snapshot；文本替换也会立即压缩旧文本事件。seq 保持单调递增，但压缩后可能不连续；旧游标通过快照恢复当前正文，不保证永久保留每一条历史 delta。wait 自动尝试重连，稳定 requestId 可在请求确认丢失时再次查询同一次提交；同 id 不同输入或超时报 REQUEST_CONFLICT。
 
 `RuntimeChatSession.open(provider, { socketPath, conversationId, accountId })` 提供接近旧 ChatSession 的 open/isLoggedIn/send/interruptCurrentTurn/close 接口。默认 close 只断开 SDK 会话；releaseOnClose: true 会关闭远程 chat 并释放浏览器，Conductor 的自动运行时使用此选项。显式释放也可使用 client.closeConversation。未传 socketPath 时 open 会自动确保 daemon 可用；传入 socketPath 时连接该已有 daemon。运行时会话没有原地 clear，创建新 chat 即开始独立对话。
 
@@ -143,7 +143,7 @@ Kimi、DeepSeek 默认自动启用运行时，例如 createAiSession("chat-web",
 - 全局默认四个 worker，同站点同 accountId 默认同时生成两路，可在 serve 时配置。accountId 是用户给登录身份的标签，运行时不验证多个标签是否实际对应同一个账号；站点限流与配额不会因 profile 隔离而增加。
 - 空闲 worker 可回收，恢复依赖已保存的站点会话 URL。已发送但没有可靠 URL 的 chat 不会在资源回收或重启后悄悄打开新会话。
 - 已开始的 turn 在异常或重启后进入 uncertain；重启只重新调度仍在 timeoutMs 等待期限内、从未开始的 queued turn；过期队列记录 cancelled / QUEUE_EXPIRED，分配 worker 前也会再次检查，不重放已提交消息。
-- uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。
+- uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。 Conductor 会在首次 uncertain 错误和后续 REVIEW_REQUIRED 错误中给出打开同一会话、确认恢复的完整命令（包含实际 chat id 和 socket）。目前确认操作仍需在 daemon 主机通过 CLI 执行，网页聊天错误消息提供操作指引；核对确认后再手动发送需要的新消息。
 - 回复优先从 fetch/XHR 的 SSE 或 Kimi Connect JSON 流增量解析。终态 source 字段区分 sse、connect 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、Connect 压缩帧或变化后的站点协议可能需要更新适配器。
 - 本地状态目录默认 `CHAT_WEB_HOME/runtime`，CHAT_WEB_HOME 默认 ~/.chat-web。Unix 目录权限 0700，socket 与状态文件 0600，凭证保存在各 chat 的 profile。没有开放 TCP 监听端口。
 - 第一版使用原子 JSON 状态快照，快照中最多常驻 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。关闭且无需核对的 chat 的完整本地资源最多保留最近 32 个、最长七天；在创建、发送、关闭和运行时启动时清理，容量不足时优先回收最早关闭的 chat，同时删除其 turn 和 profile。终态 turn 保留最长七天；达到 4096 上限前批量淘汰旧记录，最近一分钟的结果、活跃订阅和仍需核对的 uncertain turn 保留用于取回与核对。正在使用的 chat 不会被回收；若容量全被活跃或受保护的记录占用，仍会明确拒绝操作。回收 profile 和历史前，会在 archive/<id>.json 持久化小型身份记录（原 id、provider、account、站点会话 id/URL 和恢复保护标记），不包含正文或浏览器凭证。chat get 可按原 id 返回 archived: true；resume 从身份记录恢复原 id 和站点会话，并按需创建 profile。身份记录持续保留，不计入 256 个常驻 chat 的上限。chat list 仅列出常驻记录。已回收的 turn id 返回 NOT_FOUND，去重仅对尚未回收的 turn 生效。状态含输入与回复，应按本地聊天记录管理。
