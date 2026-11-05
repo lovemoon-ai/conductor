@@ -1096,6 +1096,45 @@ describe('RestartTaskControls', () => {
       });
     });
 
+    it('defaults to a global AI when the code daemon has no backends of its own', async () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: [], capabilities: REMOTE_CAPS },
+          { host: 'gpu-box', supportedBackends: ['codex'], capabilities: GLOBAL_CAPS },
+        ],
+      };
+      globalBackendsState = { ...globalBackendsState, backends: [{ host: 'gpu-box', backend: 'codex' }] };
+      restartTaskMock.mockResolvedValue({ mode: 'successor_new_task', sourceTaskId: 'task-1', task: { id: 'task-2' } });
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      expect(screen.getByLabelText('Backend')).toHaveValue('global:gpu-box\u0000codex');
+      fireEvent.click(screen.getByRole('button', { name: 'New task' }));
+      await waitFor(() => {
+        expect(restartTaskMock).toHaveBeenCalledWith('task-1', {
+          backendType: 'codex',
+          strategy: 'new_task',
+          agentHost: 'gpu-box',
+        });
+      });
+    });
+
+    it('blocks the new task when the code daemon has no backends and no global AI can run', () => {
+      agentsState = {
+        agents: [
+          { host: 'daemon-1', supportedBackends: [], capabilities: REMOTE_CAPS },
+          { host: 'gpu-box', supportedBackends: ['codex'], capabilities: [] },
+        ],
+      };
+      globalBackendsState = { ...globalBackendsState, backends: [{ host: 'gpu-box', backend: 'codex' }] };
+
+      render(<RestartTaskControls open onClose={() => {}} task={baseTask} />);
+
+      const button = screen.getByRole('button', { name: 'New task' });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', 'No compatible backend available on the selected daemon');
+    });
+
     it('allows a shared daemon as the global AI while keeping code on an own daemon', () => {
       agentsState = {
         agents: [

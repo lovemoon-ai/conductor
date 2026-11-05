@@ -934,6 +934,21 @@ describe('CreateTaskDialog', () => {
       expect(input.agents).toBeUndefined();
     });
 
+    it('defaults to a global AI when the project daemon advertises no backends', async () => {
+      agentsState.agents = [agentsState.agents[0], { ...agentsState.agents[1], supportedBackends: [] }];
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      createTaskMock.mockResolvedValue({ id: 'task-no-local-ai' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      expect(await screen.findByLabelText('AI backend')).toHaveValue('global:daemon-a\u0000claude');
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'No local AI' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-b',
+        globalBackend: { host: 'daemon-a', backend: 'claude' },
+        backendType: 'claude',
+      })));
+    });
+
     it('greys out every global backend when the project daemon cannot be driven remotely', async () => {
       globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
       agentsState.agents = [
@@ -979,6 +994,29 @@ describe('CreateTaskDialog', () => {
       render(<CreateTaskDialog open onClose={() => {}} />);
       expect(screen.queryByLabelText('AI backend')).toBeNull();
       expect(screen.getByText(/does not advertise any AI backends yet/)).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'No AI' } });
+      expect(screen.getByRole('button', { name: 'Create AI Task' })).toBeDisabled();
+    });
+
+    it('in the default project, keeps Create disabled until a backend is picked on a daemon without one', async () => {
+      projectsState = { projects: [{ id: 'project-default', name: 'Default', isDefault: true }] };
+      agentsState.agents = [
+        { id: 'daemon-0', host: 'empty', supportedBackends: [], capabilities: [] },
+        ...agentsState.agents,
+      ];
+      globalBackendsState.backends = [{ host: 'daemon-a', backend: 'claude' }];
+      createTaskMock.mockResolvedValue({ id: 'task-default-empty' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+      fireEvent.change(await screen.findByLabelText('Task title'), { target: { value: 'Pick AI' } });
+      expect(screen.getByRole('button', { name: 'Create AI Task' })).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText('AI backend'), { target: { value: 'global:daemon-a\u0000claude' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'project-default',
+        agentHost: 'daemon-a',
+        backendType: 'claude',
+      })));
     });
   });
 });
