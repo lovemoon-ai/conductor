@@ -171,4 +171,6 @@ Conductor 的启动检查在 worker 池忙或恢复活跃 chat 时可返回排�
 
 页面十秒内未准备好但没有明确登录证据时返回 PAGE_NOT_READY，不提示续期登录；只有登录路径，或输入框可见但缺少站点认证标记时，才报告 AUTH_REQUIRED。
 
-2026-11-02 UTC 已使用真实 Kimi 账号验证 profile 回收后的恢复：通过 Conductor 使用的 managed AI SDK 发送标记，关闭原 chat 并关闭另外 33 个空 chat，确认原 profile 已删除；停止并重新启动 runtime 后，沿用原本地 id、站点会话 id 和 URL，以新 profile 成功回忆原标记，回复来源为 Connect。此轮 DeepSeek 的新 profile 在发送后回到登录页，尚未完成真实 GC 恢复验证，需续期登录后补测。
+2026-11-02 UTC 已使用真实 Kimi 账号验证 profile 回收后的恢复：通过 Conductor 使用的 managed AI SDK 发送标记，关闭原 chat 并关闭另外 33 个空 chat，确认原 profile 已删除；停止并重新启动 runtime 后，沿用原本地 id、站点会话 id 和 URL，以新 profile 成功回忆原标记，回复来源为 Connect。
+
+2026-11-05 UTC 用户重新登录后，真实 DeepSeek 账号也通过同一条 managed AI SDK 的 headless 验证路径：首轮记住唯一标记，关闭原 chat 和另外 33 个空 chat 后确认原记录已归档、profile 已删除；停止并重启 runtime，沿用同一个本地 id、站点会话 id 和 URL 创建新 profile，后续消息正确回忆原标记，回复来源为 SSE。此项 profile 回收后的真实恢复验证现已覆盖 Kimi 和 DeepSeek；验证通过 SDK 完成，不包含已部署 Conductor Web 界面的完整操作验收。
