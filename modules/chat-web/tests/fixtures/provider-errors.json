@@ -1,0 +1,25 @@
+{
+  "kimi": {
+    "error": {
+      "code": "resource_exhausted",
+      "details": [
+        {
+          "type": "common.error.v1.ErrorDetail",
+          "debug": {
+            "reason": "REASON_CHAT_CONCURRENCY_EXCEEDED",
+            "localizedMessage": {
+              "locale": "en-US",
+              "message": "You already have several chats open. Please wait for them to finish."
+            }
+          }
+        }
+      ]
+    }
+  },
+  "deepseek": {
+    "type": "error",
+    "content": "A message is being generated, please try again later.",
+    "clear_response": true,
+    "finish_reason": "parallel_chat_limit"
+  }
+}

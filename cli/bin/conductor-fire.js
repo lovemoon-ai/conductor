@@ -266,9 +266,17 @@ export function resolveAiSessionCommandLine(backend, allowCliList, env = process
 }
 
 export function resolveAiSessionOptions(backend, allowCliList, env = process.env, sessionBackend = backend) {
-  return extractAiSessionOptionsFromCommandLine(
-    resolveAiSessionCommandLine(backend, allowCliList, env, sessionBackend),
-  );
+  const commandLine = resolveAiSessionCommandLine(backend, allowCliList, env, sessionBackend);
+  const options = extractAiSessionOptionsFromCommandLine(commandLine);
+  if (normalizeRuntimeBackendName(sessionBackend) === "chat-web") {
+    const { parts } = parseCommandParts(commandLine);
+    for (const [positive, negative, key] of [["--headless", "--headed", "headless"], ["--deepthink", "--no-deepthink", "chatWebDeepThink"]]) {
+      if (parts.includes(positive) && parts.includes(negative)) throw new Error(`Choose ${positive} or ${negative}`);
+      if (parts.includes(positive)) options[key] = true;
+      else if (parts.includes(negative)) options[key] = false;
+    }
+  }
+  return options;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = parseInt(

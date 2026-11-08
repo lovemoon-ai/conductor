@@ -147,6 +147,10 @@ export class ChatGPTSSECollector {
    * Apply a raw SSE body directly. Exposed for tests and for callers that
    * want to feed in a recorded transcript.
    */
+  ingestEvents(events: SSEEvent[]): void {
+    for (const event of events) this.applyEvent(event);
+  }
+
   ingest(body: string): void {
     const events = parseSSE(body);
     for (const ev of events) this.applyEvent(ev);

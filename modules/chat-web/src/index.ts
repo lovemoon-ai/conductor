@@ -1,10 +1,10 @@
 /**
  * Public entry point for `@love-moon/chat-web`.
  *
- * `QueuedChatSession` shares a browser and turn queue across tasks/processes.
- * `ChatSession` offers exclusive ownership and direct Playwright Page access.
- * Both preserve multi-turn conversations. CLI users get `login`, `doctor`, `info`;
- * everything else (ask, daemon, ...) lives at the SDK level.
+ * ChatRuntimeClient and RuntimeChatSession connect to an isolated multi-chat
+ * daemon. The CLI exposes serve/chat/turn commands.
+ * QueuedChatSession shares a browser and turn queue across tasks/processes.
+ * ChatSession offers exclusive ownership and direct Playwright Page access.
  *
  * @example
  *   import { ChatSession, registerBuiltinProviders } from "@love-moon/chat-web";
@@ -50,3 +50,6 @@ export * from "./core/logger.js";
 // CLI commands as SDK functions, in case callers want to drive them
 // programmatically (e.g. a UI that runs doctor and renders the report).
 export * from "./commands/index.js";
+
+// Isolated multi-chat runtime and local socket client.
+export * from "./runtime/index.js";

@@ -127,6 +127,7 @@ describe("cross-session turn broker", () => {
 
   function sdk(): ChatWebSession {
     const session = new ChatWebSession("chat-web", {
+      chatWebRuntime: false,
       model: "kimi", turnTimeoutMs: 10000,
       chatWebModule: { registerBuiltinProviders() {}, QueuedChatSession: { open } },
     });

@@ -1,0 +1,176 @@
+# Chat web runtime
+
+ChatGPT、DeepSeek、Kimi、Claude 网页聊天的本地运行时。第一版使用 Chromium/Playwright，每个 chat 独占一个 Node worker、浏览器进程和持久化 profile。多个 SDK/CLI 客户端通过本地 socket 共享 daemon，同一 chat 的发送有序，不同 chat 可并行。
+
+Kimi、Claude 适配标记为 experimental。2026-10-25 UTC 已在 macmini 使用真实 Kimi、DeepSeek 账号验证多轮、四路并行、独立取消与重启恢复；ChatGPT、Claude 仍仅有模拟站点覆盖。Moli 留作后续资源优化。
+
+## 在 Conductor 中使用 Kimi 和 DeepSeek
+
+使用包含本运行时的 Conductor 版本，在运行 daemon 的主机上登录：
+
+```bash
+conductor chat-web login kimi
+conductor chat-web login deepseek
+```
+
+命令打开 Chromium 登录窗口，检测到登录后保存账号认证并关闭窗口；超时会明确失败。自定义配置使用 --config-file PATH，命令会读取配置 envs 中的 CHAT_WEB_* 与代理设置，终端显式环境变量优先。登录与 daemon 应使用同一操作系统用户和 CHAT_WEB_HOME。登录过期时按提示重新执行登录，再在原任务发送消息；认证失败的浏览器会释放，重试读取新的认证。
+
+daemon 的配置需要包含这些别名。新建配置时会自动提供；已有配置补上缺少的项，重启 daemon 使配置生效：
+
+```yaml
+allow_cli_list:
+  web-kimi: chat-web --model kimi
+  web-deepseek: chat-web --model deepseek
+```
+
+在 Conductor 中选择 web-kimi 或 web-deepseek 创建对话；kimi 仍表示 Kimi CLI。这两个网页别名默认自动连接或启动本地隔离运行时，无需先启动 chat-web serve 或设置 socket。每个新对话从 default 账号读取认证，独立保存网页会话和 profile，草稿、当前会话选择和聊天数据库不会从登录 profile 复制。
+
+Kimi 默认 headed，主机需有可用图形会话；DeepSeek 默认 headless。配置别名可附加 --headed / --headless，DeepSeek 还可附加 --deepthink / --no-deepthink。例如 web-deepseek: chat-web --model deepseek --no-deepthink。修改图形模式不绕过站点自身的登录或验证。
+
+Conductor 使用 chat-web-runtime:CHAT_ID 保存稳定身份，站点会话 id 单独保存。任务关闭会释放该 chat 的浏览器，重启使用同一身份恢复原网页对话。旧版 Kimi/DeepSeek 的站点会话 id 会导入到运行时，同一账号重复导入复用同一个 chat。缺失的运行时 id 会报错，不悄悄创建空白会话。Conductor 的 /clear 通过创建新 chat 开始独立对话。
+
+自动启动的 daemon 在无活动 turn、无固定登录窗口且十分钟没有请求后退出；CHAT_WEB_RUNTIME_IDLE_MS 可调整该空闲时间，最小一秒。已有任务在下一次发送前会自动重新连接或启动 daemon，并恢复原 chat；不会重发已提交的消息。手工运行 serve 的 daemon 不受此自动退出策略影响。旧 daemon 缺少账号引导能力时会提示升级，不会自动中断其聊天；显式执行 conductor chat-web runtime stop 后，下次对话会启动新版本。
+
+2026-11-01 UTC 的开发验证通过实际 AI SDK 子进程和 Conductor BridgeRunner 完成 Kimi 多轮消息、双 chat 隔离、关闭后恢复，以及停止一条生成时另一条继续完成。用户重新登录后，DeepSeek 也完成两条 headless chat 的四轮并行消息与独立记忆、关闭后恢复；另两轮经 BridgeRunner 验证 DeepThink 开启和关闭，并在运行时退出后恢复同一对话。两站点的回复均由真实网页返回；BridgeRunner 的 Conductor 消息传输使用本地替身，未覆盖已部署 Web 界面的操作。此前独立运行时的真实 DeepSeek 验证见文末。
+
+## 启动与登录
+
+安装包和 Playwright Chromium 后：
+
+```bash
+chat-web serve --max-workers 4 --per-account-concurrency 2
+```
+
+daemon 默认在前台运行。在另一个终端创建会话并打开该会话的登录窗口：
+
+```bash
+chat-web chat create chatgpt --account personal
+chat-web chat create deepseek --account personal
+chat-web chat login CHAT_A
+chat-web chat login CHAT_B
+```
+
+create 输出 JSON，其中 id 是稳定的本地 chat id。把 CHAT_A、CHAT_B 替换为对应 id。login 返回后浏览器仍由 daemon 持有，在窗口中手动登录；凭证和验证步骤由用户处理。每个隔离 profile 首次需要单独授权，`chat-web login kimi|deepseek` 成功后会保存 default 账号认证，新建 default chat 自动导入；其他 accountId 仍需在对应 chat 窗口中登录。不会直接复制运行中的共享 profile。
+
+create 默认 headless。login 将该 chat 切为 headed。当前实测 Kimi 的已有登录态切换到 headless 后，发送返回 HTTP 401，切回 headed 可用；建议 Kimi 保持 headed（创建时可传 --headed），原因尚未确认，不自动重试提交。DeepSeek 已验证 headless 和 headed。确认站点支持后，需要后台模式时运行：
+
+```bash
+chat-web chat close CHAT_A
+chat-web chat resume CHAT_A --headless
+```
+
+手动打开的登录窗口会保留，不会为其他 chat 回收；开始该 chat 的发送或显式 close 后才解除保留。登录窗口可以继续用于生成；不要求手动关闭它。人工关闭了窗口后可用 resume 重新打开。
+
+## 并行发送与事件
+
+```bash
+chat-web chat send CHAT_A "比较这两种方案" --request-id job-1 --detach
+chat-web chat send CHAT_B "给出独立分析" --request-id job-2 --detach
+chat-web turn events TURN_A
+chat-web turn events TURN_B --after 3
+```
+
+send 默认等待终态并输出 JSON，`--detach` 立即返回 turn id，`--jsonl` 连续输出事件。turn events 支持从序号 after 之后重放；断开订阅不取消生成。
+
+```bash
+chat-web turn get TURN_A
+chat-web turn cancel TURN_A
+chat-web chat list
+chat-web chat get CHAT_A
+chat-web chat close CHAT_A
+chat-web runtime status
+chat-web runtime stop
+```
+
+取消排队中的 turn 不会发送网页消息。取消已提交的 turn 会尝试点击该页面的 stop，并检查控件消失。未确认停止时记录 uncertain，不宣称服务端已停。close 只操作对应 chat，并阻止继续发送，直到显式 resume。
+
+## DeepSeek DeepThink
+
+创建时指定每轮默认值，或发送时覆盖单轮：
+
+~~~bash
+chat-web chat create deepseek --deepthink
+chat-web chat send CHAT_ID "分析这个方案" --deepthink
+chat-web chat send CHAT_ID "直接回答" --no-deepthink
+~~~
+
+--deepthink 开启，--no-deepthink 关闭；两者不可同时使用，仅支持 DeepSeek。发送参数优先于 chat 创建时的默认值；两者都不指定则保持该页面当前状态。单轮覆盖不修改保存的 chat 默认值，但会改变该 profile 的网页开关。SDK 对应 deepThink: true/false，支持 client.create、client.submit、RuntimeChatSession.open 和 session.send；session.send 优先于 session.open 的默认值。
+
+运行时在发送前读取 DeepThink 控件的 aria-pressed/aria-checked，仅在状态不符时点击，并确认切换成功。控件缺失或状态无法确认时，本轮失败且不发送消息。设置随 turn 持久化，同一 requestId 更换设置会报冲突。新客户端会先检查 daemon 能力，旧版 daemon 需要重启升级。
+
+AI SDK 的 runtime 模式可使用 chatWebProvider: "deepseek"、chatWebDeepThink: true/false；该选项不支持旧版直连模式。2026-10-26 UTC 已使用真实账号验证开启、重复开启、关闭和保持现状四轮，均确认页面实际状态及 SSE 回复。
+
+## SDK
+
+```ts
+import { ChatRuntimeClient } from "@love-moon/chat-web";
+
+const client = new ChatRuntimeClient(); // 连接已有 daemon
+const first = await client.create({ provider: "kimi", accountId: "personal" });
+const second = await client.create({ provider: "claude", accountId: "personal" });
+
+// 首次使用：client.resume(id, { headed: true }) 打开对应页面供用户登录。
+// 登录完成后可同时提交；这里的 id 对应已经授权的 chat。
+const turns = await Promise.all([first, second].map((chat, index) =>
+  client.submit({
+    conversationId: chat.id,
+    requestId: "comparison-" + index,
+    input: "独立评估这个设计",
+  }),
+));
+
+const results = await Promise.all(turns.map((turn) => client.wait(turn.id)));
+```
+
+`client.events(turnId, after, signal)` 是异步迭代器，事件包括 queued、starting、submitting、message_delta、message_snapshot 和终态。message_delta 追加文本，message_snapshot 替换文本；终态事件包含最终或部分文本。事件按 turnId/seq 去重。长流会定期把文本增量历史压缩为完整 message_snapshot；文本替换也会立即压缩旧文本事件。seq 保持单调递增，但压缩后可能不连续；旧游标通过快照恢复当前正文，不保证永久保留每一条历史 delta。wait 自动尝试重连，稳定 requestId 可在请求确认丢失时再次查询同一次提交；同 id 不同输入或超时报 REQUEST_CONFLICT。
+
+`RuntimeChatSession.open(provider, { socketPath, conversationId, accountId })` 提供接近旧 ChatSession 的 open/isLoggedIn/send/interruptCurrentTurn/close 接口。默认 close 只断开 SDK 会话；releaseOnClose: true 会关闭远程 chat 并释放浏览器，Conductor 的自动运行时使用此选项。显式释放也可使用 client.closeConversation。未传 socketPath 时 open 会自动确保 daemon 可用；传入 socketPath 时连接该已有 daemon。运行时会话没有原地 clear，创建新 chat 即开始独立对话。
+
+## AI SDK 接入
+
+```js
+const session = createAiSession("chat-web", {
+  chatWebRuntimeSocket: "/absolute/path/to/runtime.sock",
+  chatWebProvider: "claude",
+  chatWebConversationId: "已登录的本地-chat-id",
+});
+```
+
+Kimi、DeepSeek 默认自动启用运行时，例如 createAiSession("chat-web", { model: "kimi" })。显式 chatWebRuntimeSocket 或 CHAT_WEB_RUNTIME_SOCKET 可连接已运行的 daemon，并使用 chatgpt、deepseek、kimi、claude。自动模式的 Conductor 身份为 chat-web-runtime:CHAT_ID，显式 socket 模式继续使用本地 chat id；站点 id 存于 providerConversationId。ChatGPT/Gemini 默认使用 QueuedChatSession；chatWebRuntime: false 可显式选择共享 profile 路径。
+
+## 隔离与恢复
+
+- 全局默认四个 worker，同站点同 accountId 默认同时生成两路，可在 serve 时配置。accountId 是用户给登录身份的标签，运行时不验证多个标签是否实际对应同一个账号；站点限流与配额不会因 profile 隔离而增加。
+- 空闲 worker 可回收，恢复依赖已保存的站点会话 URL。已发送但没有可靠 URL 的 chat 不会在资源回收或重启后悄悄打开新会话。
+- 已开始的 turn 在异常或重启后进入 uncertain；重启只重新调度仍在 timeoutMs 等待期限内、从未开始的 queued turn；过期队列记录 cancelled / QUEUE_EXPIRED，分配 worker 前也会再次检查，不重放已提交消息。
+- uncertain 会阻止该 chat 后续发送，其他 chat 继续运行。打开页面核对结果后，使用 `chat-web chat resume CHAT_ID --acknowledge` 显式解除；解除不重发旧 turn。 Conductor 会在首次 uncertain 错误和后续 REVIEW_REQUIRED 错误中给出打开同一会话、确认恢复的完整命令（包含实际 chat id 和 socket）。目前确认操作仍需在 daemon 主机通过 CLI 执行，网页聊天错误消息提供操作指引；核对确认后再手动发送需要的新消息。
+- 回复优先从 fetch/XHR 的 SSE 或 Kimi Connect JSON 流增量解析。终态 source 字段区分 sse、connect 与 dom，DOM 文本可能丢失 Markdown 格式。DOM 降级需要新回复节点及观察到 stop 控件出现再消失；静默两秒或超时不会直接被当作完成。WebSocket、Connect 压缩帧或变化后的站点协议可能需要更新适配器。
+- 本地状态目录默认 `CHAT_WEB_HOME/runtime`，CHAT_WEB_HOME 默认 ~/.chat-web。Unix 目录权限 0700，socket 与状态文件 0600，凭证保存在各 chat 的 profile。没有开放 TCP 监听端口。
+- 第一版使用原子 JSON 状态快照，快照中最多常驻 256 个 chat、4096 个 turn，每次输入上限 10 万字符、输出上限 100 万字符。关闭且无需核对的 chat 的完整本地资源最多保留最近 32 个、最长七天；在创建、发送、关闭和运行时启动时清理，容量不足时优先回收最早关闭的 chat，同时删除其 turn 和 profile。终态 turn 保留最长七天；达到 4096 上限前批量淘汰旧记录，最近一分钟的结果、活跃订阅和仍需核对的 uncertain turn 保留用于取回与核对。正在使用的 chat 不会被回收；若容量全被活跃或受保护的记录占用，仍会明确拒绝操作。回收 profile 和历史前，会在 archive/<id>.json 持久化小型身份记录（原 id、provider、account、站点会话 id/URL 和恢复保护标记），不包含正文或浏览器凭证。chat get 可按原 id 返回 archived: true；resume 从身份记录恢复原 id 和站点会话，并按需创建 profile。身份记录持续保留，不计入 256 个常驻 chat 的上限。chat list 仅列出常驻记录。已回收的 turn id 返回 NOT_FOUND，去重仅对尚未回收的 turn 生效。状态含输入与回复，应按本地聊天记录管理。
+
+所有客户端命令接受 --socket PATH。daemon 接受 --runtime-dir PATH、--browser-executable PATH、--browser-channel NAME；原有 CHAT_WEB_BROWSER_EXECUTABLE、CHAT_WEB_BROWSER_CHANNEL 环境变量也有效。
+
+## 开发与验证
+
+```bash
+cd modules/chat-web
+pnpm build
+pnpm test
+node dist/cli.js serve
+```
+
+测试包括本地 RPC/SDK/CLI、并发与顺序、幂等、取消、断线重放、异常检查点恢复，以及独立 Chromium 进程中的四种站点模拟页面。Kimi 模拟 Connect 二进制分帧、done 后网页主动 abort、UI 延迟解除生成状态与截断流；DeepSeek 模拟 XHR SSE、负数分片下标及 BATCH 终态。真实浏览器测试在 Chromium 不可用时跳过；可设置 CHAT_WEB_TEST_BROWSER 指定测试二进制，不会自动安装或使用真实账号。
+
+真实账号验证覆盖同一 daemon 内 Kimi 两路（headed）和 DeepSeek 两路（headless），四条生成区间共同重叠 1024 ms，四个站点会话 id 不同。各 chat 只回忆自己的标记；取消每站点的一条生成均得到 stopConfirmed=true，另一条继续完成；重启后两站点均可继续原对话。此轮联合验证 14 个 turn，其中 12 个 completed、2 个按要求 cancelled。它验证当前网页版本的基础文本路径，不代表账号配额、附件、工具调用或长时间负载已验收。凭证、原始网络数据和执行日志不进入仓库。
+
+流式正文与事件在内存中逐条更新并供订阅重放，不再每个增量重写状态文件。首次进入 streaming 和生命周期变化（包括终态）仍持久化完整检查点；异常退出可能丢失检查点之后的正文尾部，已开始的请求仍进入 uncertain，不自动重发。
+
+Conductor 的启动检查在 worker 池忙或恢复活跃 chat 时可返回排队状态，实际分配 worker 后再核实登录；无需预先占用浏览器才能进入发送队列。Gemini 不属于隔离运行时站点，设置全局 runtime socket 后仍使用原共享 profile 队列。
+
+无 worker、无非终态 turn、无待核对错误且超过七天未活动的 open chat 也会归档；最近活动和仍在使用的 chat 不会清理。关闭或归档只释放本地资源，不表示 Conductor 任务不可继续。hasCompletedTurn 标记独立于 turn 历史保留；完成过回复但缺少可靠 URL 时仍报 RESUME_UNSUPPORTED，避免静默创建新会话。新的 profile 如需续期认证，会给出登录提示。
+
+页面十秒内未准备好但没有明确登录证据时返回 PAGE_NOT_READY，不提示续期登录；只有登录路径，或输入框可见但缺少站点认证标记时，才报告 AUTH_REQUIRED。
+
+2026-11-02 UTC 已使用真实 Kimi 账号验证 profile 回收后的恢复：通过 Conductor 使用的 managed AI SDK 发送标记，关闭原 chat 并关闭另外 33 个空 chat，确认原 profile 已删除；停止并重新启动 runtime 后，沿用原本地 id、站点会话 id 和 URL，以新 profile 成功回忆原标记，回复来源为 Connect。
+
+2026-11-05 UTC 用户重新登录后，真实 DeepSeek 账号也通过同一条 managed AI SDK 的 headless 验证路径：首轮记住唯一标记，关闭原 chat 和另外 33 个空 chat 后确认原记录已归档、profile 已删除；停止并重启 runtime，沿用同一个本地 id、站点会话 id 和 URL 创建新 profile，后续消息正确回忆原标记，回复来源为 SSE。此项 profile 回收后的真实恢复验证现已覆盖 Kimi 和 DeepSeek；验证通过 SDK 完成，不包含已部署 Conductor Web 界面的完整操作验收。

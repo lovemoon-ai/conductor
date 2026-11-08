@@ -68,6 +68,12 @@ const DEFAULT_CLIs = {
     description: "Chat web (Kimi) via @love-moon/chat-web",
     runtimeBackend: "chat-web"
   },
+  "web-deepseek": {
+    command: "chat-web",
+    execArgs: "--model deepseek",
+    description: "Chat web (DeepSeek) via @love-moon/chat-web",
+    runtimeBackend: "chat-web"
+  },
   "web-gemini": {
     command: "chat-web",
     execArgs: "--model gemini",
@@ -143,10 +149,10 @@ function buildConfigEntryLines(cli, info, { commented = false } = {}) {
     lines.push(`${commentPrefix}opencode runs via ai-sdk server mode with permission=allow`);
   }
   if (cli === "web-chatgpt") {
-    // web-chatgpt / web-gemini / web-kimi resolve to the chat-web runtime backend
+    // web-chatgpt / web-gemini / web-kimi / web-deepseek resolve to the chat-web runtime backend
     // (an in-process Chromium driver via @love-moon/chat-web). The command
     // line is not executed; CLI parses --model from it.
-    lines.push(`${commentPrefix}web-chatgpt / web-gemini / web-kimi drive a real Chromium browser via @love-moon/chat-web`);
+    lines.push(`${commentPrefix}web-chatgpt / web-gemini / web-kimi / web-deepseek drive a real Chromium browser via @love-moon/chat-web`);
   }
 
   lines.push(`${entryPrefix}${cli}: ${fullCommand}`);

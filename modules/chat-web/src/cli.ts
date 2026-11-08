@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 
+import { RuntimeError } from "./runtime/types.js";
+import { runRuntimeCli } from "./runtime/cli.js";
 import { doctor, formatDoctorReport } from "./commands/doctor.js";
 import { info, formatInfo } from "./commands/info.js";
 import { login } from "./commands/login.js";
@@ -11,6 +13,8 @@ import { registerBuiltinProviders } from "./providers/index.js";
 const USAGE = `chat-web — chat web automation runtime
 
 Usage:
+  chat-web serve [--max-workers 4] [--per-account-concurrency 2]
+  chat-web chat --help                           Isolated multi-chat SDK/CLI runtime.
   chat-web login <provider>                       Open a browser to sign in; profile is persisted.
   chat-web doctor <provider> [--snapshot]         Inspect provider page state.
                             [--screenshot]
@@ -85,6 +89,7 @@ async function main(): Promise<number> {
   }
 
   const [command, ...rest] = argv;
+  if (["serve", "chat", "turn", "runtime"].includes(command!)) return runRuntimeCli(argv);
   const { positional, flags } = parseArgs(rest);
   const logLevel = (flagString(flags, "log") as LogLevel | undefined) ?? undefined;
   const logger = createLogger(
@@ -147,9 +152,9 @@ main().then(
     if (typeof code === "number") process.exit(code);
   },
   (err: unknown) => {
-    if (err instanceof ChatWebError) {
+    if (err instanceof ChatWebError || err instanceof RuntimeError) {
       process.stderr.write(`Error [${err.code}]: ${err.message}\n`);
-      if (err.hint) process.stderr.write(`Hint: ${err.hint}\n`);
+      if (err instanceof ChatWebError && err.hint) process.stderr.write(`Hint: ${err.hint}\n`);
       process.exit(1);
     }
     process.stderr.write(`${(err as Error).stack ?? String(err)}\n`);

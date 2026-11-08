@@ -3,11 +3,9 @@ import { buildResumeContext, normalizeSessionId } from "./shared.js";
 export const BACKEND = "chat-web";
 
 /**
- * chat-web's "session" is a Chromium browser context, not a conversation id.
- * There is no native resume primitive: closing and reopening produces a
- * fresh ChatSession with a new in-memory chat. We satisfy ai-sdk's resume
- * contract by surfacing a synthetic session id and a "best effort" context,
- * but downstream callers should treat resume here as a no-op.
+ * Managed Kimi/DeepSeek sessions use a stable chat-web-runtime:<id> token.
+ * RuntimeChatSession restores the saved isolated profile and provider URL.
+ * Other chat-web modes retain their existing provider-specific resume behavior.
  */
 
 export function buildCliArgs(sessionId) {
@@ -44,7 +42,9 @@ export async function resolveResumeContext(sessionId, options = {}) {
     cwd,
     cwdSource: "process_cwd",
     extraDebug: {
-      note: "chat-web does not support cross-process conversation resume; a fresh ChatSession will be opened.",
+      note: normalizedSessionId.startsWith("chat-web-runtime:")
+        ? "The isolated chat runtime restores this saved conversation; a missing runtime id is an error."
+        : "The selected chat-web transport resolves this provider conversation id when opening.",
     },
   });
 }

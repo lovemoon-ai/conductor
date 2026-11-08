@@ -78,6 +78,19 @@ describe("daemon -> fire first message", () => {
 });
 
 describe("conductor-fire defaults", () => {
+  it("routes web-deepseek and forwards its browser and DeepThink choices", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-deepseek-"));
+    try {
+      const config = path.join(directory, "config.yaml");
+      const aliases = { "web-deepseek": "chat-web --model deepseek --headed --deepthink" };
+      fs.writeFileSync(config, "allow_cli_list:\n  web-deepseek: chat-web --model deepseek --headed --deepthink\n");
+      const args = await parseCliArgs(["node", "conductor-fire", "--config-file", config, "--backend", "web-deepseek", "--", "hello"]);
+      assert.equal(args.sessionBackend, "chat-web");
+      assert.deepEqual(args.sessionOptions, { model: "deepseek", headless: false, chatWebDeepThink: true });
+      assert.throws(() => resolveAiSessionOptions("web-deepseek", { "web-deepseek": "chat-web --model deepseek --deepthink --no-deepthink" }, {}, "chat-web"), /Choose/);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("routes web-kimi to chat-web with the kimi sub-provider", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-fire-kimi-"));
     try {

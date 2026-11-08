@@ -1208,7 +1208,7 @@ describe("/api/tasks", () => {
       expect(db.task.create).not.toHaveBeenCalled();
     });
 
-    it("does NOT block task creation when the backend is only advisory `missing`", async () => {
+    it.each(["claude", "web-kimi", "web-deepseek"])("creates a task for advertised backend %s with advisory missing health", async (backend) => {
       const mockUser = { id: "user-1", email: "test@example.com", phone: null };
       const mockProject = { id: "proj-1", name: "Project 1", userId: "user-1" };
       const mockTask = {
@@ -1218,7 +1218,7 @@ describe("/api/tasks", () => {
         status: "pending",
         agentHost: null,
         executionHost: null,
-        backendType: "claude",
+        backendType: backend,
         sessionId: null,
         sessionFilePath: null,
         metadata: null,
@@ -1239,8 +1239,8 @@ describe("/api/tasks", () => {
         {
           id: "agent-daemon",
           host: "daemon-1",
-          supportedBackends: ["claude"],
-          runtimeHealth: { claude: "missing" },
+          supportedBackends: [backend],
+          runtimeHealth: { [backend]: "missing" },
           capabilities: [],
         },
       ]);
@@ -1249,12 +1249,12 @@ describe("/api/tasks", () => {
       const response = await POST(createMockRequest({
         method: "POST",
         token,
-        body: { project_id: "proj-1", title: "Advisory Missing Backend", backend_type: "claude" },
+        body: { project_id: "proj-1", title: "Advisory Missing Backend", backend_type: backend },
       }));
 
       // `missing` is advisory: creation proceeds past the preflight (200, not 503).
       expect(response.status).toBe(200);
-      expect(db.task.create).toHaveBeenCalled();
+      expect(db.task.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ backendType: backend }) }));
     });
 
     it("rejects an agent that is not registered in project settings", async () => {

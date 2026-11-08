@@ -151,6 +151,7 @@ describe("conductor-config", () => {
     assert.equal(allowCliList["web-chatgpt"], "chat-web --model chatgpt");
     assert.equal(allowCliList["web-gemini"], "chat-web --model gemini");
     assert.equal(allowCliList["web-kimi"], "chat-web --model kimi");
+    assert.equal(allowCliList["web-deepseek"], "chat-web --model deepseek");
     assert.equal(allowCliList["chat-web"], undefined);
   });
 
