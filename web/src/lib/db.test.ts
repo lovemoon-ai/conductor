@@ -3,7 +3,49 @@ import os from "os";
 import path from "path";
 import { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { enableSqliteWal } from "@/lib/db";
+import { enableSqliteWal, withSqliteConnectionLimit } from "@/lib/db";
+
+describe("withSqliteConnectionLimit", () => {
+  it("pins SQLite URLs to one connection", () => {
+    expect(withSqliteConnectionLimit("file:/opt/conductor/conductor.db")).toBe(
+      "file:/opt/conductor/conductor.db?connection_limit=1",
+    );
+    expect(withSqliteConnectionLimit("file:./dev.db?socket_timeout=10")).toBe(
+      "file:./dev.db?socket_timeout=10&connection_limit=1",
+    );
+  });
+
+  it("keeps an explicit limit, non-SQLite and missing URLs", () => {
+    expect(withSqliteConnectionLimit("file:./dev.db?connection_limit=3")).toBe(
+      "file:./dev.db?connection_limit=3",
+    );
+    expect(withSqliteConnectionLimit("postgresql://localhost/conductor")).toBe(
+      "postgresql://localhost/conductor",
+    );
+    expect(withSqliteConnectionLimit(undefined)).toBeUndefined();
+  });
+
+  // server.ts (tsx) and the Next.js bundle each evaluate db.ts; they must
+  // share one client, or each copy adds its own connection (and busy-waiter).
+  it("shares one client across module copies in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const globalForPrisma = globalThis as unknown as { prisma?: unknown };
+    const previous = globalForPrisma.prisma;
+    delete globalForPrisma.prisma;
+    try {
+      vi.resetModules();
+      const first = (await import("@/lib/db")).db;
+      vi.resetModules();
+      const second = (await import("@/lib/db")).db;
+      expect(second).toBe(first);
+      await first.$disconnect();
+    } finally {
+      globalForPrisma.prisma = previous;
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
 
 describe("enableSqliteWal", () => {
   afterEach(() => {
