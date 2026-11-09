@@ -22,6 +22,7 @@ export interface WebSocketLike {
 
 export interface ConnectOptions {
   headers: Record<string, string>;
+  handshakeTimeout?: number;
 }
 
 export type ConnectImpl = (url: string, options: ConnectOptions) => Promise<WebSocketLike>;
@@ -536,12 +537,17 @@ function formatBeijingTimestamp(date = new Date()): string {
   return date.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).replace(' ', 'T');
 }
 
-async function defaultConnectImpl(url: string, options: ConnectOptions): Promise<WebSocketLike> {
+const HANDSHAKE_TIMEOUT_MS = 30_000;
+
+export async function defaultConnectImpl(url: string, options: ConnectOptions): Promise<WebSocketLike> {
   const { default: WebSocket } = await import('ws');
   return new Promise<WebSocketLike>((resolve, reject) => {
     const ws = new WebSocket(url, {
       headers: options.headers,
       perMessageDeflate: false,
+      // Without this a handshake stalled on a lossy link never settles, and
+      // openConnection waits on it forever while holding the reconnect lock.
+      handshakeTimeout: options.handshakeTimeout ?? HANDSHAKE_TIMEOUT_MS,
     });
     ws.once('open', () => resolve(new WsAdapter(ws)));
     ws.once('error', (err) => reject(err));

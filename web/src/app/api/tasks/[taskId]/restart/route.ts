@@ -63,6 +63,7 @@ import {
   RECLAIMABLE_KILLED_REASON,
 } from "@/lib/tasks/killed-reason";
 import { isTaskReclaimEnabled } from "@/lib/tasks/reclaim-config";
+import { listDaemonTaskFireHosts } from "@/lib/tasks/stale-recovery";
 import { mergeSuccessorTaskCardGroup } from "@/lib/user-preferences";
 import { buildGroupMemberMetadata } from "@/lib/tasks/agent-group";
 import {
@@ -889,6 +890,13 @@ export async function POST(
   }
 
   if (isInplaceRestart) {
+    // A fire that is not connected cannot be serving this task, even if its
+    // tmux session survives on the daemon (e.g. wedged mid-reconnect). Let the
+    // daemon replace it instead of refusing the restart as "already active".
+    const sourceFireHosts = listDaemonTaskFireHosts({ ...sourceTask, taskType: "ai_task" }, boundTaskHost);
+    const replaceDisconnectedFire =
+      sourceFireHosts.length > 0 &&
+      !connectedAgents.some((agent) => sourceFireHosts.includes(agent.host));
     // Nothing to resume: start a fresh session on this task (as a persistent
     // round does), seeded with the transcript.
     let freshSessionContent: string | null = null;
@@ -945,6 +953,7 @@ export async function POST(
               target_backend_type: targetBackend,
               target_launch_config: inheritedWorktreeLaunchConfig ?? undefined,
               request_id: requestId,
+              ...(replaceDisconnectedFire ? { replace_existing_fire: true } : {}),
             },
           }),
           status: "pending",
