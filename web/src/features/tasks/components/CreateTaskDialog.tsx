@@ -325,9 +325,11 @@ export function CreateTaskDialog({
     if (!isMergedGroup || !mergedGroupDaemonOptions || mergedGroupDaemonOptions.length === 0) {
       return baseProjectId;
     }
-    return mergedGroupDaemonOptions.some((entry) => entry.memberId === baseProjectId)
+    // Only online members are listed in the daemon dropdown; never default to an offline one.
+    const onlineMembers = mergedGroupDaemonOptions.filter((entry) => entry.agent);
+    return onlineMembers.some((entry) => entry.memberId === baseProjectId)
       ? baseProjectId
-      : mergedGroupDaemonOptions[0].memberId;
+      : (onlineMembers[0] ?? mergedGroupDaemonOptions[0]).memberId;
   }, [baseProjectId, isMergedGroup, mergedGroupDaemonOptions]);
   // Picker value tracks the group's primary member id so the option matches
   // even when projectId points at a non-primary member (i.e. the user picked

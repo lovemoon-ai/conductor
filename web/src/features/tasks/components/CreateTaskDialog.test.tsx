@@ -772,6 +772,29 @@ describe('CreateTaskDialog', () => {
         }));
       });
     });
+
+    it('merged group: defaults to the online member when the primary member daemon is offline', async () => {
+      projectsState = {
+        projects: [
+          { id: 'p-u', name: 'humanoid-deploy', daemonHost: 'ubuntu', workspacePath: '/home/u/hd' },
+          { id: 'p-x', name: 'humanoid-deploy', daemonHost: 'apex', workspacePath: '/mnt/hd' },
+        ],
+      };
+      agentsState.agents = [{ id: 'apex-1', host: 'apex', supportedBackends: ['kimi'], capabilities: [] }];
+      createTaskMock.mockResolvedValueOnce({ id: 'task-apex' });
+      render(<CreateTaskDialog open onClose={() => {}} />);
+
+      expect(await screen.findByLabelText('Device')).toHaveValue('p-x');
+      expect(screen.getByLabelText('AI backend')).toHaveValue('kimi');
+      fireEvent.change(screen.getByLabelText('Task title'), { target: { value: 'On apex' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create AI Task' }));
+      await waitFor(() => expect(createTaskMock).toHaveBeenCalledWith(expect.objectContaining({
+        projectId: 'p-x',
+        agentHost: 'apex',
+        backendType: 'kimi',
+      })));
+    });
+
   });
 
   describe('global AI backends (RFC 0041)', () => {
