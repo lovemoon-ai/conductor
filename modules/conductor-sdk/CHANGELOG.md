@@ -1,5 +1,13 @@
 # @love-moon/conductor-sdk
 
+## 0.18.0
+
+### Patch Changes
+
+- 924f51c: Time out stalled WebSocket handshakes so a fire can no longer wedge forever
+  mid-reconnect, and let an in-place restart replace a task's tmux fire that the
+  server sees as disconnected instead of refusing with "task already active".
+
 ## 0.17.2
 
 ## 0.17.1

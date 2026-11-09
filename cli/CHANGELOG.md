@@ -1,5 +1,44 @@
 # @love-moon/conductor-cli
 
+## 0.18.0
+
+### Minor Changes
+
+- 72324fd: Add a local multi-chat runtime with isolated Chromium workers, persistent profiles,
+  per-account concurrency, resumable events, request deduplication, and SDK/CLI access.
+  Add experimental Kimi and Claude webpage adapters and optional AI SDK socket transport.
+
+  Support Kimi Connect JSON envelopes and DeepSeek XHR SSE patches, with verified
+  parallel real-account text chats, independent cancellation, and restart recovery.
+
+  Add DeepSeek --deepthink / --no-deepthink controls and SDK options with persisted
+  chat defaults, per-turn overrides, verified UI state, and runtime capability checks.
+
+  Connect Conductor web-kimi and web-deepseek to managed isolated Chromium workers
+  by default. Add conductor chat-web login, account credential bootstrap, automatic
+  daemon startup and idle shutdown, stable cross-process resume IDs, and browser
+  release when tasks close. Preserve the shared-profile queue for other providers.
+  Retain cancelled conversation URLs and report confirmed stops as interruptions.
+
+### Patch Changes
+
+- 31b61ea: Bound closed-chat and terminal-turn retention, reclaim browser profiles and orphan
+  directories, and keep streaming deltas in memory between durable checkpoints.
+  Defer saturated or busy chat startup to the turn queue, validate authentication at
+  allocation, and expire queued prompts before crash recovery or delayed submission.
+  Keep Gemini on its legacy transport with global runtime sockets and consume the
+  Conductor wrapper separator before forwarding a packaged CLI command.
+- 924f51c: Time out stalled WebSocket handshakes so a fire can no longer wedge forever
+  mid-reconnect, and let an in-place restart replace a task's tmux fire that the
+  server sees as disconnected instead of refusing with "task already active".
+- Updated dependencies [bdbda18]
+- Updated dependencies [063b97c]
+- Updated dependencies [31b61ea]
+- Updated dependencies [924f51c]
+- Updated dependencies [72324fd]
+  - @love-moon/ai-sdk@0.18.0
+  - @love-moon/conductor-sdk@0.18.0
+
 ## 0.17.2
 
 ### Patch Changes

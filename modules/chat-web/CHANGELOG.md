@@ -1,5 +1,76 @@
 # @love-moon/chat-web
 
+## 0.18.0
+
+### Minor Changes
+
+- 72324fd: Add a local multi-chat runtime with isolated Chromium workers, persistent profiles,
+  per-account concurrency, resumable events, request deduplication, and SDK/CLI access.
+  Add experimental Kimi and Claude webpage adapters and optional AI SDK socket transport.
+
+  Support Kimi Connect JSON envelopes and DeepSeek XHR SSE patches, with verified
+  parallel real-account text chats, independent cancellation, and restart recovery.
+
+  Add DeepSeek --deepthink / --no-deepthink controls and SDK options with persisted
+  chat defaults, per-turn overrides, verified UI state, and runtime capability checks.
+
+  Connect Conductor web-kimi and web-deepseek to managed isolated Chromium workers
+  by default. Add conductor chat-web login, account credential bootstrap, automatic
+  daemon startup and idle shutdown, stable cross-process resume IDs, and browser
+  release when tasks close. Preserve the shared-profile queue for other providers.
+  Retain cancelled conversation URLs and report confirmed stops as interruptions.
+
+### Patch Changes
+
+- bdbda18: Preserve lightweight conversation identity archives across profile/history GC so
+  Conductor can resume the same provider conversation using its existing local ID.
+  Archive idle, workerless open chats; persist the completed-turn resume guard; and
+  distinguish slow page loading from confirmed authentication failures.
+
+  Upgrading a CLI while an older managed runtime is running can report
+  RUNTIME_UPGRADE_REQUIRED when queuedStartup or durableResume support is missing.
+  After active chats finish, run `conductor chat-web runtime stop` and retry;
+  the next managed session starts the updated runtime. Alternatively, a runtime
+  with no active turns or pinned login windows exits after ten minutes without
+  requests. The CLI never terminates running chats automatically.
+
+  Profile deletion now starts only after the retention checkpoint commits, and
+  closed chats awaiting uncertainty review retain their profiles and turn history.
+  Accepted prompts refresh idle activity before collection, keeping their parent
+  conversation resident even when a client submits directly after a long idle.
+
+- d31f07b: Show actionable Kimi and DeepSeek account concurrency errors in Conductor chat.
+  Preserve bounded provider messages and typed errors through the existing runtime,
+  AI SDK and chat error channel without automatically retrying submitted turns.
+- 063b97c: Show daemon-host inspection and acknowledgement commands on uncertain chat-web
+  errors and REVIEW_REQUIRED, including interrupted sends and timeouts. Keep
+  acknowledgement explicit: it does not replay a request, and the user sends the
+  next message after checking the provider conversation. The web error message
+  contains the commands; acknowledgement currently runs through the host CLI.
+
+  Compact streamed event history into full text snapshots instead of failing
+  after 2000 events. Sequence numbers remain monotonic across compaction and
+  restart; replay cursors may cross gaps and recover through a message_snapshot.
+  The one-million-character text limit remains enforced.
+
+  Return CHAT*CLOSED when closing a chat races a headed resume. Strip CONDUCTOR*\*
+  identity variables from detached runtime and browser-worker environments while
+  preserving browser and proxy configuration.
+
+  Upgrade note: an already-running shared runtime continues executing its old
+  code. After active chats finish, run `conductor chat-web runtime stop` and retry
+  to launch the updated runtime. Older runtimes lacking required capabilities
+  report RUNTIME_UPGRADE_REQUIRED; unused managed runtimes exit after ten minutes
+  without requests or pinned login windows. No running chat is stopped
+  automatically during upgrade.
+
+- 31b61ea: Bound closed-chat and terminal-turn retention, reclaim browser profiles and orphan
+  directories, and keep streaming deltas in memory between durable checkpoints.
+  Defer saturated or busy chat startup to the turn queue, validate authentication at
+  allocation, and expire queued prompts before crash recovery or delayed submission.
+  Keep Gemini on its legacy transport with global runtime sockets and consume the
+  Conductor wrapper separator before forwarding a packaged CLI command.
+
 ## 0.17.2
 
 ### Patch Changes
