@@ -164,16 +164,16 @@ describe("Home auth bootstrap", () => {
     });
   });
 
-  it("shows a github button in the top-right area", async () => {
+  it("does not show a github link in the top bar or actions menu", async () => {
     render(<Home />);
 
     await waitFor(() => {
       expect(mockAuthState.initFromStorage).toHaveBeenCalledTimes(1);
     });
 
-    const githubLink = screen.getByRole("link", { name: "GitHub" });
-    expect(githubLink).toHaveAttribute("href", "https://github.com/lovemoon-ai/conductor");
-    expect(githubLink).toHaveAttribute("target", "_blank");
+    fireEvent.click(screen.getByRole("button", { name: "Open actions menu" }));
+
+    expect(screen.queryByRole("link", { name: "GitHub" })).toBeNull();
   });
 
   it("does not issue user requests before stored auth finishes validation", async () => {
