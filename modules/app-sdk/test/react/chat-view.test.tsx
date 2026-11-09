@@ -261,6 +261,51 @@ describe('<ChatView /> integration', () => {
     await unmount();
   });
 
+  it('interrupt without runtime replyTo targets the answered user message, not the reply id', async () => {
+    const ctl = makeMockAdapter([
+      { id: 'q1', taskId: 't_r', role: 'user', content: 'go', metadata: null, attachments: [], createdAt: '2026-05-17T00:00:00Z' },
+    ]);
+    const { container, unmount } = await mount(<ChatView taskId="t_r" adapter={ctl.adapter} />);
+    await act(async () => {
+      ctl.pushEvent({
+        type: 'message_appended',
+        message: { id: 'a1', taskId: 't_r', role: 'assistant', content: 'working', metadata: { reply_to: 'q1' }, attachments: [], createdAt: '2026-05-17T00:00:01Z' },
+      });
+      ctl.pushEvent({ type: 'runtime_status', status: { taskId: 't_r', state: 'thinking', replyInProgress: true } });
+    });
+    const btn = container.querySelector('.conductor-button--interrupt') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    await act(async () => {
+      btn!.click();
+      await flushPromises();
+    });
+    expect(ctl.interrupts).toEqual([{ taskId: 't_r', targetReplyTo: 'q1' }]);
+    await unmount();
+  });
+
+  it('interrupt right after sending targets the sent message', async () => {
+    const ctl = makeMockAdapter();
+    const { container, unmount } = await mount(<ChatView taskId="t_s" adapter={ctl.adapter} />);
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      setReactTextareaValue(textarea, 'do it');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      (container.querySelector('.conductor-button--send') as HTMLButtonElement).click();
+      await flushPromises();
+    });
+    await act(async () => {
+      ctl.pushEvent({ type: 'runtime_status', status: { taskId: 't_s', state: 'thinking', replyInProgress: true } });
+    });
+    await act(async () => {
+      (container.querySelector('.conductor-button--interrupt') as HTMLButtonElement).click();
+      await flushPromises();
+    });
+    expect(ctl.interrupts).toEqual([{ taskId: 't_s', targetReplyTo: 'srv:1' }]);
+    await unmount();
+  });
+
   it('sends a message: optimistic insert → server confirm replaces id', async () => {
     const ctl = makeMockAdapter();
     const { container, unmount } = await mount(

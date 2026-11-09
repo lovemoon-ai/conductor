@@ -64,7 +64,10 @@ export interface ChatState {
   oldestMessageId: string | null;
   loadingHistory: boolean;
   error: ChatError | null;
-  /** ID of the latest assistant reply, used for interrupt targeting. */
+  /**
+   * ID of the user message the current reply answers (Conductor's `reply_to`),
+   * used as the interrupt target when runtime status carries no `replyTo`.
+   */
   latestReplyId: string | null;
 }
 
@@ -154,6 +157,8 @@ function reducer(state: ChatState, action: Action): ChatState {
         ...state,
         pendingByClientId: rest,
         messages: dedupSorted([...filtered, action.serverMessage]),
+        // The message just sent is the turn the next reply will answer.
+        latestReplyId: action.serverMessage.role === 'user' ? action.serverMessage.id : state.latestReplyId,
       };
     }
     case 'ROLLBACK_SEND': {
@@ -168,9 +173,10 @@ function reducer(state: ChatState, action: Action): ChatState {
     }
     case 'APPEND_MESSAGE': {
       const next = dedupSorted([...state.messages, action.message]);
-      // `latestReplyId` is the "the AI just replied" signal used for
-      // interrupt targeting. Only genuine assistant messages should
-      // advance it — user/sdk echoes, daemon-emitted system info
+      // `latestReplyId` is the interrupt target: the user message a genuine
+      // assistant reply answers (`metadata.reply_to`), never the reply's own
+      // id — the fire owner rejects an interrupt aimed at a reply id. Only
+      // genuine assistant messages should advance it — user/sdk echoes, daemon-emitted system info
       // (`metadata.synthetic`), and outbound app messages
       // (`metadata.audit.actor='app'`) all look like assistant-shaped
       // messages but aren't real replies.
@@ -187,10 +193,13 @@ function reducer(state: ChatState, action: Action): ChatState {
         action.message.role !== 'system' &&
         !isSynthetic &&
         !isAppEcho;
+      const replyTo = meta && typeof (meta as { reply_to?: unknown }).reply_to === 'string'
+        ? (meta as { reply_to: string }).reply_to
+        : null;
       return {
         ...state,
         messages: next,
-        latestReplyId: isAssistant ? action.message.id : state.latestReplyId,
+        latestReplyId: isAssistant && replyTo ? replyTo : state.latestReplyId,
       };
     }
     case 'UPDATE_MESSAGE': {
