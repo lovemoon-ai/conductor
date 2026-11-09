@@ -7081,7 +7081,7 @@ export function startDaemon(config = {}, deps = {}) {
   // left is a still-exiting child or a tmux record the liveness reaper has not
   // swept yet; a fire that is somehow still alive is stopped here. Its terminal
   // status is suppressed because the task row now belongs to the new round.
-  async function releaseReplacedFire(taskId) {
+  async function releaseReplacedFire(taskId, reason = "persistent_new_round") {
     const record = activeTaskProcesses.get(taskId);
     if (!recordHasLiveFire(record)) {
       return true;
@@ -7099,12 +7099,12 @@ export function startDaemon(config = {}, deps = {}) {
         forgetFireSessionRecord(record);
         return true;
       }
-      stopActiveTaskProcess(taskId, { reason: "persistent_new_round", suppressExitStatusReport: true });
+      stopActiveTaskProcess(taskId, { reason, suppressExitStatusReport: true });
       // The tmux stop path retires the record synchronously and never consumes the flag.
       suppressedExitStatusReports.delete(taskId);
       return !activeTaskProcesses.has(taskId);
     }
-    stopActiveTaskProcess(taskId, { reason: "persistent_new_round", suppressExitStatusReport: true });
+    stopActiveTaskProcess(taskId, { reason, suppressExitStatusReport: true });
     const stopped = await waitForTaskToStop(taskId);
     if (!stopped) {
       suppressedExitStatusReports.delete(taskId);
@@ -8276,6 +8276,18 @@ export function startDaemon(config = {}, deps = {}) {
         forgetFireSessionRecord(activeTarget);
         activeTarget = undefined;
       }
+    }
+
+    // The server saw no connected fire for this task, so a surviving session
+    // is a wedged fire (e.g. stuck mid-reconnect): replace it, don't refuse.
+    if (
+      !isRefreshSessionInplace &&
+      payload?.replace_existing_fire === true &&
+      recordHasLiveFire(activeTarget)
+    ) {
+      log(`Replacing disconnected fire for task ${normalizedTargetTaskId} before restart`);
+      await releaseReplacedFire(normalizedTargetTaskId, "restart_replace_disconnected_fire");
+      activeTarget = activeTaskProcesses.get(normalizedTargetTaskId);
     }
 
     // The probe above already cleared the record if the session was

@@ -792,6 +792,23 @@ describe("daemon tmux Fire adoption", () => {
     assert.match(restartFailures.join(" "), /already active in tmux session/);
   });
 
+  // The server sends replace_existing_fire when no fire for the task is
+  // connected: a session that is alive but offline (e.g. wedged mid-reconnect)
+  // must be replaced, or the task can never be restarted.
+  it("replaces a disconnected adopted fire when restart_task asks to", async () => {
+    const { spawnedFireSessions, killedSessions, restartFailures } = await runAdoptedRestartScenario({
+      mode: "resume_inplace",
+      replaceExistingFire: true,
+    });
+    assert.deepStrictEqual(killedSessions, [SESSION_NAME], "the stale session is stopped first");
+    assert.deepStrictEqual(
+      restartFailures.filter((m) => /already active/.test(m)),
+      [],
+      "restart must not be refused once the stale fire is replaced",
+    );
+    assert.strictEqual(spawnedFireSessions.length, 1, "a fresh fire is launched");
+  });
+
   // The mirror image: refresh_session_inplace stops the live fire and respawns
   // it. Reading `child` here rejects a task that is genuinely running, so the
   // user's recovery action fails with "task is not active on this daemon".
@@ -813,7 +830,7 @@ describe("daemon tmux Fire adoption", () => {
 
   // Boots a daemon that adopts SESSION_NAME, then hands it a restart_task for
   // the same task and reports what the daemon did about it.
-  async function runAdoptedRestartScenario({ mode }) {
+  async function runAdoptedRestartScenario({ mode, replaceExistingFire = false }) {
     const conductorHome = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-adopt-restart-"));
     const previousConductorHome = process.env.CONDUCTOR_HOME;
     const previousTmuxMode = process.env.CONDUCTOR_FIRE_TMUX_MODE;
@@ -938,6 +955,7 @@ describe("daemon tmux Fire adoption", () => {
             target_backend_type: "codex",
             source_session_id: "sess-adopted",
             request_id: "req-adopted",
+            ...(replaceExistingFire ? { replace_existing_fire: true } : {}),
           },
         });
       }

@@ -209,6 +209,27 @@ describe("/api/tasks/[taskId]/restart", () => {
     );
   });
 
+  it("asks the daemon to replace the task's fire only when that fire is not connected", async () => {
+    const restartPayload = () =>
+      JSON.parse(vi.mocked(db.agentOutbox.create).mock.calls.at(-1)![0].data.payloadJson).payload;
+    const restart = () =>
+      POST(
+        createMockRequest({ method: "POST", token: createTestToken("user-1"), body: {} }),
+        { params: Promise.resolve({ taskId: "task-1" }) },
+      );
+
+    // Only the daemon is online: a surviving tmux fire is wedged, not serving.
+    expect((await restart()).status).toBe(200);
+    expect(restartPayload().replace_existing_fire).toBe(true);
+
+    vi.mocked(realtimeHub.getAgentsForUser).mockReturnValue([
+      { id: "agent-1", host: "daemon-1", supportedBackends: ["codex"], capabilities: [] },
+      { id: "fire-1", host: "conductor-fire-daemon-1-task-1", supportedBackends: ["codex"], capabilities: [] },
+    ] as any);
+    expect((await restart()).status).toBe(200);
+    expect(restartPayload().replace_existing_fire).toBeUndefined();
+  });
+
   it("clears achievedAt and broadcasts task_restored when in-place restarting an achieved task", async () => {
     vi.mocked(db.task.findFirst).mockResolvedValue(
       buildTask({ achievedAt: new Date("2026-03-01T00:00:00.000Z") }) as any,
