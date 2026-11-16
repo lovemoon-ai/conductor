@@ -1,6 +1,7 @@
 /**
- * MessageInput: textarea + send button + interrupt button (when a reply is in
- * progress).
+ * MessageInput: textarea + send button, plus an interrupt button while a reply
+ * is in progress. Sending stays available during a reply (queues after the
+ * current turn), matching the main app.
  *
  * Parity with the main app's composer:
  *   - Enter                    → send
@@ -294,7 +295,9 @@ export function MessageInput({ labels, disabled, autoFocus = false }: MessageInp
         disabled={disabled}
       />
       <div className="conductor-message-input__actions">
-        {canInterrupt && !disabled ? (
+        {/* Like the main app, sending stays available during a reply: the
+            message queues after the current turn. Interrupt sits beside it. */}
+        {canInterrupt && !disabled && (
           <button
             type="button"
             className="conductor-button conductor-button--interrupt"
@@ -303,16 +306,15 @@ export function MessageInput({ labels, disabled, autoFocus = false }: MessageInp
           >
             {interruptPending ? '…' : labels.interrupt}
           </button>
-        ) : (
-          <button
-            type="button"
-            className="conductor-button conductor-button--send"
-            onClick={handleSend}
-            disabled={!canSend}
-          >
-            {labels.send}
-          </button>
         )}
+        <button
+          type="button"
+          className="conductor-button conductor-button--send"
+          onClick={handleSend}
+          disabled={!canSend}
+        >
+          {labels.send}
+        </button>
       </div>
     </div>
   );

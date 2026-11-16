@@ -261,6 +261,34 @@ describe('<ChatView /> integration', () => {
     await unmount();
   });
 
+  it('keeps send available while a reply is in progress so messages queue', async () => {
+    const ctl = makeMockAdapter();
+    const { container, unmount } = await mount(
+      <ChatView taskId="t_q" adapter={ctl.adapter} />,
+    );
+    await act(async () => {
+      ctl.pushEvent({
+        type: 'runtime_status',
+        status: { taskId: 't_q', state: 'thinking', replyInProgress: true, replyTo: 'r_1' },
+      });
+    });
+    expect(container.querySelector('.conductor-button--interrupt')).not.toBeNull();
+    const ta = container.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      setReactTextareaValue(ta, 'queued follow-up');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const send = container.querySelector('.conductor-button--send') as HTMLButtonElement | null;
+    expect(send).not.toBeNull();
+    expect(send!.disabled).toBe(false);
+    await act(async () => {
+      send!.click();
+    });
+    expect(ctl.sentMessages.map((m) => m.input.content)).toContain('queued follow-up');
+    expect(ctl.interrupts).toHaveLength(0);
+    await unmount();
+  });
+
   it('interrupt without runtime replyTo targets the answered user message, not the reply id', async () => {
     const ctl = makeMockAdapter([
       { id: 'q1', taskId: 't_r', role: 'user', content: 'go', metadata: null, attachments: [], createdAt: '2026-05-17T00:00:00Z' },
