@@ -1,5 +1,16 @@
 # @love-moon/app-sdk
 
+## 0.18.1
+
+### Patch Changes
+
+- 7996244: Fix `<ChatView />` interrupts being rejected by the fire owner: when runtime
+  status has no `replyTo`, target the user message being answered (the reply's
+  `reply_to`, or the message just sent) instead of the assistant reply's own id.
+- 666bb03: `<ChatView />` keeps the send button available while a reply is in progress, so
+  follow-up messages queue after the current turn like in the main app. The
+  interrupt button is shown next to it instead of replacing it.
+
 ## 0.18.0
 
 ## 0.17.2
