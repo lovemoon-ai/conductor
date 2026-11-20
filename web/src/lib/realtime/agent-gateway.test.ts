@@ -70,6 +70,7 @@ const { realtimeHub } = await import("./hub");
 const { authenticateToken } = await import("../auth/service");
 const { commitTaskStatusUpdate, drainAgentOutboxForHost } = await import("./agent-upstream");
 const {
+  AGENT_RECONNECT_MIN_INTERVAL_MS,
   bindActiveTasksFromResume,
   ensureAgentOwnsTask,
   handlePtyTransportSignalEvent,
@@ -223,6 +224,78 @@ describe("agent-gateway ownership handling", () => {
       }),
     );
     expect(socket.close).not.toHaveBeenCalledWith(4002, "duplicate-host");
+  });
+
+  it("rate limits daemon reconnects and accepts them again after the cooldown", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const wss = setupAgentGateway();
+      const request = {
+        headers: {
+          authorization: "Bearer test-token",
+          "x-conductor-host": "daemon-a",
+          "x-conductor-backends": "codex",
+        },
+        socket: { remoteAddress: "127.0.0.1" },
+      } as any;
+      const first = new FakeSocket();
+      const second = new FakeSocket();
+      const third = new FakeSocket();
+
+      wss.emit("connection", first as any, request);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      wss.emit("connection", second as any, request);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(second.close).toHaveBeenCalledWith(4409, "agent-reconnect-rate-limited");
+      expect(realtimeHub.register).toHaveBeenCalledTimes(1);
+      expect(realtimeHub.takeOverAgentHost).not.toHaveBeenCalled();
+
+      now += AGENT_RECONNECT_MIN_INTERVAL_MS;
+      wss.emit("connection", third as any, request);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(realtimeHub.register).toHaveBeenCalledTimes(2);
+      expect(third.close).not.toHaveBeenCalledWith(4409, "agent-reconnect-rate-limited");
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("does not rate limit fire host connections", async () => {
+    class FakeSocket extends EventEmitter {
+      readyState = 1;
+      send = vi.fn();
+      close = vi.fn();
+    }
+
+    const wss = setupAgentGateway();
+    const request = {
+      headers: {
+        authorization: "Bearer test-token",
+        "x-conductor-host": "conductor-fire-daemon-a-task-1",
+        "x-conductor-backends": "codex",
+      },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as any;
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+
+    wss.emit("connection", first as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    wss.emit("connection", second as any, request);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(realtimeHub.register).toHaveBeenCalledTimes(2);
+    expect(first.close).not.toHaveBeenCalledWith(4409, "agent-reconnect-rate-limited");
+    expect(second.close).not.toHaveBeenCalledWith(4409, "agent-reconnect-rate-limited");
   });
 
   it("normalizes and resolves project agent registry responses", async () => {

@@ -4291,7 +4291,7 @@ describe("Daemon", () => {
           if (String(url).endsWith("/api/projects/proj-codex-alias-1")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -4484,7 +4484,7 @@ describe("Daemon", () => {
           if (String(url).endsWith("/api/projects/proj-external-1")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -4618,7 +4618,7 @@ describe("Daemon", () => {
           if (String(url).endsWith("/api/projects/proj-external-alias-1")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -4879,7 +4879,7 @@ describe("Daemon", () => {
           if (String(url).endsWith("/api/projects/proj-create-failure-1")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -5660,7 +5660,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -5766,7 +5766,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/restart-same-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -5890,7 +5890,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: { localPaths: { default: "/tmp/remote-mcp-local" } } }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6016,7 +6016,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-session-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6247,7 +6247,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-prestop-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6370,7 +6370,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6492,7 +6492,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-shutdown-during-wait-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6641,7 +6641,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-spawn-failure-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6792,7 +6792,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-fast-exit-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -6987,7 +6987,7 @@ describe("Daemon", () => {
                 json: async () => ({ metadata: { localPaths: { default: "/tmp/refresh-stop-timeout-cwd" } } }),
               };
             }
-            if (String(url).endsWith("/api/tasks")) {
+            if (new URL(String(url)).pathname === "/api/tasks") {
               return { ok: true, json: async () => [] };
             }
             return { ok: true, json: async () => ({}) };
@@ -7159,7 +7159,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: {} }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -7325,7 +7325,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: `/tmp/${name}-cwd` } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8142,7 +8142,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/handoff-same-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8236,7 +8236,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { default: "/tmp/first-message-cwd" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8314,7 +8314,7 @@ describe("Daemon", () => {
         }),
         resolveResumeContext: async () => ({ cwd: "" }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8427,7 +8427,7 @@ describe("Daemon", () => {
               json: async () => ({ metadata: { localPaths: { ubuntu: "/home/u/ws/repo" } } }),
             };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8522,7 +8522,7 @@ describe("Daemon", () => {
         }),
         resolveResumeContext: async () => ({ cwd: "" }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8652,7 +8652,7 @@ describe("Daemon", () => {
             if (String(url).includes("/api/projects/")) {
               return { ok: true, json: async () => ({ metadata: null }) };
             }
-            if (String(url).endsWith("/api/tasks")) {
+            if (new URL(String(url)).pathname === "/api/tasks") {
               return { ok: true, json: async () => [] };
             }
             return { ok: true, json: async () => ({}) };
@@ -8870,7 +8870,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -8979,7 +8979,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9075,7 +9075,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9214,7 +9214,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9358,7 +9358,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9519,7 +9519,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9680,7 +9680,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -9841,7 +9841,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10002,7 +10002,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10116,7 +10116,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10226,7 +10226,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10323,7 +10323,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10417,7 +10417,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10500,7 +10500,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10626,7 +10626,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10735,7 +10735,7 @@ describe("Daemon", () => {
           renameSync: () => {},
           createWriteStream: () => ({ write: () => {}, end: () => {} }),
           fetch: async (url) => {
-            if (String(url).endsWith("/api/tasks")) {
+            if (new URL(String(url)).pathname === "/api/tasks") {
               return { ok: true, json: async () => [] };
             }
             return { ok: true, json: async () => ({}) };
@@ -10831,7 +10831,7 @@ describe("Daemon", () => {
         renameSync: () => {},
         createWriteStream: () => ({ write: () => {}, end: () => {} }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -10925,7 +10925,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -11047,7 +11047,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -11143,7 +11143,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -11215,6 +11215,149 @@ describe("Daemon", () => {
     assert.ok(runningIdx >= 0);
     assert.ok(disconnectIdx >= 0);
     assert.equal(killedIdx, -1);
+  });
+
+  it("uses lightweight daemon task queries and drains throttled reconnect reconciliation", async () => {
+    let callbacks;
+    let releaseReconcile;
+    const taskListUrls = [];
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-reconcile-throttle",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "apex",
+      },
+      {
+        reconcileMinIntervalMs: 80,
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (new URL(String(url)).pathname === "/api/tasks") {
+            taskListUrls.push(new URL(String(url)));
+            if (taskListUrls.length === 2) {
+              await new Promise((resolve) => {
+                releaseReconcile = resolve;
+              });
+            }
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_config, options) => {
+          callbacks = options;
+          return {
+            registerHandler: () => {},
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          };
+        },
+      },
+    );
+
+    try {
+      callbacks.onConnected({ isReconnect: false });
+      await waitUntil(() => taskListUrls.length === 1);
+
+      callbacks.onConnected({ isReconnect: true });
+      await waitUntil(() => taskListUrls.length === 2 && typeof releaseReconcile === "function");
+      for (let index = 0; index < 5; index += 1) {
+        callbacks.onConnected({ isReconnect: true });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.strictEqual(taskListUrls.length, 2, "concurrent reconnects share one reconcile");
+
+      releaseReconcile();
+      await waitUntil(() => taskListUrls.length === 3, {
+        message: "reconnect received in flight triggers a trailing reconcile",
+      });
+      callbacks.onConnected({ isReconnect: true });
+      await waitUntil(() => taskListUrls.length === 4, {
+        message: "reconnect received during cooldown triggers a delayed reconcile",
+      });
+
+      for (const url of taskListUrls) {
+        assert.strictEqual(url.searchParams.get("view"), "reconcile");
+        assert.strictEqual(url.searchParams.get("agent_host"), "apex");
+      }
+    } finally {
+      releaseReconcile?.();
+      await daemonInstance.close();
+    }
+  });
+
+  it("retries a failed reconcile without requiring another reconnect", async () => {
+    let callbacks;
+    let taskListRequests = 0;
+    const daemonInstance = startDaemon(
+      {
+        BACKEND_URL: "ws://localhost:0",
+        WORKSPACE_ROOT: "/tmp/test-ws-reconcile-retry",
+        CLI_PATH: "/tmp/cli.js",
+        DAEMON_NAME: "apex",
+      },
+      {
+        reconcileMinIntervalMs: 40,
+        spawn: () => ({
+          on: () => {},
+          stdout: { on: () => {} },
+          stderr: { on: () => {} },
+        }),
+        mkdirSync: () => {},
+        writeFileSync: () => {},
+        existsSync: () => false,
+        readFileSync: () => "",
+        unlinkSync: () => {},
+        createWriteStream: () => ({
+          write: () => {},
+          end: () => {},
+        }),
+        fetch: async (url) => {
+          if (new URL(String(url)).pathname === "/api/tasks") {
+            taskListRequests += 1;
+            if (taskListRequests === 2) {
+              return { ok: false, status: 500, json: async () => ({}) };
+            }
+            return { ok: true, json: async () => [] };
+          }
+          return { ok: true, json: async () => ({}) };
+        },
+        createWebSocketClient: (_config, options) => {
+          callbacks = options;
+          return {
+            registerHandler: () => {},
+            connect: async () => {},
+            disconnect: async () => {},
+            sendJson: async () => {},
+          };
+        },
+      },
+    );
+
+    try {
+      callbacks.onConnected({ isReconnect: false });
+      await waitUntil(() => taskListRequests === 1);
+      callbacks.onConnected({ isReconnect: true });
+      await waitUntil(() => taskListRequests === 2);
+      await waitUntil(() => taskListRequests === 3, {
+        message: "failed reconcile is retried after the cooldown",
+      });
+    } finally {
+      await daemonInstance.close();
+    }
   });
 
   it("logs backend connection only for initial connect and true reconnect", (t) => {
@@ -11484,7 +11627,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           if (String(url).endsWith("/api/agents")) {
@@ -11570,7 +11713,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           if (String(url).endsWith("/api/agents")) {
@@ -11663,7 +11806,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           if (String(url).endsWith("/api/agents")) {
@@ -11759,7 +11902,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           if (String(url).endsWith("/api/agents")) {
@@ -11860,7 +12003,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -11955,7 +12098,7 @@ describe("Daemon", () => {
           end: () => {},
         }),
         fetch: async (url) => {
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -12044,7 +12187,7 @@ describe("Daemon", () => {
               };
             });
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -12141,7 +12284,7 @@ describe("Daemon", () => {
           if (String(url).includes("/api/projects/")) {
             return { ok: true, json: async () => ({ metadata: null }) };
           }
-          if (String(url).endsWith("/api/tasks")) {
+          if (new URL(String(url)).pathname === "/api/tasks") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };

@@ -3820,6 +3820,12 @@ export function startDaemon(config = {}, deps = {}) {
 
   let disconnectedSinceLastConnectedLog = false;
   let didRecoverStaleTasks = false;
+  let reconcileAssignedTasksInFlight = null;
+  let reconcileAssignedTasksTimer = null;
+  let reconcileAssignedTasksTimerPromise = null;
+  let reconcileAssignedTasksTimerResolve = null;
+  let reconcileAssignedTasksRequested = false;
+  let lastReconcileAssignedTasksAt = 0;
   let daemonShuttingDown = false;
   const activeTaskProcesses = new Map();
   const pendingTaskStarts = new Set();
@@ -4060,7 +4066,7 @@ export function startDaemon(config = {}, deps = {}) {
           logError(`recoverStaleTasks failed: ${error?.message || error}`);
         });
       } else if (isReconnect) {
-        reconcileAssignedTasks().catch((error) => {
+        scheduleReconcileAssignedTasks().catch((error) => {
           logError(`reconcileAssignedTasks failed: ${error?.message || error}`);
         });
       }
@@ -4944,11 +4950,14 @@ export function startDaemon(config = {}, deps = {}) {
     ...new Set([...activeTaskProcesses.keys(), ...activePtySessions.keys()]),
   ];
 
+  const buildReconcileTasksUrl = () =>
+    `${BACKEND_HTTP}/api/tasks?view=reconcile&agent_host=${encodeURIComponent(AGENT_NAME)}`;
+
   async function recoverStaleTasks() {
     try {
       // Never judge a task before startup adoption has had its say.
       await adoptOrphanedTmuxFiresPromise;
-      const response = await fetchFn(`${BACKEND_HTTP}/api/tasks`, {
+      const response = await fetchFn(buildReconcileTasksUrl(), {
         method: "GET",
         headers: {
           Authorization: `Bearer ${AGENT_TOKEN}`,
@@ -5065,11 +5074,14 @@ export function startDaemon(config = {}, deps = {}) {
   // Grace period: tasks created within this window are excluded from
   // reconcile to avoid racing with restart_task outbox delivery.
   const RECONCILE_GRACE_PERIOD_MS = 60_000;
+  const RECONCILE_MIN_INTERVAL_MS = Number.isFinite(deps.reconcileMinIntervalMs)
+    ? Math.max(0, deps.reconcileMinIntervalMs)
+    : 60_000;
 
   async function reconcileAssignedTasks() {
     try {
       await adoptOrphanedTmuxFiresPromise;
-      const response = await fetchFn(`${BACKEND_HTTP}/api/tasks`, {
+      const response = await fetchFn(buildReconcileTasksUrl(), {
         method: "GET",
         headers: {
           Authorization: `Bearer ${AGENT_TOKEN}`,
@@ -5078,12 +5090,12 @@ export function startDaemon(config = {}, deps = {}) {
       });
       if (!response.ok) {
         logError(`Failed to reconcile tasks: HTTP ${response.status}`);
-        return;
+        return false;
       }
       markBackendHttpSuccess();
       const tasks = await response.json();
       if (!Array.isArray(tasks)) {
-        return;
+        return false;
       }
       const localTaskIds = new Set(getActiveTaskIds());
       const assigned = tasks.filter((task) => {
@@ -5111,7 +5123,7 @@ export function startDaemon(config = {}, deps = {}) {
           `tmux is reachable but this daemon started without tmux mode active; skipping reconcile ` +
             `for ${assigned.length} assigned task(s)`,
         );
-        return;
+        return true;
       }
       const tmuxSessions =
         FIRE_TMUX_MODE_ACTIVE && assigned.length ? await listAllTmuxSessions() : null;
@@ -5121,7 +5133,7 @@ export function startDaemon(config = {}, deps = {}) {
         logError(
           `Could not list tmux sessions; skipping reconcile for ${assigned.length} assigned task(s)`,
         );
-        return;
+        return false;
       }
       const unverifiableTmuxTaskIds = taskIdsWithUnverifiableTmuxFire();
       for (const task of assigned) {
@@ -5168,8 +5180,73 @@ export function startDaemon(config = {}, deps = {}) {
           `Reconciled tasks after reconnect: backendAssigned=${assigned.length} localActive=${localTaskIds.size} markedKilled=${killedCount}`,
         );
       }
+      return true;
     } catch (error) {
       logError(`reconcileAssignedTasks error: ${error?.message || error}`);
+      return false;
+    }
+  }
+
+  function scheduleReconcileAssignedTasks() {
+    reconcileAssignedTasksRequested = true;
+    if (reconcileAssignedTasksInFlight) {
+      return reconcileAssignedTasksInFlight;
+    }
+    return queueReconcileAssignedTasks();
+  }
+
+  function queueReconcileAssignedTasks() {
+    if (daemonShuttingDown) {
+      return Promise.resolve();
+    }
+    if (reconcileAssignedTasksInFlight) {
+      return reconcileAssignedTasksInFlight;
+    }
+    if (reconcileAssignedTasksTimerPromise) {
+      return reconcileAssignedTasksTimerPromise;
+    }
+    const delay = Math.max(
+      0,
+      RECONCILE_MIN_INTERVAL_MS - (Date.now() - lastReconcileAssignedTasksAt),
+    );
+    if (delay > 0) {
+      reconcileAssignedTasksTimerPromise = new Promise((resolve) => {
+        reconcileAssignedTasksTimerResolve = resolve;
+        reconcileAssignedTasksTimer = setTimeout(() => {
+          reconcileAssignedTasksTimer = null;
+          reconcileAssignedTasksTimerPromise = null;
+          reconcileAssignedTasksTimerResolve = null;
+          resolve(runReconcileAssignedTasks());
+        }, delay);
+        reconcileAssignedTasksTimer.unref?.();
+      });
+      return reconcileAssignedTasksTimerPromise;
+    }
+    return runReconcileAssignedTasks();
+  }
+
+  async function runReconcileAssignedTasks() {
+    if (daemonShuttingDown) {
+      return;
+    }
+    if (reconcileAssignedTasksInFlight) {
+      return reconcileAssignedTasksInFlight;
+    }
+    reconcileAssignedTasksRequested = false;
+    lastReconcileAssignedTasksAt = Date.now();
+    reconcileAssignedTasksInFlight = reconcileAssignedTasks();
+    try {
+      const succeeded = await reconcileAssignedTasksInFlight;
+      if (!succeeded) {
+        reconcileAssignedTasksRequested = true;
+      }
+    } finally {
+      reconcileAssignedTasksInFlight = null;
+      if (reconcileAssignedTasksRequested && !daemonShuttingDown) {
+        queueReconcileAssignedTasks().catch((error) => {
+          logError(`reconcileAssignedTasks retry failed: ${error?.message || error}`);
+        });
+      }
     }
   }
 
@@ -8952,6 +9029,16 @@ export function startDaemon(config = {}, deps = {}) {
     closePromise = (async () => {
       daemonShuttingDown = true;
       daemonShutdownInProgress = true;
+      reconcileAssignedTasksRequested = false;
+      if (reconcileAssignedTasksTimer) {
+        clearTimeout(reconcileAssignedTasksTimer);
+        reconcileAssignedTasksTimer = null;
+      }
+      if (reconcileAssignedTasksTimerResolve) {
+        reconcileAssignedTasksTimerResolve();
+        reconcileAssignedTasksTimerResolve = null;
+      }
+      reconcileAssignedTasksTimerPromise = null;
       if (watchdogTimer) {
         clearInterval(watchdogTimer);
         watchdogTimer = null;

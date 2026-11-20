@@ -284,7 +284,7 @@ describe("daemon tmux Fire adoption", () => {
         },
         fetch: async (url, options = {}) => {
           const target = String(url);
-          if (target.endsWith("/api/tasks") && (options.method || "GET") === "GET") {
+          if (new URL(target).pathname === "/api/tasks" && (options.method || "GET") === "GET") {
             return {
               ok: true,
               json: async () => [
@@ -596,7 +596,7 @@ describe("daemon tmux Fire adoption", () => {
         },
         fetch: async (url, options = {}) => {
           const target = String(url);
-          if (target.endsWith("/api/tasks") && (options.method || "GET") === "GET") {
+          if (new URL(target).pathname === "/api/tasks" && (options.method || "GET") === "GET") {
             return {
               ok: true,
               json: async () => [
@@ -718,7 +718,7 @@ describe("daemon tmux Fire adoption", () => {
             : { status: 1, error: new Error("ENOENT"), pid: undefined },
         fetch: async (url, options = {}) => {
           const target = String(url);
-          if (target.endsWith("/api/tasks") && (options.method || "GET") === "GET") {
+          if (new URL(target).pathname === "/api/tasks" && (options.method || "GET") === "GET") {
             return {
               ok: true,
               json: async () => [
@@ -911,7 +911,7 @@ describe("daemon tmux Fire adoption", () => {
         resolveResumeContext: async () => ({ cwd: path.join(conductorHome, "ws") }),
         fetch: async (url, options = {}) => {
           const target = String(url);
-          if (target.endsWith("/api/tasks") && (options.method || "GET") === "GET") {
+          if (new URL(target).pathname === "/api/tasks" && (options.method || "GET") === "GET") {
             return { ok: true, json: async () => [] };
           }
           return { ok: true, json: async () => ({}) };
@@ -1045,7 +1045,7 @@ describe("daemon tmux Fire adoption", () => {
         spawnSync: () => ({ status: 1, error: new Error("ENOENT"), pid: undefined }),
         fetch: async (url, options = {}) => {
           const target = String(url);
-          if (target.endsWith("/api/tasks") && (options.method || "GET") === "GET") {
+          if (new URL(target).pathname === "/api/tasks" && (options.method || "GET") === "GET") {
             return {
               ok: true,
               json: async () => [

@@ -47,6 +47,7 @@ import { persistTaskRuntimeState } from "@/lib/tasks/scheduled-messages";
 import { listDaemonTaskFireHosts } from "@/lib/tasks/stale-recovery";
 
 export const AGENT_WS_PATH = "/ws/agent";
+export const AGENT_RECONNECT_MIN_INTERVAL_MS = 60_000;
 
 type TaskOwnershipRecord = {
   id: string;
@@ -1509,6 +1510,7 @@ export const handlePtyTransportSignalEvent = async (args: {
 
 export const setupAgentGateway = (): WebSocketServer => {
   const wss = new WebSocketServer({ noServer: true });
+  const lastAcceptedConnectionAt = new Map<string, number>();
 
   wss.on("connection", async (socket, request) => {
     const token = extractToken(request);
@@ -1547,6 +1549,34 @@ export const setupAgentGateway = (): WebSocketServer => {
         });
         socket.close(4003, "share-host-mismatch");
         return;
+      }
+    }
+
+    if (!isConductorFireHost(agentHost)) {
+      const now = Date.now();
+      const key = `${user.id}:${agentHost}`;
+      const previous = lastAcceptedConnectionAt.get(key);
+      const elapsed = previous === undefined ? AGENT_RECONNECT_MIN_INTERVAL_MS : now - previous;
+      if (elapsed < AGENT_RECONNECT_MIN_INTERVAL_MS) {
+        const retryAfterMs = AGENT_RECONNECT_MIN_INTERVAL_MS - Math.max(0, elapsed);
+        sendEnvelope(socket, {
+          type: "error",
+          payload: {
+            code: "agent_reconnect_rate_limited",
+            message: `Reconnect rate limited; retry after ${Math.ceil(retryAfterMs / 1000)}s`,
+            retry_after_ms: retryAfterMs,
+          },
+        });
+        socket.close(4409, "agent-reconnect-rate-limited");
+        return;
+      }
+      lastAcceptedConnectionAt.set(key, now);
+      if (lastAcceptedConnectionAt.size > 1000) {
+        for (const [candidate, acceptedAt] of lastAcceptedConnectionAt) {
+          if (now - acceptedAt >= AGENT_RECONNECT_MIN_INTERVAL_MS) {
+            lastAcceptedConnectionAt.delete(candidate);
+          }
+        }
       }
     }
 

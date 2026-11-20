@@ -334,6 +334,28 @@ const findTasksForList = async (
 const getTaskListSortTime = (task: { updatedAt?: Date | null; createdAt: Date }) =>
   (task.updatedAt instanceof Date ? task.updatedAt : task.createdAt).getTime();
 
+const findTasksForReconcile = (userId: string, agentHost: string) => {
+  const query = (includeAchievedAt: boolean) => db.task.findMany({
+    where: {
+      project: { userId },
+      agentHost,
+      ...(includeAchievedAt ? { achievedAt: null } : {}),
+    },
+    select: {
+      id: true,
+      projectId: true,
+      agentHost: true,
+      status: true,
+      createdAt: true,
+    },
+  });
+  return withPtySchemaFallback(
+    "tasks.GET.reconcile",
+    () => query(true),
+    () => query(false),
+  );
+};
+
 const createPtyTaskRecord = async (args: {
   requestedId?: string;
   projectId: string;
@@ -377,6 +399,23 @@ export async function GET(request: NextRequest) {
   const user = userResult;
 
   const { searchParams } = new URL(request.url);
+  if (searchParams.get("view") === "reconcile") {
+    const agentHost = searchParams.get("agent_host")?.trim();
+    if (!agentHost) {
+      return NextResponse.json(
+        { error: "agent_host is required when view=reconcile" },
+        { status: 400 },
+      );
+    }
+    const tasks = await findTasksForReconcile(user.id, agentHost);
+    return NextResponse.json(tasks.map((task) => ({
+      id: task.id,
+      project_id: task.projectId,
+      agent_host: task.agentHost,
+      status: normalizeTaskStatus(task.status),
+      created_at: task.createdAt.toISOString(),
+    })));
+  }
   const projectId = searchParams.get("project_id")?.trim() || null;
   // `project_ids` lets the UI fetch tasks across multiple projects in a single
   // call — used by the cross-daemon merged-project view so the task list shows

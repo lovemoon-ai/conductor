@@ -187,6 +187,87 @@ describe("/api/tasks", () => {
       expect(data.error).toBe("Unauthorized");
     });
 
+    it("returns only the fields needed to reconcile one daemon", async () => {
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
+      vi.mocked(db.task.findMany).mockResolvedValue([{
+        id: "task-1",
+        projectId: "proj-1",
+        agentHost: "apex",
+        status: "running",
+        createdAt: new Date("2026-11-20T00:00:00.000Z"),
+      }] as any);
+
+      const response = await GET(createMockRequest({
+        token: createTestToken("user-1"),
+        url: "http://localhost:6152/api/tasks?view=reconcile&agent_host=apex",
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual([{
+        id: "task-1",
+        project_id: "proj-1",
+        agent_host: "apex",
+        status: "running",
+        created_at: "2026-11-20T00:00:00.000Z",
+      }]);
+      expect(db.task.findMany).toHaveBeenCalledWith({
+        where: {
+          project: { userId: "user-1" },
+          agentHost: "apex",
+          achievedAt: null,
+        },
+        select: {
+          id: true,
+          projectId: true,
+          agentHost: true,
+          status: true,
+          createdAt: true,
+        },
+      });
+      expect(db.$queryRaw).not.toHaveBeenCalled();
+      expect(db.attachedTerminal.findMany).not.toHaveBeenCalled();
+      expect(countActiveScheduledMessagesForTasksMock).not.toHaveBeenCalled();
+    });
+
+    it("requires agent_host for the reconcile view", async () => {
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
+
+      const response = await GET(createMockRequest({
+        token: createTestToken("user-1"),
+        url: "http://localhost:6152/api/tasks?view=reconcile",
+      }));
+
+      expect(response.status).toBe(400);
+      expect(db.task.findMany).not.toHaveBeenCalled();
+    });
+
+    it("keeps the reconcile view available when achieved_at is missing", async () => {
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
+      vi.mocked(db.task.findMany)
+        .mockRejectedValueOnce(
+          prismaError("P2022", 'The column `tasks.achieved_at` does not exist in the current database.'),
+        )
+        .mockResolvedValueOnce([{
+          id: "task-legacy",
+          projectId: "proj-1",
+          agentHost: "apex",
+          status: "running",
+          createdAt: new Date("2026-11-20T00:00:00.000Z"),
+        }] as any);
+
+      const response = await GET(createMockRequest({
+        token: createTestToken("user-1"),
+        url: "http://localhost:6152/api/tasks?view=reconcile&agent_host=apex",
+      }));
+      const data = await extractJson(response);
+
+      expect(response.status).toBe(200);
+      expect(data).toEqual([expect.objectContaining({ id: "task-legacy" })]);
+      const fallbackArgs = vi.mocked(db.task.findMany).mock.calls[1][0] as any;
+      expect(fallbackArgs.where.achievedAt).toBeUndefined();
+    });
+
     it("returns the metadata needed by optional workspace columns without presentation preferences", async () => {
       vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
       vi.mocked(db.task.findMany).mockResolvedValue([{
