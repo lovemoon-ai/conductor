@@ -1,6 +1,6 @@
 import { mockPrismaQuery } from '@/__tests__/mock-prisma-query';
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { GET, POST } from "@/app/api/tasks/route";
+import { GET, POST, resetTaskListRateLimitForTests } from "@/app/api/tasks/route";
 import { createMockRequest, createTestToken, extractJson } from "@/__tests__/helpers";
 import * as authService from "@/lib/auth/service";
 
@@ -107,6 +107,7 @@ const setDefaultProjectId = (projectId: string | null) => {
 describe("/api/tasks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetTaskListRateLimitForTests();
     defaultProjectId = null;
     vi.mocked(db.$transaction).mockImplementation(async (callback: any) =>
       typeof callback === "function"
@@ -240,6 +241,31 @@ describe("/api/tasks", () => {
 
       expect(response.status).toBe(400);
       expect(db.task.findMany).not.toHaveBeenCalled();
+    });
+
+    it("rate limits repeated full task lists without blocking browser or reconcile reads", async () => {
+      vi.spyOn(authService, "authenticateToken").mockResolvedValue({ id: "user-1", email: "test@example.com", phone: null });
+      const request = (url: string) => createMockRequest({
+        token: createTestToken("user-1"),
+        url,
+        headers: { "x-real-ip": "203.0.113.10" },
+      });
+
+      const first = await GET(request("http://localhost:6152/api/tasks"));
+      const second = await GET(request("http://localhost:6152/api/tasks"));
+      const secondBody = await extractJson(second);
+      const browser = await GET(request("http://localhost:6152/api/tasks?recover_stale=1"));
+      const reconcile = await GET(request("http://localhost:6152/api/tasks?view=reconcile&agent_host=apex"));
+      const filtered = await GET(request("http://localhost:6152/api/tasks?project_id=proj-1&project_scope=real"));
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(429);
+      expect(secondBody).toMatchObject({ error: "task_list_rate_limited" });
+      expect(second.headers.get("Retry-After")).toBe("60");
+      expect(browser.status).toBe(200);
+      expect(reconcile.status).toBe(200);
+      expect(filtered.status).toBe(200);
+      expect(db.task.findMany).toHaveBeenCalledTimes(4);
     });
 
     it("keeps the reconcile view available when achieved_at is missing", async () => {
