@@ -13,7 +13,7 @@ Every daemon startup and WebSocket reconnect downloaded the complete active task
 - Added a daemon-scoped reconcile view that returns only the fields used by startup recovery and reconnect reconciliation, including the legacy schema fallback.
 - Updated the CLI to use the lightweight view, coalesce in-flight and cooldown requests with a trailing run, retry failed reconciliations, and cancel pending work on shutdown.
 - Limited agent gateway daemon reconnects to one accepted connection per user and host per minute, before duplicate-host takeover. Fire hosts and browser WebSockets are exempt.
-- Added a per-user/IP safeguard for completely unfiltered full task-list requests after production traffic showed that per-host connection limiting alone could not suppress all legacy daemon recovery calls. Filtered browser and SDK reads and lightweight reconcile reads remain exempt.
+- Added a per-IP safeguard for completely unfiltered full task-list requests after production traffic showed that per-host connection limiting alone could not suppress all legacy daemon recovery calls. Filtered browser and SDK reads and lightweight reconcile reads remain exempt. Keying by IP also prevents multiple tokens behind one NAT egress from multiplying full responses.
 
 ## Prevention
 

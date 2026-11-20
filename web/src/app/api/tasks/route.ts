@@ -362,11 +362,10 @@ const findTasksForReconcile = (userId: string, agentHost: string) => {
   );
 };
 
-const fullTaskListRetryAfterMs = (request: NextRequest, userId: string) => {
-  const ip = request.headers.get("x-real-ip")?.trim()
+const fullTaskListRetryAfterMs = (request: NextRequest) => {
+  const key = request.headers.get("x-real-ip")?.trim()
     || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
     || "unknown";
-  const key = `${userId}:${ip}`;
   const now = Date.now();
   const previous = lastFullTaskListAt.get(key);
   const elapsed = previous === undefined ? FULL_TASK_LIST_MIN_INTERVAL_MS : now - previous;
@@ -445,7 +444,7 @@ export async function GET(request: NextRequest) {
     })));
   }
   if (searchParams.size === 0) {
-    const retryAfterMs = fullTaskListRetryAfterMs(request, user.id);
+    const retryAfterMs = fullTaskListRetryAfterMs(request);
     if (retryAfterMs > 0) {
       return NextResponse.json(
         { error: "task_list_rate_limited", retry_after_ms: retryAfterMs },
