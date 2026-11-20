@@ -1,5 +1,13 @@
 # @love-moon/conductor-cli
 
+## 0.18.2
+
+### Patch Changes
+
+- 4c0423e: Reduce reconnect reconciliation bandwidth with daemon-scoped lightweight task queries, trailing request coalescing, and automatic retries.
+  - @love-moon/conductor-sdk@0.18.2
+  - @love-moon/ai-sdk@0.18.2
+
 ## 0.18.1
 
 ### Patch Changes

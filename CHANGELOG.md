@@ -18,6 +18,24 @@ the changesets per-package output, so the root file's entries match what
 npm consumers see in the package tarballs.
 This project follows [Semantic Versioning](https://semver.org/) where practical.
 
+## [0.18.2] - 2026-11-20
+
+### Released packages
+
+- `@love-moon/conductor-cli` `0.18.2`
+- `@love-moon/conductor-sdk` `0.18.2`
+- `@love-moon/ai-sdk` `0.18.2`
+- `@love-moon/app-sdk` `0.18.2`
+- `@love-moon/chat-web` `0.18.2`
+
+### Changes
+
+### Patch Changes
+
+- 4c0423e: Reduce reconnect reconciliation bandwidth with daemon-scoped lightweight task queries, trailing request coalescing, and automatic retries.
+  - @love-moon/conductor-sdk@0.18.2
+  - @love-moon/ai-sdk@0.18.2
+
 ## [0.18.1] - 2026-11-16
 
 ### Released packages
